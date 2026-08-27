@@ -70,7 +70,7 @@
   },
   "experiment": {
     "generation_cost_usd": 0.0,
-    "generation_seconds": 1380.55,
+    "generation_seconds": 1321.52,
     "variables": {
       "niche": "adult_sleep",
       "length_minutes": 480,
@@ -114,6 +114,12 @@
       "action": "run",
       "result": "READY_FOR_REVIEW",
       "log": "projects/exp-b-sleep-brown/logs/run_20260827_191651.log"
+    },
+    {
+      "utc": "2026-08-27T20:02:51Z",
+      "action": "run",
+      "result": "READY_FOR_REVIEW",
+      "log": "projects/exp-b-sleep-brown/logs/run_20260827_194050.log"
     }
   ],
   "review_checklist": [
