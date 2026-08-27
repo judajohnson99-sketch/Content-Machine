@@ -1,0 +1,119 @@
+{
+  "video_id": "exp-a-rain-focus",
+  "created_utc": "2026-08-27T15:41:39Z",
+  "concept": "Library interior still, rain bed, 2h",
+  "audience": "Students and knowledge workers, daytime use",
+  "hypothesis": "DAYTIME viewing - viewers are awake and may actually see ads, unlike sleep content where the audience is asleep. This is a materially different and possibly better ad-engagement profile. UNVERIFIED but structurally important.",
+  "visual_style": "Placeholder abstract slate plates pending real rainy-scene imagery.",
+  "title_candidates": [
+    "Rain for Focus | 30 Minutes | Study Ambience",
+    "Rainy Night Study Session | 30 Minutes",
+    "Steady Rain for Deep Work | 30 Minutes"
+  ],
+  "selected_title": "Rain for Focus | 30 Minutes | Study Ambience",
+  "description": "PLACEHOLDER - 30 minutes of steady rain ambience with a low noise bed for studying and focused work. Audio is synthesised procedurally, not a field recording.",
+  "tags": [
+    "study ambience",
+    "focus",
+    "rain sounds",
+    "procedural audio"
+  ],
+  "scenes": [],
+  "thumbnail_concept": "Warm library interior, rain at tall windows. Single still or slow zoom.",
+  "target": {
+    "duration_seconds": 1800.0,
+    "resolution": "1920x1080",
+    "fps": 24,
+    "aspect_ratio": "16:9"
+  },
+  "audio_plan": {
+    "mode": "single_track",
+    "requirement": "licensed_or_recorded",
+    "capability": "PARTIAL - procedural 'rain' bed can test the format; a real recording is still needed for final quality",
+    "concept": "Rain plus faint room tone (page turns, distant murmur).",
+    "composition": {
+      "normalize": true,
+      "target_lufs": -20,
+      "fade_in_seconds": 5,
+      "fade_out_seconds": 5,
+      "layers": [
+        {
+          "id": "rain",
+          "provider": "rain",
+          "params": {
+            "intensity": "steady"
+          },
+          "gain_db": -4
+        },
+        {
+          "id": "bed",
+          "provider": "noise",
+          "params": {
+            "color": "brown",
+            "amplitude": 0.4
+          },
+          "gain_db": -20
+        }
+      ]
+    }
+  },
+  "provenance": {
+    "images": {
+      "provider": "procedural/ffmpeg",
+      "model": null,
+      "production_grade": false,
+      "notes": "Concept requires a depicted rainy nighttime scene. These are abstract procedural plates standing in for it. BLOCKED on image generation."
+    },
+    "audio": {
+      "provider": "noise+rain",
+      "model": null,
+      "notes": "composed locally: 2 layer(s)",
+      "commercial_use_cleared": true,
+      "attributions_required": []
+    },
+    "text": {
+      "provider": null,
+      "model": null
+    }
+  },
+  "experiment": {
+    "generation_cost_usd": 0.0,
+    "generation_seconds": 1190.66,
+    "variables": {
+      "niche": "focus_ambience",
+      "length_minutes": 120,
+      "template": "templates/long_static_ambient.json"
+    },
+    "concept_id": "focus-library-rain-study",
+    "batch_id": "batch-001",
+    "niche": "focus_ambience",
+    "continue_evidence": [
+      "Ad engagement metrics materially better than sleep uploads - would prove the awake-audience thesis"
+    ],
+    "kill_evidence": [
+      "No engagement advantage over sleep content despite awake audience"
+    ],
+    "open_questions": [
+      "Whether awake-audience ad engagement genuinely differs - needs real channel data"
+    ]
+  },
+  "status": {
+    "assets": "PENDING",
+    "render": "OK",
+    "qc": "PASS",
+    "package": "OK",
+    "overall": "NEEDS_ATTENTION",
+    "audio": "OK"
+  },
+  "history": [
+    {
+      "utc": "2026-08-27T16:29:24Z",
+      "action": "run",
+      "result": "NEEDS_ATTENTION",
+      "log": "projects/exp-a-rain-focus/logs/run_20260827_160934.log"
+    }
+  ],
+  "review_checklist": [
+    "Replace placeholder plates with real rainy-scene imagery before publishing."
+  ]
+}

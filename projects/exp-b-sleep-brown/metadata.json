@@ -1,0 +1,116 @@
+{
+  "video_id": "exp-b-sleep-brown",
+  "created_utc": "2026-08-27T15:41:41Z",
+  "concept": "Single near-black still, continuous noise bed, 8h",
+  "audience": "Adults 25-55 who sleep with sound masking; light-sensitive sleepers; shift workers",
+  "hypothesis": "Watch-time-driven ad impressions on very long sessions; audience returns nightly. UNVERIFIED.",
+  "visual_style": "Deep blue-black radial wash, held static. Deliberately minimal.",
+  "title_candidates": [
+    "Brown Noise for Deep Sleep | 30 Minutes | Dark Screen",
+    "Brown Noise for Sleep and Sound Masking | 30 Minutes",
+    "Dark Screen Brown Noise | 30 Minutes | No Music"
+  ],
+  "selected_title": "Brown Noise for Deep Sleep | 30 Minutes | Dark Screen",
+  "description": "30 minutes of continuous brown noise on a dark screen, for sleep and sound masking. The audio is synthesised locally and loops without a seam. No music and no field recordings are used.",
+  "tags": [
+    "brown noise",
+    "sleep sounds",
+    "sound masking",
+    "dark screen"
+  ],
+  "scenes": [],
+  "thumbnail_concept": "Very dark frame at or above ~#1a1a2e (perceived luma >=26) with a barely visible gradient. MEASURED: darker than this trips QC blackdetect. No motion.",
+  "target": {
+    "duration_seconds": 1800.0,
+    "resolution": "1920x1080",
+    "fps": 24,
+    "aspect_ratio": "16:9"
+  },
+  "audio_plan": {
+    "mode": "single_track",
+    "requirement": "synthesisable_now",
+    "capability": "AVAILABLE - noise/tone/rain providers synthesise this today",
+    "concept": "Generated brown/pink noise. Fully synthesisable with FFmpeg's anoisesrc today - zero external dependency.",
+    "composition": {
+      "normalize": true,
+      "target_lufs": -20,
+      "fade_in_seconds": 6,
+      "fade_out_seconds": 6,
+      "layers": [
+        {
+          "id": "bed",
+          "provider": "noise",
+          "params": {
+            "color": "brown",
+            "amplitude": 0.7,
+            "seed": 20260827
+          }
+        }
+      ]
+    }
+  },
+  "provenance": {
+    "images": {
+      "provider": "procedural/ffmpeg",
+      "model": null,
+      "production_grade": true,
+      "notes": "A dark static plate is the intended deliverable for this format, not a stand-in for photography. Luma verified above the QC black floor."
+    },
+    "audio": {
+      "provider": "noise",
+      "model": null,
+      "notes": "composed locally: 1 layer(s)",
+      "commercial_use_cleared": true,
+      "attributions_required": []
+    },
+    "text": {
+      "provider": null,
+      "model": null
+    }
+  },
+  "experiment": {
+    "generation_cost_usd": 0.0,
+    "generation_seconds": 1286.59,
+    "variables": {
+      "niche": "adult_sleep",
+      "length_minutes": 480,
+      "template": "templates/long_static_ambient.json"
+    },
+    "concept_id": "sleep-brown-noise-dark",
+    "batch_id": "batch-001",
+    "niche": "adult_sleep",
+    "continue_evidence": [
+      "Median view duration > 30 min",
+      "Any measurable returning-viewer rate",
+      "Channel survives monetization review"
+    ],
+    "kill_evidence": [
+      "Median view duration < 5 min across 3 uploads",
+      "Monetization refused on inauthentic-content grounds"
+    ],
+    "open_questions": [
+      "Current YouTube inauthentic-content policy text and how it treats static-image noise uploads",
+      "Whether extreme-length uploads are favoured or suppressed by recommendation"
+    ]
+  },
+  "status": {
+    "assets": "PENDING",
+    "render": "OK",
+    "qc": "PASS",
+    "package": "OK",
+    "overall": "READY_FOR_REVIEW",
+    "audio": "OK"
+  },
+  "history": [
+    {
+      "utc": "2026-08-27T16:08:27Z",
+      "action": "run",
+      "result": "READY_FOR_REVIEW",
+      "log": "projects/exp-b-sleep-brown/logs/run_20260827_154700.log"
+    }
+  ],
+  "review_checklist": [
+    "Confirm the dark plate renders acceptably on OLED and on phone screens.",
+    "Confirm 30 min is the right test length before committing to 8 h uploads."
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "output": "/root/projects/content-machine/projects/exp-brown-noise-002/audio/track.wav",
+  "generated_utc": "2026-08-27T15:19:09Z",
+  "target_seconds": 60.0,
+  "actual_seconds": 60.0,
+  "mean_volume_db": -21.8,
+  "sample_rate": 48000,
+  "channels": 2,
+  "normalized": true,
+  "target_lufs": -20,
+  "layers": [
+    {
+      "source": "synthesised locally with ffmpeg",
+      "creator": "content-machine",
+      "license": "generated-original",
+      "commercial_use": true,
+      "attribution_required": false,
+      "evidence": "Signal is generated from ffmpeg oscillators/noise sources; no third-party recording involved.",
+      "provider": "noise",
+      "parameters": {
+        "color": "brown",
+        "amplitude": 0.7,
+        "seed": 20260827
+      },
+      "layer_id": "bed",
+      "gain_db": 0.0
+    }
+  ],
+  "commercial_use_cleared": true,
+  "attributions_required": [],
+  "status": "OK"
+}

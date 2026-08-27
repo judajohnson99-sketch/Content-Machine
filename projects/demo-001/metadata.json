@@ -1,0 +1,79 @@
+{
+  "video_id": "demo-001",
+  "created_utc": "2026-08-27T14:48:04Z",
+  "concept": "Deterministic still-image slideshow with Ken Burns motion",
+  "audience": "internal pipeline verification",
+  "hypothesis": "The deterministic render path produces a publishable asset without manual editing.",
+  "visual_style": "flat solid-colour cards, high contrast",
+  "title_candidates": [
+    "Content Machine Demo Render"
+  ],
+  "selected_title": "Content Machine Demo Render",
+  "description": "Deterministic render-pipeline verification clip: five still images sequenced with Ken Burns motion and crossfades over a single looped audio track. Generated locally with FFmpeg; no AI-generated content.",
+  "tags": [
+    "pipeline-test",
+    "ffmpeg",
+    "content-machine"
+  ],
+  "scenes": [],
+  "thumbnail_concept": "",
+  "target": {
+    "duration_seconds": 12.0,
+    "resolution": "1280x720",
+    "fps": 30,
+    "aspect_ratio": "16:9"
+  },
+  "audio_plan": {
+    "mode": "single_track",
+    "narration": null,
+    "music": null
+  },
+  "provenance": {
+    "images": {
+      "provider": "local",
+      "model": null,
+      "notes": "ingested from /root/projects/content-machine/tests/fixtures/images"
+    },
+    "audio": {
+      "provider": "local",
+      "model": null,
+      "notes": "ingested from /root/projects/content-machine/tests/fixtures/audio/test_tone.wav"
+    },
+    "text": {
+      "provider": null,
+      "model": null
+    }
+  },
+  "experiment": {
+    "generation_cost_usd": 0.0,
+    "generation_seconds": 5.46,
+    "variables": {}
+  },
+  "status": {
+    "assets": "READY",
+    "render": "OK",
+    "qc": "PASS",
+    "package": "OK",
+    "overall": "READY_FOR_REVIEW"
+  },
+  "history": [
+    {
+      "utc": "2026-08-27T14:48:15Z",
+      "action": "run",
+      "result": "NEEDS_ATTENTION",
+      "log": "projects/demo-001/logs/run_20260827_144810.log"
+    },
+    {
+      "utc": "2026-08-27T14:48:32Z",
+      "action": "run",
+      "result": "READY_FOR_REVIEW",
+      "log": "projects/demo-001/logs/run_20260827_144826.log"
+    },
+    {
+      "utc": "2026-08-27T14:51:16Z",
+      "action": "run",
+      "result": "READY_FOR_REVIEW",
+      "log": "projects/demo-001/logs/run_20260827_145111.log"
+    }
+  ]
+}

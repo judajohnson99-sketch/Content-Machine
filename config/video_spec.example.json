@@ -1,0 +1,23 @@
+{
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "duration_seconds": 30,
+  "output_path": "output/video/test_render.mp4",
+  "images": {
+    "source_dir": "tests/fixtures/images",
+    "seconds_per_image": 4.0
+  },
+  "audio": {
+    "file": "tests/fixtures/audio/test_tone.wav"
+  },
+  "ken_burns": {
+    "enabled": true,
+    "zoom_start": 1.0,
+    "zoom_end": 1.15
+  },
+  "crossfade": {
+    "enabled": true,
+    "duration_seconds": 0.75
+  }
+}

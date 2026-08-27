@@ -1,0 +1,8 @@
+# Article generation (generate.py)
+anthropic
+google-genai
+python-dotenv
+
+# Narration for the audio subsystem (scripts/audio.py, tts provider).
+# Optional: every other audio provider needs only the system ffmpeg binary.
+piper-tts

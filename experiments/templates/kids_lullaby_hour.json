@@ -1,0 +1,23 @@
+{
+  "_comment": "1h children's sleep. Long holds and slow fades; keep source imagery low-luminance. NOTE: likely Made-for-Kids, which disables personalised ads.",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "duration_seconds": 3600,
+  "images": {
+    "source_dir": "images",
+    "seconds_per_image": 120
+  },
+  "audio": {
+    "file": "audio/track.wav"
+  },
+  "ken_burns": {
+    "enabled": true,
+    "zoom_start": 1.0,
+    "zoom_end": 1.05
+  },
+  "crossfade": {
+    "enabled": true,
+    "duration_seconds": 3.0
+  }
+}

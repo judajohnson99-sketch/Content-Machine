@@ -1,0 +1,27 @@
+.env
+output/
+__pycache__/
+*.pyc
+
+# Rendered artefacts and run logs are reproducible from the project inputs.
+projects/*/output/
+projects/*/logs/
+projects/*/thumbnail/
+
+# Agent skills installed by `npx skills add` (vendored tooling, not project source).
+.agents/
+
+# Local virtualenv and knowledge-graph output.
+.venv/
+graphify-out/
+
+# Symlinks created by the skills installer into the Claude Code skill dir.
+.claude/skills/
+# Machine-local editor/permission settings.
+.claude/settings.local.json
+
+# Composed audio tracks: deterministic output of `content-machine audio` from
+# metadata.audio_plan (see tests/test_audio.py::test_same_plan_produces_identical_bytes).
+# audio_manifest.json is kept - it carries the licence/provenance record, which
+# is NOT reproducible by inspection.
+projects/*/audio/track.wav

@@ -1,0 +1,23 @@
+{
+  "_comment": "Long ambient, motionless. 24fps + no Ken Burns is the cheapest configuration: measured ~3.3x realtime at 1080p, so 3h renders in ~55min on a 4-core host. Few images held for 10min each.",
+  "width": 1920,
+  "height": 1080,
+  "fps": 24,
+  "duration_seconds": 10800,
+  "images": {
+    "source_dir": "images",
+    "seconds_per_image": 600
+  },
+  "audio": {
+    "file": "audio/track.wav"
+  },
+  "ken_burns": {
+    "enabled": false,
+    "zoom_start": 1.0,
+    "zoom_end": 1.0
+  },
+  "crossfade": {
+    "enabled": true,
+    "duration_seconds": 4.0
+  }
+}

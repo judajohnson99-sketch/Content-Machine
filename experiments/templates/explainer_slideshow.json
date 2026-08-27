@@ -1,0 +1,23 @@
+{
+  "_comment": "Short narrated explainer. Fast cuts keep an awake, attentive viewer engaged; short crossfade avoids a slideshow feel.",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "duration_seconds": 600,
+  "images": {
+    "source_dir": "images",
+    "seconds_per_image": 8.0
+  },
+  "audio": {
+    "file": "audio/track.wav"
+  },
+  "ken_burns": {
+    "enabled": true,
+    "zoom_start": 1.0,
+    "zoom_end": 1.05
+  },
+  "crossfade": {
+    "enabled": true,
+    "duration_seconds": 0.6
+  }
+}

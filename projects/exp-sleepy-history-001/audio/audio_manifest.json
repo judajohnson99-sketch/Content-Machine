@@ -1,0 +1,55 @@
+{
+  "output": "/root/projects/content-machine/projects/exp-sleepy-history-001/audio/track.wav",
+  "generated_utc": "2026-08-27T15:20:44Z",
+  "target_seconds": 30.0,
+  "actual_seconds": 30.0,
+  "mean_volume_db": -27.3,
+  "sample_rate": 48000,
+  "channels": 2,
+  "normalized": true,
+  "target_lufs": -20,
+  "layers": [
+    {
+      "source": "synthesised locally with ffmpeg",
+      "creator": "content-machine",
+      "license": "generated-original",
+      "commercial_use": true,
+      "attribution_required": false,
+      "evidence": "Signal is generated from ffmpeg oscillators/noise sources; no third-party recording involved.",
+      "provider": "rain",
+      "parameters": {
+        "intensity": "light",
+        "seed": 20260827
+      },
+      "notes": "Procedural approximation, not a field recording.",
+      "layer_id": "bed",
+      "gain_db": -18
+    },
+    {
+      "provider": "tts",
+      "engine": "piper",
+      "voice": "en_US-libritts_r-medium",
+      "source": "LibriTTS-R (openslr.org/141)",
+      "license": "CC BY 4.0",
+      "commercial_use": true,
+      "attribution_required": true,
+      "attribution_text": "Voice synthesised with Piper using the LibriTTS-R voice (CC BY 4.0).",
+      "evidence": "MODEL_CARD at rhasspy/piper-voices en/en_US/libritts_r/medium states License: CC BY 4.0.",
+      "parameters": {
+        "speaker": 0,
+        "length_scale": 1.0,
+        "noise_scale": 0.0,
+        "noise_w_scale": 0.0
+      },
+      "spoken_seconds": 10.682,
+      "deterministic": true,
+      "layer_id": "narration",
+      "gain_db": -2
+    }
+  ],
+  "commercial_use_cleared": true,
+  "attributions_required": [
+    "Voice synthesised with Piper using the LibriTTS-R voice (CC BY 4.0)."
+  ],
+  "status": "OK"
+}

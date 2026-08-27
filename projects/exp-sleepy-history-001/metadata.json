@@ -1,0 +1,113 @@
+{
+  "video_id": "exp-sleepy-history-001",
+  "created_utc": "2026-08-27T15:20:39Z",
+  "concept": "Deliberately monotone narration of dry factual material, 60 min",
+  "audience": "Adults 25-55 who sleep to podcasts/documentaries",
+  "hypothesis": "ADULT audience - avoids the Made-for-Kids revenue penalty entirely while keeping narrated-format differentiation. This is the key structural advantage. UNVERIFIED.",
+  "visual_style": "Dim archival-style stills, very slow fades - visuals deliberately uninteresting.",
+  "title_candidates": [
+    "The History of the Suez Canal | Boring Story for Sleep | 60 Minutes"
+  ],
+  "selected_title": "The History of the Suez Canal | Boring Story for Sleep | 60 Minutes",
+  "description": "A calm, factual history read slowly. Locally synthesised narration and ambience.",
+  "tags": [],
+  "scenes": [],
+  "thumbnail_concept": "Dim archival-style stills, very slow fades - visuals deliberately uninteresting.",
+  "target": {
+    "duration_seconds": 30.0,
+    "resolution": "1920x1080",
+    "fps": 30,
+    "aspect_ratio": "16:9"
+  },
+  "audio_plan": {
+    "mode": "single_track",
+    "requirement": "tts_required",
+    "capability": "AVAILABLE - local Piper narration (CC BY 4.0 voice, attribution required)",
+    "concept": "Flat, even TTS narration. Monotony is the feature, which lowers the TTS quality bar substantially.",
+    "composition": {
+      "normalize": true,
+      "target_lufs": -20,
+      "fade_out_seconds": 3,
+      "layers": [
+        {
+          "id": "bed",
+          "provider": "rain",
+          "params": {
+            "intensity": "light"
+          },
+          "gain_db": -18,
+          "fade_in_seconds": 2
+        },
+        {
+          "id": "narration",
+          "provider": "tts",
+          "start_seconds": 2,
+          "gain_db": -2,
+          "params": {
+            "text": "The Suez Canal was opened in eighteen sixty-nine, after ten years of construction. It runs for one hundred and twenty miles, linking the Mediterranean Sea to the Red Sea, and it removed the need for ships to travel around the whole of Africa."
+          }
+        }
+      ]
+    }
+  },
+  "provenance": {
+    "images": {
+      "provider": "local",
+      "model": null,
+      "notes": "manually supplied"
+    },
+    "audio": {
+      "provider": "rain+tts",
+      "model": "en_US-libritts_r-medium",
+      "notes": "composed locally: 2 layer(s)",
+      "commercial_use_cleared": true,
+      "attributions_required": [
+        "Voice synthesised with Piper using the LibriTTS-R voice (CC BY 4.0)."
+      ]
+    },
+    "text": {
+      "provider": null,
+      "model": null
+    }
+  },
+  "experiment": {
+    "generation_cost_usd": 0.0,
+    "generation_seconds": 16.28,
+    "variables": {
+      "niche": "bedtime_stories",
+      "length_minutes": 60,
+      "template": "templates/narrated_story.json"
+    },
+    "concept_id": "story-sleepy-history-adult",
+    "batch_id": "batch-001",
+    "niche": "bedtime_stories",
+    "continue_evidence": [
+      "Median view duration > 20 min",
+      "Adult (non-kids) RPM confirmed"
+    ],
+    "kill_evidence": [
+      "Factual error rate too high to verify economically",
+      "Retention < 5 min"
+    ],
+    "open_questions": [
+      "TTS engine adequate for flat long-form delivery (bar is lower here)",
+      "Fact-verification workflow cost per script"
+    ]
+  },
+  "status": {
+    "assets": "PENDING",
+    "render": "OK",
+    "qc": "PASS",
+    "package": "OK",
+    "overall": "READY_FOR_REVIEW",
+    "audio": "OK"
+  },
+  "history": [
+    {
+      "utc": "2026-08-27T15:21:00Z",
+      "action": "run",
+      "result": "READY_FOR_REVIEW",
+      "log": "projects/exp-sleepy-history-001/logs/run_20260827_152044.log"
+    }
+  ]
+}

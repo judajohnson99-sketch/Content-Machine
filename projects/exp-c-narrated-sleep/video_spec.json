@@ -1,0 +1,22 @@
+{
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "duration_seconds": 720.0,
+  "images": {
+    "source_dir": "images",
+    "seconds_per_image": 120.0
+  },
+  "audio": {
+    "file": "audio/track.wav"
+  },
+  "ken_burns": {
+    "enabled": true,
+    "zoom_start": 1.0,
+    "zoom_end": 1.08
+  },
+  "crossfade": {
+    "enabled": true,
+    "duration_seconds": 1.5
+  }
+}

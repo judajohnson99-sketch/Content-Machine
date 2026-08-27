@@ -1,0 +1,109 @@
+{
+  "video_id": "exp-brown-noise-002",
+  "created_utc": "2026-08-27T15:15:05Z",
+  "concept": "Single near-black still, continuous noise bed, 8h",
+  "audience": "Adults 25-55 who sleep with sound masking; light-sensitive sleepers; shift workers",
+  "hypothesis": "Watch-time-driven ad impressions on very long sessions; audience returns nightly. UNVERIFIED.",
+  "visual_style": "Very dark frame at or above ~#1a1a2e (perceived luma >=26) with a barely visible gradient. MEASURED: darker than this trips QC blackdetect. No motion.",
+  "title_candidates": [
+    "Brown Noise for Deep Sleep | 8 Hours | Dark Screen"
+  ],
+  "selected_title": "Brown Noise for Deep Sleep | 8 Hours | Dark Screen",
+  "description": "Continuous brown noise for sleep and sound masking. Locally synthesised audio, static low-luminance frame.",
+  "tags": [],
+  "scenes": [],
+  "thumbnail_concept": "Very dark frame at or above ~#1a1a2e (perceived luma >=26) with a barely visible gradient. MEASURED: darker than this trips QC blackdetect. No motion.",
+  "target": {
+    "duration_seconds": 60.0,
+    "resolution": "1920x1080",
+    "fps": 24,
+    "aspect_ratio": "16:9"
+  },
+  "audio_plan": {
+    "mode": "single_track",
+    "requirement": "synthesisable_now",
+    "capability": "AVAILABLE - FFmpeg can synthesise this today",
+    "concept": "Generated brown/pink noise. Fully synthesisable with FFmpeg's anoisesrc today - zero external dependency.",
+    "composition": {
+      "normalize": true,
+      "target_lufs": -20,
+      "fade_in_seconds": 4,
+      "fade_out_seconds": 4,
+      "layers": [
+        {
+          "id": "bed",
+          "provider": "noise",
+          "params": {
+            "color": "brown",
+            "amplitude": 0.7
+          }
+        }
+      ]
+    }
+  },
+  "provenance": {
+    "images": {
+      "provider": "local",
+      "model": null,
+      "notes": "manually supplied"
+    },
+    "audio": {
+      "provider": "noise",
+      "model": null,
+      "notes": "composed locally: 1 layer(s)",
+      "commercial_use_cleared": true,
+      "attributions_required": []
+    },
+    "text": {
+      "provider": null,
+      "model": null
+    }
+  },
+  "experiment": {
+    "generation_cost_usd": 0.0,
+    "generation_seconds": 19.09,
+    "variables": {
+      "niche": "adult_sleep",
+      "length_minutes": 480,
+      "template": "templates/long_static_ambient.json"
+    },
+    "concept_id": "sleep-brown-noise-dark",
+    "batch_id": "batch-001",
+    "niche": "adult_sleep",
+    "continue_evidence": [
+      "Median view duration > 30 min",
+      "Any measurable returning-viewer rate",
+      "Channel survives monetization review"
+    ],
+    "kill_evidence": [
+      "Median view duration < 5 min across 3 uploads",
+      "Monetization refused on inauthentic-content grounds"
+    ],
+    "open_questions": [
+      "Current YouTube inauthentic-content policy text and how it treats static-image noise uploads",
+      "Whether extreme-length uploads are favoured or suppressed by recommendation"
+    ]
+  },
+  "status": {
+    "assets": "PENDING",
+    "render": "OK",
+    "qc": "PASS",
+    "package": "OK",
+    "overall": "READY_FOR_REVIEW",
+    "audio": "OK"
+  },
+  "history": [
+    {
+      "utc": "2026-08-27T15:15:33Z",
+      "action": "run",
+      "result": "READY_FOR_REVIEW",
+      "log": "projects/exp-brown-noise-002/logs/run_20260827_151514.log"
+    },
+    {
+      "utc": "2026-08-27T15:19:29Z",
+      "action": "run",
+      "result": "READY_FOR_REVIEW",
+      "log": "projects/exp-brown-noise-002/logs/run_20260827_151910.log"
+    }
+  ]
+}

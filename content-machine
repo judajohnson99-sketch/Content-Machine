@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Content Machine entry point.
+#
+#   ./content-machine init <video-id> --images DIR --audio FILE
+#   ./content-machine validate <video-id>
+#   ./content-machine run <video-id>
+#   ./content-machine status <video-id>
+#   ./content-machine test
+#
+# Everything is delegated to the scripts/ modules; this only fixes the
+# working directory so relative paths behave the same wherever it's called.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$HERE"
+
+if [ "${1:-}" = "test" ]; then
+    exec python3 -m unittest discover -s tests -v
+fi
+
+exec python3 scripts/project.py "$@"

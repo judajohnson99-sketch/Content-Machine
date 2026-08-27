@@ -1,0 +1,138 @@
+{
+  "video_id": "exp-c-narrated-sleep",
+  "created_utc": "2026-08-27T15:41:42Z",
+  "concept": "Deliberately monotone narration of dry factual material, 60 min",
+  "audience": "Adults 25-55 who sleep to podcasts/documentaries",
+  "hypothesis": "ADULT audience - avoids the Made-for-Kids revenue penalty entirely while keeping narrated-format differentiation. This is the key structural advantage. UNVERIFIED.",
+  "visual_style": "Dim archival-style stills, very slow fades - visuals deliberately uninteresting.",
+  "title_candidates": [
+    "The Suez Canal | A Calm History for Sleep | 12 Minutes",
+    "A Quiet History of the Suez Canal | Bedtime Story for Adults",
+    "Sleepy History: The Suez Canal | 12 Minutes"
+  ],
+  "selected_title": "The Suez Canal | A Calm History for Sleep | 12 Minutes",
+  "description": "PLACEHOLDER - A calm, slowly read history of the Suez Canal, intended for sleep. Narration is synthesised locally with Piper using the LibriTTS-R voice (CC BY 4.0). Ambience is procedurally generated, not a field recording.",
+  "tags": [
+    "sleep story",
+    "calm history",
+    "bedtime story for adults",
+    "sleepy history"
+  ],
+  "scenes": [],
+  "thumbnail_concept": "Dim archival-style stills, very slow fades - visuals deliberately uninteresting.",
+  "target": {
+    "duration_seconds": 720.0,
+    "resolution": "1920x1080",
+    "fps": 30,
+    "aspect_ratio": "16:9"
+  },
+  "audio_plan": {
+    "mode": "single_track",
+    "requirement": "tts_required",
+    "capability": "AVAILABLE - local Piper narration (CC BY 4.0 voice, attribution required)",
+    "concept": "Flat, even TTS narration. Monotony is the feature, which lowers the TTS quality bar substantially.",
+    "composition": {
+      "normalize": true,
+      "target_lufs": -21,
+      "fade_in_seconds": 4,
+      "fade_out_seconds": 6,
+      "layers": [
+        {
+          "id": "bed",
+          "provider": "rain",
+          "params": {
+            "intensity": "light"
+          },
+          "gain_db": -6,
+          "fade_in_seconds": 3
+        },
+        {
+          "id": "narration",
+          "provider": "tts",
+          "start_seconds": 4,
+          "gain_db": -1,
+          "params": {
+            "text": "The Suez Canal. A quiet history, read slowly, for sleep. The canal runs through Egypt, connecting the Mediterranean Sea in the north to the Red Sea in the south. It opened in eighteen sixty-nine, after roughly ten years of construction. Before it existed, ships travelling between Europe and Asia sailed around the southern tip of Africa, a far longer journey. The canal has no locks. The seas at either end sit at broadly similar levels, so water passes along its length without the stepped chambers used on many other canals. It has been widened and deepened many times since it opened, as ships have grown larger. Today it remains one of the busiest shipping routes in the world. Rest now. The rain will continue.",
+            "voice": "en_US-libritts_r-medium",
+            "length_scale": 1.15,
+            "sentence_silence": 0.9
+          }
+        }
+      ]
+    }
+  },
+  "provenance": {
+    "images": {
+      "provider": "procedural/ffmpeg",
+      "model": null,
+      "production_grade": false,
+      "notes": "Current plates are procedural gradients (make_visuals.py, dust-archive style). The concept demands 'dim archival-style stills' - photographic or documentary imagery - which cannot be produced procedurally. BLOCKED on real archival-style assets."
+    },
+    "audio": {
+      "provider": "rain+tts",
+      "model": "en_US-libritts_r-medium",
+      "notes": "composed locally: 2 layer(s)",
+      "commercial_use_cleared": true,
+      "attributions_required": [
+        "Voice synthesised with Piper using the LibriTTS-R voice (CC BY 4.0)."
+      ]
+    },
+    "text": {
+      "provider": null,
+      "model": null
+    }
+  },
+  "experiment": {
+    "generation_cost_usd": 0.0,
+    "generation_seconds": 596.13,
+    "variables": {
+      "niche": "bedtime_stories",
+      "length_minutes": 60,
+      "template": "templates/narrated_story.json"
+    },
+    "concept_id": "story-sleepy-history-adult",
+    "batch_id": "batch-001",
+    "niche": "bedtime_stories",
+    "continue_evidence": [
+      "Median view duration > 20 min",
+      "Adult (non-kids) RPM confirmed"
+    ],
+    "kill_evidence": [
+      "Factual error rate too high to verify economically",
+      "Retention < 5 min"
+    ],
+    "open_questions": [
+      "TTS engine adequate for flat long-form delivery (bar is lower here)",
+      "Fact-verification workflow cost per script"
+    ]
+  },
+  "status": {
+    "assets": "PENDING",
+    "render": "OK",
+    "qc": "PASS",
+    "package": "OK",
+    "overall": "READY_FOR_REVIEW",
+    "audio": "OK"
+  },
+  "history": [
+    {
+      "utc": "2026-08-27T16:38:33Z",
+      "action": "run",
+      "result": "NEEDS_ATTENTION",
+      "log": "projects/exp-c-narrated-sleep/logs/run_20260827_162932.log"
+    },
+    {
+      "utc": "2026-08-27T16:50:55Z",
+      "action": "run",
+      "result": "READY_FOR_REVIEW",
+      "log": "projects/exp-c-narrated-sleep/logs/run_20260827_164059.log"
+    }
+  ],
+  "review_checklist": [
+    "Replace procedural plates with dim archival-style stills before publishing (the current plates do not meet the concept's canonical visual requirement).",
+    "FACT-CHECK the narration before publishing: opening date (1869), construction duration, absence of locks, and the sea-level claim.",
+    "Listen to the full narration for mispronunciations, especially proper nouns.",
+    "Confirm narration pacing suits sleep (length_scale 1.15).",
+    "Attribution for the LibriTTS-R voice (CC BY 4.0) must appear in the published description."
+  ]
+}

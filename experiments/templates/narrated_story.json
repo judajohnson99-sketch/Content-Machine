@@ -1,0 +1,23 @@
+{
+  "_comment": "Narrated story. Long holds per plate: at 1080p each image slot is a concurrent ffmpeg input, and short holds on a long video exceed MAX_IMAGE_SLOTS and get OOM-killed. 120s/plate keeps a 30-min story at ~16 slots. Real scene timing should follow the narration once per-scene timing exists.",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "duration_seconds": 1800,
+  "images": {
+    "source_dir": "images",
+    "seconds_per_image": 120.0
+  },
+  "audio": {
+    "file": "audio/track.wav"
+  },
+  "ken_burns": {
+    "enabled": true,
+    "zoom_start": 1.0,
+    "zoom_end": 1.08
+  },
+  "crossfade": {
+    "enabled": true,
+    "duration_seconds": 1.5
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "_comment": "Long ambient with imperceptible drift. Ken Burns costs ~35% more CPU (measured 2.14x vs 2.84x realtime). zoom_end kept very low so motion reads as alive, not restless.",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "duration_seconds": 10800,
+  "images": {
+    "source_dir": "images",
+    "seconds_per_image": 300
+  },
+  "audio": {
+    "file": "audio/track.wav"
+  },
+  "ken_burns": {
+    "enabled": true,
+    "zoom_start": 1.0,
+    "zoom_end": 1.06
+  },
+  "crossfade": {
+    "enabled": true,
+    "duration_seconds": 6.0
+  }
+}
