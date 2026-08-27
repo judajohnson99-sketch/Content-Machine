@@ -70,7 +70,7 @@
   },
   "experiment": {
     "generation_cost_usd": 0.0,
-    "generation_seconds": 1286.59,
+    "generation_seconds": 1380.55,
     "variables": {
       "niche": "adult_sleep",
       "length_minutes": 480,
@@ -99,7 +99,8 @@
     "qc": "PASS",
     "package": "OK",
     "overall": "READY_FOR_REVIEW",
-    "audio": "OK"
+    "audio": "OK",
+    "gate_digest": "aeae31703555d6703de80bbf231c4d1a5e9f5670ed4ff490d9bdf3b38e226cfd"
   },
   "history": [
     {
@@ -107,9 +108,18 @@
       "action": "run",
       "result": "READY_FOR_REVIEW",
       "log": "projects/exp-b-sleep-brown/logs/run_20260827_154700.log"
+    },
+    {
+      "utc": "2026-08-27T19:39:52Z",
+      "action": "run",
+      "result": "READY_FOR_REVIEW",
+      "log": "projects/exp-b-sleep-brown/logs/run_20260827_191651.log"
     }
   ],
   "review_checklist": [
+    "BLOCKER FOR PUBLISHING (not for review): the thumbnail candidates are frame grabs from a deliberately near-black render - flat dark rectangles with no text. They are unusable as YouTube thumbnails. A designed thumbnail (title text over a dark field) must be made before upload; the pipeline cannot currently produce one.",
+    "MONETIZATION RISK - weigh before uploading: YouTube's inauthentic-content policy names 'image slideshows ... with minimal or no narrative' and template-driven mass-produced content as ineligible to monetize (support.google.com/youtube/answer/1311392). A single static plate plus a generated noise bed is the least materially varied output this pipeline makes. This concept's own kill_evidence already includes 'Monetization refused on inauthentic-content grounds' - treat monetization as the primary thing this first upload is measuring.",
+    "The description says the audio 'loops without a seam'. It does not loop at all - 1800 s of brown noise is synthesised at full length. Reword to avoid implying a loop.",
     "Confirm the dark plate renders acceptably on OLED and on phone screens.",
     "Confirm 30 min is the right test length before committing to 8 h uploads."
   ]
