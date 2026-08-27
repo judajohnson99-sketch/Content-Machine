@@ -84,7 +84,7 @@
   },
   "experiment": {
     "generation_cost_usd": 0.0,
-    "generation_seconds": 596.13,
+    "generation_seconds": 614.94,
     "variables": {
       "niche": "bedtime_stories",
       "length_minutes": 60,
@@ -111,8 +111,9 @@
     "render": "OK",
     "qc": "PASS",
     "package": "OK",
-    "overall": "READY_FOR_REVIEW",
-    "audio": "OK"
+    "overall": "NEEDS_ATTENTION",
+    "audio": "OK",
+    "gate_digest": "7372a7a63f1f58581974e65f3011962fea72b8e0a04f34e38b27d25b7dc8e3e7"
   },
   "history": [
     {
@@ -126,6 +127,12 @@
       "action": "run",
       "result": "READY_FOR_REVIEW",
       "log": "projects/exp-c-narrated-sleep/logs/run_20260827_164059.log"
+    },
+    {
+      "utc": "2026-08-27T19:14:20Z",
+      "action": "run",
+      "result": "NEEDS_ATTENTION",
+      "log": "projects/exp-c-narrated-sleep/logs/run_20260827_190407.log"
     }
   ],
   "review_checklist": [

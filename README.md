@@ -127,6 +127,31 @@ Outputs `projects/my-video/output/`:
 A project only reaches `READY_FOR_REVIEW` when QC passes **and** a title and
 description are set. QC passing is not sufficient.
 
+### Check a project's state
+
+```bash
+./content-machine status my-video
+```
+
+Reports what the project's verdict is **now**, recomputed from what is on
+disk, rather than echoing what `metadata.json` recorded earlier:
+
+```
+project:  exp-c-narrated-sleep
+recorded: READY_FOR_REVIEW
+verdict:  NEEDS_ATTENTION
+blocking:
+  - visuals are not production-grade: ...
+WARNING:  recorded status 'READY_FOR_REVIEW' is STALE - a re-run would produce 'NEEDS_ATTENTION'
+digest:   CHANGED - project inputs differ from those the recorded verdict was computed from
+```
+
+`run` stores a `gate_digest` over every gate-relevant input (spec, asset
+hashes, provenance, title/description, the linked concept, audio clearance).
+`status` recomputes it, so editing a project after a run surfaces as
+staleness instead of leaving a verdict that no longer holds. Same exit codes
+as `run`, and it renders nothing.
+
 ### Render without a project
 
 ```bash
@@ -137,7 +162,7 @@ python3 scripts/qc.py --video output/video/test_render.mp4 --spec config/video_s
 ## Testing
 
 ```bash
-./content-machine test          # 28 tests, ~23s
+./content-machine test          # 83 tests, ~75s
 ```
 
 Covers the real CLIs end to end and inspects real media with ffprobe:
@@ -248,9 +273,16 @@ concept:
 - A plate standing in for "rain on a window at night" **is not** — that
   concept needs depicted imagery.
 
-Projects record this in `provenance.images.production_grade`. When it is
-`false`, `run` blocks READY_FOR_REVIEW and names the reason, so placeholder
-imagery cannot quietly ship.
+Projects record this in `provenance.images.production_grade`, and the gate
+is **fail-closed**: the claim must be explicitly `true`. An absent claim
+blocks review, because "nobody decided" is not "no objection".
+
+The gate does not rely on that claim alone. `make_visuals.py` stamps PNG
+`tEXt` provenance into every plate it generates, and flat fills are measured
+directly, so when a project's concept declares
+`procedural_visuals_acceptable: false` the **images themselves** are
+inspected. Editing `provenance.images` cannot relabel a placeholder as a
+production asset.
 
 ### Review checklist
 
@@ -328,8 +360,6 @@ Deliberately unimplemented, in dependency order:
 - **AI script/title/description generation** — `generate.py` shows the
   provider pattern; wiring it into `metadata.json` costs API credits, so it
   is left off by default.
-- **Narration / TTS and multi-track audio mixing** — no TTS engine is
-  installed; the pipeline currently takes one supplied audio track.
 - **YouTube publishing** — intentionally absent. The pipeline stops at
   `READY_FOR_REVIEW` with a complete package; publishing stays a human step.
 - **Analytics** — `publication_package.json` reserves `publish.publication_id`

@@ -47,8 +47,8 @@
         "policy_risk": 4
       },
       "assumptions_requiring_research": [
-        "Current YouTube inauthentic-content policy text and how it treats static-image noise uploads",
-        "Whether extreme-length uploads are favoured or suppressed by recommendation"
+        "Whether extreme-length uploads are favoured or suppressed by recommendation",
+        "RESOLVED 2026-08-27 - see policy_findings.youtube_inauthentic_content"
       ],
       "audio_source_requirement": "synthesisable_now",
       "spec_template": "templates/long_static_ambient.json",
@@ -793,5 +793,20 @@
     "render_throughput_measured": "MEASURED on this host (4 cores, no GPU). Render-only at 1080p: 3.33x realtime (24fps, no Ken Burns). BUT end-to-end `run` is much slower, because thumbnails and QC each decode the whole file again: a 30-min 1080p project took 1287s wall (1.4x realtime) for the full validate->render->thumbnail->QC->package cycle. Plan capacity from the 1.4x end-to-end figure, not the 3.33x render figure: a 3h upload costs roughly 2h of wall time, so 2-3 long videos/day is the realistic ceiling.",
     "audio_loop_seam": "RESOLVED for generated sources: scripts/audio.py synthesises noise/tone/rain at the exact target duration, so no loop exists to seam. File-backed sources can set crossfade_loop_seconds to acrossfade each join.",
     "narration_available": "Piper TTS installed locally: offline, free, ~0.33x realtime, byte-deterministic with noise scales zeroed. Voice en_US-libritts_r-medium is CC BY 4.0 (commercial OK, attribution required). This unblocks the tts_required concepts."
+  },
+  "policy_findings": {
+    "researched_utc": "2026-08-27",
+    "youtube_inauthentic_content": {
+      "source": "https://support.google.com/youtube/answer/1311392?hl=en",
+      "status": "VERIFIED - quoted from official YouTube channel monetization policy",
+      "finding": "The 'repetitious content' policy was renamed 'inauthentic content' on 2025-07-15. Explicitly NOT allowed to monetize: 'AI-generated content made with generic or unoriginal templates giving the impression of mass production' and 'Image slideshows, templated storylines, or scrolling text with minimal or no narrative'. The required standard is that 'the substance of each video should be materially varied and deliver creative, educational, or other value'.",
+      "implication": "This resolves the open assumption on sleep-brown-noise-dark. A single static plate plus a generated noise bed is the least 'materially varied' output this pipeline can make and carries minimal narrative or educational value, so it sits closest to the named prohibition. Narrated concepts whose script differs materially per video are substantially better positioned. This does NOT mean ambient channels cannot monetize - many demonstrably do - but it means monetization is the specific risk to measure first, exactly as this concept's kill_evidence already states."
+    },
+    "youtube_synthetic_content_disclosure": {
+      "source": "https://support.google.com/youtube/answer/14328491?hl=en",
+      "status": "VERIFIED for scope; the TTS conclusion is INFERENCE from that scope",
+      "finding": "Disclosure of 'altered or synthetic content' is required when AI is used to make a real person appear to say or do something they did not, to alter footage of a real event or place, or to generate a realistic scene that did not occur. Explicitly exempt: unrealistic/animated content, minor aesthetic edits, and production assistance such as AI-written scripts.",
+      "implication": "INFERENCE: generic TTS narration and abstract procedural plates fall outside the trigger, which is realistic depiction of real people/events/places. IMPORTANT CONSEQUENCE for story-sleepy-history-adult: satisfying its 'dim archival-style stills' requirement with AI-GENERATED archival-looking photographs would generate realistic imagery of a real place and era that never existed as depicted - which does plausibly trigger disclosure, and undermines a video whose value proposition is being factual. Genuine public-domain archival photography avoids both problems and satisfies the canonical visual requirement more honestly. Prefer PD sourcing over generation for this concept."
+    }
   }
 }

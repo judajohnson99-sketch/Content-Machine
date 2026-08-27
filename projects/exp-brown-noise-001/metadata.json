@@ -43,7 +43,7 @@
   },
   "experiment": {
     "generation_cost_usd": 0.0,
-    "generation_seconds": 14.11,
+    "generation_seconds": 14.4,
     "variables": {
       "niche": "adult_sleep",
       "length_minutes": 480,
@@ -71,7 +71,8 @@
     "render": "OK",
     "qc": "PASS",
     "package": "OK",
-    "overall": "READY_FOR_REVIEW"
+    "overall": "NEEDS_ATTENTION",
+    "gate_digest": "2ec8574fc2c6f951fc7fc4fdb4cdf44a282e8621a9d84176f808dd32041b66fa"
   },
   "history": [
     {
@@ -85,6 +86,12 @@
       "action": "run",
       "result": "READY_FOR_REVIEW",
       "log": "projects/exp-brown-noise-001/logs/run_20260827_150345.log"
+    },
+    {
+      "utc": "2026-08-27T19:03:26Z",
+      "action": "run",
+      "result": "NEEDS_ATTENTION",
+      "log": "projects/exp-brown-noise-001/logs/run_20260827_190312.log"
     }
   ]
 }

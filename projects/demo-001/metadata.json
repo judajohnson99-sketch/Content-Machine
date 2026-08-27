@@ -46,7 +46,7 @@
   },
   "experiment": {
     "generation_cost_usd": 0.0,
-    "generation_seconds": 5.46,
+    "generation_seconds": 6.11,
     "variables": {}
   },
   "status": {
@@ -54,7 +54,8 @@
     "render": "OK",
     "qc": "PASS",
     "package": "OK",
-    "overall": "READY_FOR_REVIEW"
+    "overall": "NEEDS_ATTENTION",
+    "gate_digest": "ca89fc724f3d48ccacb0ed5f4c77e0c799133f875be757d20d8b846a4aee975e"
   },
   "history": [
     {
@@ -74,6 +75,12 @@
       "action": "run",
       "result": "READY_FOR_REVIEW",
       "log": "projects/demo-001/logs/run_20260827_145111.log"
+    },
+    {
+      "utc": "2026-08-27T19:02:55Z",
+      "action": "run",
+      "result": "NEEDS_ATTENTION",
+      "log": "projects/demo-001/logs/run_20260827_190250.log"
     }
   ]
 }
