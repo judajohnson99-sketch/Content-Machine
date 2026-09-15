@@ -739,7 +739,7 @@ def _visual_blockers(pdir, metadata, images_provenance):
 
 
 def gate_blockers(pdir, metadata, qc_status, qc_failures, has_thumbnail,
-                  audio_manifest):
+                  audio_manifest, storyboard=None, storyboard_report=None):
     """Every rule standing between a rendered project and READY_FOR_REVIEW.
 
     Single source of truth, shared by ``run`` and ``status``. Keeping one
