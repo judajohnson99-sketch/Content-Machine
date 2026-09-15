@@ -34,6 +34,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audio as audio_mod  # noqa: E402
+import creative as creative_mod  # noqa: E402
+import generation  # noqa: E402
 import make_visuals  # noqa: E402
 import qc  # noqa: E402
 import render  # noqa: E402
@@ -367,6 +369,78 @@ def cmd_validate(args):
 # run
 # --------------------------------------------------------------------------
 
+def cmd_creative(args):
+    """Fill in title, script, description, image direction and the
+    executable audio plan from the project's linked concept.
+
+    Deliberately mirrors cmd_audio/cmd_visuals: it edits metadata fields,
+    not gate inputs. It never touches provenance.images.production_grade -
+    that claim stays a human act, exactly as it does everywhere else in this
+    module.
+    """
+    pdir = project_dir(args.video_id)
+    spec_path = pdir / "video_spec.json"
+    metadata_path = pdir / "metadata.json"
+    if not spec_path.is_file() or not metadata_path.is_file():
+        log.error("Not a project (missing video_spec.json/metadata.json): %s", pdir)
+        return 1
+
+    spec_raw = json.loads(spec_path.read_text())
+    metadata = json.loads(metadata_path.read_text())
+
+    concept_id = (metadata.get("experiment") or {}).get("concept_id")
+    concept = _load_concept(concept_id) if concept_id else None
+    if concept is None:
+        log.error(
+            "No concept linked (metadata.experiment.concept_id). The creative "
+            "brief is generated from a concept's own fields, not invented - "
+            "scaffold the project from one with `experiment.py scaffold`."
+        )
+        return 1
+
+    target_seconds = spec_raw.get("duration_seconds")
+    try:
+        brief = creative_mod.generate_brief(concept, target_seconds)
+    except creative_mod.CreativeError as e:
+        log.error("Creative brief failed: %s", e)
+        return 1
+
+    placeholder_title = not metadata.get("selected_title") or metadata["selected_title"] == PLACEHOLDER_TITLE
+    if placeholder_title or args.force:
+        metadata["selected_title"] = brief["title"]
+        metadata.setdefault("title_candidates", [])
+        if brief["title"] not in metadata["title_candidates"]:
+            metadata["title_candidates"].append(brief["title"])
+    if not metadata.get("description") or args.force:
+        metadata["description"] = brief["description"]
+    if not metadata.get("script") or args.force:
+        metadata["script"] = brief["narration_script"]
+
+    visual_plan = metadata.setdefault("visual_plan", {})
+    if not visual_plan.get("prompt") or args.force:
+        visual_plan["prompt"] = brief["image_prompt"]
+        visual_plan["negative_prompt"] = brief["negative_prompt"]
+        visual_plan["style"] = creative_mod.pick_procedural_style(concept)
+
+    audio_plan = metadata.setdefault("audio_plan", {})
+    if not (audio_plan.get("composition") or {}).get("layers") or args.force:
+        composition = creative_mod.build_audio_composition(
+            concept, target_seconds, brief["narration_script"])
+        if composition is None:
+            log.warning(
+                "No synthesisable audio for requirement '%s' "
+                "(concept '%s'). Audio composition not written; "
+                "supply a real track before `audio`/`run`.",
+                concept.get("audio_source_requirement"), concept_id,
+            )
+        else:
+            audio_plan["composition"] = composition
+
+    save_metadata(pdir, metadata)
+    log.info("Creative brief written: title=%r", metadata["selected_title"])
+    return 0
+
+
 def cmd_audio(args):
     """Compose this project's audio track from its declared audio plan.
 
@@ -429,6 +503,138 @@ def cmd_audio(args):
     for attribution in manifest["attributions_required"]:
         log.info("Attribution required: %s", attribution)
     log.info("Now run: ./content-machine run %s", args.video_id)
+    return 0
+
+
+def cmd_visuals(args):
+    """Generate this project's images through the provider router.
+
+    Deliberately mirrors cmd_audio: the assets are what we are about to
+    create, so full project validation cannot pass yet.
+
+    The provider actually used is recorded in provenance, and
+    ``production_grade`` is never set to true here. A machine can establish
+    that an image is procedural (and therefore not production-grade); it
+    cannot establish the opposite. Affirming a real asset stays a human act,
+    which is what keeps READY_FOR_REVIEW a meaningful boundary.
+    """
+    pdir = project_dir(args.video_id)
+    spec_path = pdir / "video_spec.json"
+    metadata_path = pdir / "metadata.json"
+    if not spec_path.is_file() or not metadata_path.is_file():
+        log.error("Not a project (missing video_spec.json/metadata.json): %s", pdir)
+        return 1
+
+    spec_raw = json.loads(spec_path.read_text())
+    metadata = json.loads(metadata_path.read_text())
+    plan = (metadata.get("visual_plan") or {})
+
+    prompt = args.prompt or plan.get("prompt")
+    if not prompt:
+        log.error("No prompt. Pass --prompt or set metadata.visual_plan.prompt")
+        return 1
+
+    # Whether depicted imagery is mandatory is a property of the concept, not
+    # a flag the caller guesses at. If the concept says procedural plates are
+    # unacceptable, abstract-only providers are not candidates - otherwise we
+    # would generate assets the publication gate is guaranteed to reject.
+    concept_id = (metadata.get("experiment") or {}).get("concept_id")
+    concept = _load_concept(concept_id) if concept_id else None
+    if args.depicted:
+        require_depicted = True
+    elif concept is not None:
+        require_depicted = not concept.get("procedural_visuals_acceptable", False)
+    else:
+        require_depicted = False
+
+    request = generation.GenerationRequest(
+        prompt=prompt,
+        negative_prompt=args.negative or plan.get("negative_prompt"),
+        width=args.width or spec_raw.get("width", 1920),
+        height=args.height or spec_raw.get("height", 1080),
+        count=args.count or plan.get("count", 1),
+        seed=args.seed if args.seed is not None else plan.get("seed", 20260827),
+        model=args.model or plan.get("model"),
+        style=args.style or plan.get("style", "deep-night"),
+        require_depicted=require_depicted,
+    )
+
+    if require_depicted:
+        log.info("concept requires depicted imagery; abstract-only providers excluded")
+    router = generation.Router()
+    try:
+        job = router.generate(request, pdir / "images")
+    except generation.GenerationError as e:
+        metadata.setdefault("status", {})["visuals"] = "FAILED"
+        save_metadata(pdir, metadata)
+        log.error("Visual generation failed: %s", e)
+        for attempt in e.attempts:
+            log.error("  - %s: %s - %s", attempt["provider"], attempt["outcome"],
+                      attempt.get("detail", ""))
+        if require_depicted:
+            log.error("Bring ComfyUI online (COMFYUI_URL) or configure an image API.")
+        return 1
+
+    provider = job["provider"]
+    depicted = job.get("produces_depicted", False)
+    metadata.setdefault("status", {})["visuals"] = "OK"
+    images_prov = metadata.setdefault("provenance", {}).setdefault("images", {})
+    # A production-grade claim is about specific assets. If this run produced
+    # different ones, any earlier claim no longer describes what is on disk,
+    # so it is cleared rather than inherited. A reused job means the assets
+    # are unchanged, and an existing claim still stands.
+    new_assets = images_prov.get("job_id") != job["job_id"]
+    images_prov.update({
+        "provider": provider,
+        "model": job.get("model"),
+        "job_id": job["job_id"],
+        "provider_job_id": job.get("provider_job_id"),
+        "generated_at": job.get("completed_at"),
+        "cost_usd": job.get("cost_usd"),
+        "notes": job.get("notes") or f"generated via {provider}",
+    })
+    if not depicted:
+        # An abstract-only provider is decisive evidence AGAINST production
+        # grade, so record it. The reverse is not inferable: a machine cannot
+        # certify that an image is a good asset, so a depicted provider leaves
+        # the claim for a human and review stays blocked until they make it.
+        images_prov["production_grade"] = False
+    elif new_assets:
+        images_prov["production_grade"] = None
+    save_metadata(pdir, metadata)
+
+    log.info("Visuals: %d asset(s) via %s (job %s)",
+             len(job["assets"]), provider, job["job_id"])
+    for asset in job["assets"]:
+        log.info("  %s", asset)
+    if not depicted:
+        log.warning("%s produces abstract plates, not depicted imagery; "
+                    "production_grade recorded as false.", provider)
+    elif images_prov.get("production_grade") is not True:
+        log.info("Set provenance.images.production_grade once you have "
+                 "reviewed these assets; review is blocked until you do.")
+    log.info("Now run: ./content-machine run %s", args.video_id)
+    return 0
+
+
+def cmd_providers(args):
+    """Report which generation providers are reachable right now."""
+    router = generation.Router()
+    request = generation.GenerationRequest(prompt="", require_depicted=args.depicted)
+    log.info("routing order: %s", " -> ".join(router.order))
+    for entry in router.status(request):
+        flags = []
+        if not entry["configured"]:
+            flags.append("unconfigured")
+        if entry["costs_money"]:
+            flags.append("COSTS MONEY")
+        if not entry["produces_depicted"]:
+            flags.append("abstract only")
+        if entry["in_cooldown"]:
+            flags.append(f"cooldown {entry['cooldown_remaining_seconds']:.0f}s")
+        suffix = f"  [{', '.join(flags)}]" if flags else ""
+        print(f"{'OK  ' if entry['healthy'] else 'DOWN'}  "
+              f"{entry['provider']:<12} {entry['detail']}{suffix}")
     return 0
 
 
@@ -820,6 +1026,67 @@ def cmd_run(args):
         handler.close()
 
 
+def cmd_produce(args):
+    """CONCEPT -> creative -> images -> audio -> render -> QC -> package.
+
+    Orchestration only: every stage below is the existing, independently
+    tested command, called the same way the CLI calls it. Scaffolding a new
+    project shells out to experiment.py rather than importing it, since
+    experiment.py already imports this module - importing it back would be
+    circular for no benefit over the same CLI boundary every other stage
+    already crosses.
+    """
+    pdir = project_dir(args.video_id)
+    if not pdir.exists():
+        if not args.concept_id:
+            log.error(
+                "Project %s does not exist and no --concept-id was given "
+                "to scaffold one from.", args.video_id)
+            return 1
+        log.info("=== Stage 1/5: concept -> scaffold ===")
+        scaffold_cmd = [sys.executable, str(ROOT / "scripts" / "experiment.py"), "scaffold",
+                        args.concept_id, args.video_id]
+        if args.duration:
+            scaffold_cmd += ["--duration", str(args.duration)]
+        rc = subprocess.run(scaffold_cmd, cwd=str(ROOT)).returncode
+        if rc != 0:
+            log.error("Scaffold failed (exit %d)", rc)
+            return rc
+    else:
+        log.info("=== Stage 1/5: concept === reusing existing project %s", args.video_id)
+
+    log.info("=== Stage 2/5: creative (title, script, description, image direction, audio plan) ===")
+    rc = cmd_creative(argparse.Namespace(video_id=args.video_id, force=False))
+    if rc != 0:
+        return rc
+
+    log.info("=== Stage 3/5: images ===")
+    rc = cmd_visuals(argparse.Namespace(
+        video_id=args.video_id, prompt=None, negative=None, count=None,
+        width=None, height=None, seed=None, model=None, style=None, depicted=False))
+    if rc != 0:
+        return rc
+
+    if args.production_grade_visuals is not None:
+        # A human passed this explicitly on the command line - recorded
+        # exactly as `init` records it, and applied AFTER cmd_visuals:
+        # cmd_visuals unconditionally records what the provider actually
+        # produced (False for procedural), so setting this claim any
+        # earlier would just be overwritten by that.
+        metadata = json.loads((pdir / "metadata.json").read_text())
+        metadata.setdefault("provenance", {}).setdefault("images", {})[
+            "production_grade"] = args.production_grade_visuals
+        save_metadata(pdir, metadata)
+
+    log.info("=== Stage 4/5: audio ===")
+    rc = cmd_audio(argparse.Namespace(video_id=args.video_id, duration=None))
+    if rc != 0:
+        return rc
+
+    log.info("=== Stage 5/5: render -> QC -> package ===")
+    return cmd_run(argparse.Namespace(video_id=args.video_id))
+
+
 def save_metadata(pdir, metadata):
     (pdir / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
 
@@ -858,11 +1125,37 @@ def main():
     p_val.add_argument("video_id")
     p_val.set_defaults(func=cmd_validate)
 
+    p_creative = sub.add_parser(
+        "creative", help="generate title, script, description, image direction and audio plan")
+    p_creative.add_argument("video_id")
+    p_creative.add_argument("--force", action="store_true",
+                            help="overwrite fields already set, instead of filling in only what is missing")
+    p_creative.set_defaults(func=cmd_creative)
+
     p_audio = sub.add_parser("audio", help="compose the project's audio track from its audio plan")
     p_audio.add_argument("video_id")
     p_audio.add_argument("--duration", type=float, default=None,
                          help="override target seconds (defaults to the video duration)")
     p_audio.set_defaults(func=cmd_audio)
+
+    p_vis = sub.add_parser("visuals", help="generate the project's images via the provider router")
+    p_vis.add_argument("video_id")
+    p_vis.add_argument("--prompt", default=None, help="defaults to metadata.visual_plan.prompt")
+    p_vis.add_argument("--negative", default=None)
+    p_vis.add_argument("--count", type=int, default=None)
+    p_vis.add_argument("--width", type=int, default=None)
+    p_vis.add_argument("--height", type=int, default=None)
+    p_vis.add_argument("--seed", type=int, default=None)
+    p_vis.add_argument("--model", default=None)
+    p_vis.add_argument("--style", default=None, help="procedural fallback style")
+    p_vis.add_argument("--depicted", action="store_true",
+                       help="require depicted imagery even if the concept allows plates")
+    p_vis.set_defaults(func=cmd_visuals)
+
+    p_prov = sub.add_parser("providers", help="show generation provider health")
+    p_prov.add_argument("--depicted", action="store_true",
+                        help="only providers that can produce depicted imagery")
+    p_prov.set_defaults(func=cmd_providers)
 
     p_run = sub.add_parser("run", help="validate -> render -> thumbnails -> QC -> package")
     p_run.add_argument("video_id")
@@ -871,6 +1164,19 @@ def main():
     p_status = sub.add_parser(
         "status", help="report a project's verdict and whether it still applies")
     p_status.add_argument("video_id")
+
+    p_produce = sub.add_parser(
+        "produce", help="concept -> creative -> images -> audio -> render -> QC -> package")
+    p_produce.add_argument("video_id")
+    p_produce.add_argument("--concept-id", dest="concept_id", default=None,
+                           help="scaffold a new project from this concept if video_id doesn't exist yet")
+    p_produce.add_argument("--duration", type=float, default=None,
+                           help="override the concept template's duration, in seconds")
+    p_produce.add_argument(
+        "--production-grade-visuals", dest="production_grade_visuals",
+        action="store_const", const=True, default=None,
+        help="declare the generated visuals as production-grade (a human decision - see init)")
+    p_produce.set_defaults(func=cmd_produce)
     p_status.set_defaults(func=cmd_status)
 
     args = parser.parse_args()

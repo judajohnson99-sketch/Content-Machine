@@ -11,7 +11,10 @@ projects/*/thumbnail/
 # Agent skills installed by `npx skills add` (vendored tooling, not project source).
 .agents/
 
-# Local virtualenv and knowledge-graph output.
+# Local virtualenv and derived knowledge-graph output. The bare pattern
+# matches at any depth, so it covers both the code graph at the repo root
+# and the knowledge graph at knowledge/graphify-out/. The knowledge vault
+# itself (knowledge/**.md) is source and IS tracked.
 .venv/
 graphify-out/
 
@@ -25,3 +28,30 @@ graphify-out/
 # audio_manifest.json is kept - it carries the licence/provenance record, which
 # is NOT reproducible by inspection.
 projects/*/audio/track.wav
+
+# Generation job state (runtime, not source)
+jobs/
+
+# Local AI/tool runtime state
+.headroom/
+.serena/
+.claude/.headroom_wrap_settings.lock
+
+# Generated project/runtime assets
+projects/
+output/
+graphify-out/
+
+# Local test/sync artifacts
+SYNC_TEST.txt
+
+# Archives/backups
+*.tar
+*.tar.gz
+*.zip
+
+# Python/runtime caches
+__pycache__/
+*.pyc
+.venv/
+venv/

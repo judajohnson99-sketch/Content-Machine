@@ -5,6 +5,9 @@
 #   ./content-machine validate <video-id>
 #   ./content-machine run <video-id>
 #   ./content-machine status <video-id>
+#   ./content-machine knowledge <context|capture|refresh|status|query|open>
+#   ./content-machine experiment <list|show|blockers|validate|scaffold>
+#   ./content-machine produce <video-id> --concept-id <id>
 #   ./content-machine test
 #
 # Everything is delegated to the scripts/ modules; this only fixes the
@@ -16,6 +19,16 @@ cd "$HERE"
 
 if [ "${1:-}" = "test" ]; then
     exec python3 -m unittest discover -s tests -v
+fi
+
+if [ "${1:-}" = "knowledge" ]; then
+    shift
+    exec python3 scripts/knowledge.py "$@"
+fi
+
+if [ "${1:-}" = "experiment" ]; then
+    shift
+    exec python3 scripts/experiment.py "$@"
 fi
 
 exec python3 scripts/project.py "$@"

@@ -471,5 +471,144 @@ class TestProjectRun(ProjectTestCase):
                          "re-running the same project produced a different video")
 
 
+class ProduceTestCase(ProjectTestCase):
+    """TEST_MODE=1 for every subprocess: the creative LLM call must never
+    reach the network in this suite, exactly like generate.py's own tests."""
+
+    def cm(self, *args):
+        env = dict(os.environ, TEST_MODE="1")
+        return subprocess.run(
+            [str(CLI), *args], capture_output=True, text=True, cwd=str(ROOT), env=env)
+
+
+class TestCreativeCommand(ProduceTestCase):
+
+    def test_fills_in_title_description_visual_and_audio_plan(self):
+        self.init_project()
+        self.write_metadata({
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                           "generation_cost_usd": 0.0, "generation_seconds": None,
+                           "variables": {}},
+        })
+        proc = self.cm("creative", self.video_id)
+        self.assertEqual(proc.returncode, EXIT_OK, proc.stderr)
+
+        meta = self.metadata()
+        self.assertNotEqual(meta["selected_title"], "")
+        self.assertTrue(meta["selected_title"].startswith("[MOCK]"))
+        self.assertTrue(meta["description"])
+        self.assertEqual(meta["visual_plan"]["style"], "deep-night")
+        self.assertTrue(meta["visual_plan"]["prompt"])
+        layers = meta["audio_plan"]["composition"]["layers"]
+        self.assertEqual(layers[0]["provider"], "noise")
+        self.assertEqual(layers[0]["params"]["color"], "brown")
+
+    def test_without_force_does_not_overwrite_an_existing_title(self):
+        self.init_project("--title", "Hand-picked Title")
+        self.write_metadata({
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                           "generation_cost_usd": 0.0, "generation_seconds": None,
+                           "variables": {}},
+        })
+        proc = self.cm("creative", self.video_id)
+        self.assertEqual(proc.returncode, EXIT_OK, proc.stderr)
+        self.assertEqual(self.metadata()["selected_title"], "Hand-picked Title")
+
+    def test_force_overwrites_an_existing_title(self):
+        self.init_project("--title", "Hand-picked Title")
+        self.write_metadata({
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                           "generation_cost_usd": 0.0, "generation_seconds": None,
+                           "variables": {}},
+        })
+        proc = self.cm("creative", self.video_id, "--force")
+        self.assertEqual(proc.returncode, EXIT_OK, proc.stderr)
+        self.assertNotEqual(self.metadata()["selected_title"], "Hand-picked Title")
+
+    def test_never_sets_production_grade(self):
+        """The creative step must not touch the one claim only a human may
+        make - regardless of what the concept allows."""
+        self.init_project()
+        self.write_metadata({
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                           "generation_cost_usd": 0.0, "generation_seconds": None,
+                           "variables": {}},
+        })
+        proc = self.cm("creative", self.video_id)
+        self.assertEqual(proc.returncode, EXIT_OK, proc.stderr)
+        self.assertIsNone(
+            self.metadata()["provenance"]["images"].get("production_grade"))
+
+    def test_refuses_without_a_linked_concept(self):
+        self.init_project()
+        proc = self.cm("creative", self.video_id)
+        self.assertEqual(proc.returncode, EXIT_ERROR)
+
+    def test_tts_required_concept_without_narration_warns_and_leaves_composition_unset(self):
+        self.init_project()
+        self.write_metadata({
+            "experiment": {"concept_id": "explainer-idea-summary-narrated",
+                           "generation_cost_usd": 0.0, "generation_seconds": None,
+                           "variables": {}},
+        })
+        proc = self.cm("creative", self.video_id)
+        self.assertEqual(proc.returncode, EXIT_OK, proc.stderr)
+        meta = self.metadata()
+        self.assertTrue(meta["script"])  # the mock narration was written...
+        # ...and consumed into a real tts layer, since TEST_MODE's mock
+        # narration is non-empty for a tts_required concept.
+        self.assertEqual(meta["audio_plan"]["composition"]["layers"][0]["provider"], "tts")
+
+
+class TestProduceCommand(ProduceTestCase):
+
+    def test_end_to_end_from_a_fresh_concept_reaches_needs_attention(self):
+        """No images, no audio file supplied by hand: concept -> MP4."""
+        video_id = f"pytest-produce-{self.video_id}"
+        self.addCleanup(lambda: shutil.rmtree(ROOT / "projects" / video_id, ignore_errors=True))
+
+        proc = self.cm("produce", video_id, "--concept-id", "sleep-brown-noise-dark",
+                       "--duration", "3")
+        self.assertEqual(proc.returncode, EXIT_NEEDS_ATTENTION, proc.stderr + proc.stdout)
+
+        pdir = ROOT / "projects" / video_id
+        mp4 = pdir / "output" / f"{video_id}.mp4"
+        self.assertTrue(mp4.is_file())
+        self.assertGreater(mp4.stat().st_size, 1024)
+
+        report = json.loads((pdir / "output" / "qc_report.json").read_text())
+        self.assertEqual(report["status"], "PASS")
+
+        package = json.loads((pdir / "output" / "publication_package.json").read_text())
+        self.assertEqual(package["status"], "NEEDS_ATTENTION")
+        self.assertTrue(
+            any("production-grade" in issue for issue in package["blocking_issues"]),
+            f"expected only the human production-grade claim to block; got {package['blocking_issues']}",
+        )
+
+    def test_explicit_production_grade_flag_reaches_ready_for_review(self):
+        """The one human decision point still works when produce is the
+        caller - proof the gate was reused, not weakened, by orchestration."""
+        video_id = f"pytest-produce-{self.video_id}"
+        self.addCleanup(lambda: shutil.rmtree(ROOT / "projects" / video_id, ignore_errors=True))
+
+        proc = self.cm("produce", video_id, "--concept-id", "sleep-brown-noise-dark",
+                       "--duration", "3", "--production-grade-visuals")
+        self.assertEqual(proc.returncode, EXIT_OK, proc.stderr + proc.stdout)
+        package = json.loads(
+            (ROOT / "projects" / video_id / "output" / "publication_package.json").read_text())
+        self.assertEqual(package["status"], "READY_FOR_REVIEW")
+
+    def test_refuses_a_missing_project_without_a_concept_id(self):
+        proc = self.cm("produce", "pytest-does-not-exist-anywhere")
+        self.assertEqual(proc.returncode, EXIT_ERROR)
+
+    def test_unknown_concept_id_fails_at_the_scaffold_stage(self):
+        video_id = f"pytest-produce-{self.video_id}"
+        proc = self.cm("produce", video_id, "--concept-id", "no-such-concept-xyz")
+        self.assertNotEqual(proc.returncode, EXIT_OK)
+        self.assertFalse((ROOT / "projects" / video_id).exists())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
