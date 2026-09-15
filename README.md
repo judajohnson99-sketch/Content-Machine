@@ -11,6 +11,9 @@ publishing**. Everything below is implemented and tested; see
                     ┌─ ComfyUI (workstation, preferred)
 generation router ──┼─ procedural (always-on, abstract only)
         │           └─ external API (off unless configured)
+        │
+worker queue ───────── remote GPU, when the workstation is off right now
+        │              (the PC dials in; the job waits until it does)
         ▼
 project assets ─► validate ─► render ─► thumbnails ─► QC ─► package ─► READY_FOR_REVIEW ─► [human] ─► publish
                                                                                             (not built)
@@ -26,6 +29,9 @@ project assets ─► validate ─► render ─► thumbnails ─► QC ─► 
 | Fixtures | `scripts/make_test_fixtures.py` | generates test images/audio via FFmpeg |
 | Article generator | `generate.py` | pre-existing; writes Markdown articles via an LLM |
 | Knowledge layer | `scripts/knowledge.py` | the Obsidian vault and its derived Graphify graph |
+| Worker control plane | `scripts/worker.py` | the remote-GPU queue: leases, retries, manifests, audit trail |
+| Worker API | `scripts/worker_api.py` | the HTTP surface the worker dials into |
+| Worker agent | `scripts/worker_agent.py` | runs **on** the GPU machine; outbound only |
 
 Design notes:
 
@@ -115,6 +121,18 @@ ComfyUI, then procedural plates, then an external API. See
 [Generation](#generation). The prompt comes from `metadata.visual_plan.prompt`
 unless `--prompt` overrides it.
 
+### Queue a render for the GPU machine
+
+```bash
+./content-machine worker enroll home-gpu-01 --capabilities comfyui,sd15
+./content-machine worker serve                 # on the VPS
+./content-machine worker agent                 # on the GPU machine
+./content-machine worker enqueue my-video
+./content-machine worker jobs
+```
+
+Full protocol, lifecycle and safety rules: [Remote GPU worker](#remote-gpu-worker).
+
 ### Validate
 
 ```bash
@@ -180,7 +198,7 @@ python3 scripts/qc.py --video output/video/test_render.mp4 --spec config/video_s
 ## Testing
 
 ```bash
-./content-machine test          # 132 tests, ~85s
+./content-machine test          # 319 tests, ~85s
 ```
 
 Covers the real CLIs end to end and inspects real media with ffprobe:
@@ -194,6 +212,15 @@ malformed provider responses, job reuse and restart recovery, and the
 production-grade claim lifecycle. The ComfyUI adapter runs against a local
 stand-in HTTP server, so no test needs a GPU, the workstation, or a paid API.
 
+The [remote worker](#remote-gpu-worker) is covered over real sockets: token
+authentication and revocation, derived liveness, capability matching, claim
+and lease semantics, a zombie worker's stale lease being refused, lease
+expiry returning work to the queue, retry exhaustion, permanent failure,
+every illegal transition, upload digest/size/filename/extension refusals,
+manifest re-verification, the handoff into the generation job store, and a
+full agent cycle end to end. Also the invariant that matters most: a job
+queued while the PC is off waits at attempt 0 and never fails.
+
 Regenerate fixtures with `python3 scripts/make_test_fixtures.py`.
 
 ## Troubleshooting
@@ -206,6 +233,12 @@ Regenerate fixtures with `python3 scripts/make_test_fixtures.py`.
 | `unreadable/corrupt image(s)` | ffprobe reports zero dimensions — the file is damaged despite a valid extension. |
 | `NEEDS_ATTENTION` with QC PASS | Title/description missing in `metadata.json`. |
 | Render fails | The last 40 lines of ffmpeg stderr are logged, and copied into `projects/<id>/logs/`. |
+| Worker job stuck at `WAITING_FOR_CAPABLE_WORKER` | Nothing is wrong: no `ONLINE` worker has the required capabilities. `worker workers` shows why. The job waits at attempt 0. |
+| `cannot listen on 127.0.0.1:8788` | Something else has the port. Set `WORKER_API_PORT` or pass `--port`. |
+| Agent: `CONTROL_PLANE_URL is not set` | None of the three worker variables has a default. See [Setup](#setup). |
+| Agent: `control plane refused ... (HTTP 401)` | Wrong or revoked token. Re-issue with `worker enroll <id> --rotate` (this invalidates the current one). |
+| Agent: `(HTTP 409) stale or wrong lease` | The lease expired and the job was returned to the queue mid-render. Raise `WORKER_LEASE_SECONDS` if renders legitimately take longer. |
+| Job `FAILED` after one attempt | A permanent fault the worker reported — usually a missing checkpoint or a bad workflow template. `worker show <job-id>` has the detail. |
 
 ## Audio
 
@@ -366,6 +399,150 @@ different pipeline without touching code.
 
 Do not expose ComfyUI to the public internet. Keep it on the LAN or behind a
 VPN/SSH tunnel; it has no authentication of its own.
+
+## Remote GPU worker
+
+The VPS is always on and has no GPU. The workstation has a GPU and is off
+most of the time, behind a home router. A remote worker reconciles those two
+facts: **the VPS holds the queue and the truth, and the PC is a replaceable
+worker that dials out to ask for work.**
+
+```
+VPS (control plane, always on)             PC (worker, GTX 1060 3GB)
+  jobs/queue/<job_id>.json                   ./content-machine worker agent
+  jobs/workers/home-gpu-01.json   <--------- outbound HTTPS only
+  ./content-machine worker serve             ComfyUI on 127.0.0.1:8188
+```
+
+Nothing ever connects *to* the PC. There is no inbound path into the home
+network, no port forwarded, and ComfyUI is never exposed or proxied — the
+only thing that talks to it is the agent on that same machine, over
+loopback. Losing the PC costs throughput, not data.
+
+### Why a queue and not a provider
+
+The generation router is synchronous, and the PC being off is the normal
+state, not an error. Routing to a provider that cannot answer for six hours
+would burn retry attempts and put a cooldown on a machine that is merely
+asleep. A queued job instead simply **waits**: it consumes no attempt, trips
+no cooldown, never fails, and says so — `WAITING_FOR_CAPABLE_WORKER`.
+
+The connection back to the pipeline is the job id. A job id *is* a
+`GenerationRequest` digest, which is already the router's idempotency key
+(see [Jobs](#jobs)), so when a remote render finishes the control plane writes
+an ordinary completed-job record and the next `visuals` run **reuses** it
+instead of regenerating. Nothing above `generation.py` knows a worker exists.
+
+### Setup
+
+On the VPS, enroll the worker. The token is printed once; only its SHA-256 is
+stored, so a leaked registry file does not leak the credential.
+
+```bash
+./content-machine worker enroll home-gpu-01 --capabilities comfyui,sd15
+./content-machine worker serve                    # binds 127.0.0.1:8788
+```
+
+On the GPU machine, set three things — none of them has a default — and run
+the agent:
+
+```bash
+CONTROL_PLANE_URL=https://vps.example      # where the VPS answers
+WORKER_TOKEN=<the token printed above>     # keep it in .env, gitignored
+COMFYUI_URL=http://127.0.0.1:8188          # that machine's own ComfyUI
+
+./content-machine worker agent
+```
+
+`COMFYUI_URL` is not defaulted to loopback even here, where loopback is the
+right answer: "unset" has to keep meaning "no ComfyUI on this host" on every
+machine, or the VPS inherits a default that makes it claim to be a
+workstation.
+
+**The control plane binds loopback and speaks plain HTTP.** The bearer token
+travels in a header, so put TLS in front of it — a reverse proxy, or reach it
+through an SSH or WireGuard tunnel. Binding anything else has to be asked for
+explicitly (`WORKER_API_BIND`), because it cannot be the safe default.
+
+### Queueing work
+
+```bash
+./content-machine worker enqueue <video-id>            # from the visual plan
+./content-machine worker enqueue --prompt "..." --out DIR
+./content-machine worker jobs
+./content-machine worker workers
+./content-machine worker show <job-id>                 # full audit trail
+./content-machine worker cancel <job-id>
+./content-machine worker reap                          # expire leases by hand
+```
+
+Queueing is idempotent on the request digest: the same request queued twice
+is one job, and a request that has *already* been generated is refused rather
+than re-rendered.
+
+### Job lifecycle
+
+```
+QUEUED ─► CLAIMED ─► SUBMITTED ─► RUNNING ─► UPLOADING ─► SUCCEEDED
+   ▲          │           │           │           │
+   │          └───────────┴───────────┴───────────┴──► RETRY_WAIT ─┐
+   └──────────────────────────────────────────────────────────────┘
+                                                      └──► FAILED
+   any non-terminal state ───────────────────────────────► CANCELLED
+```
+
+The table of permitted moves is the only way a job changes state; anything
+else is refused with a 409 and recorded. Every move appends to the job's
+`transitions` log with who did it, when, which attempt, and why — so a bad
+outcome is reconstructible afterwards rather than inferred.
+
+| Rule | Why |
+|---|---|
+| An attempt is spent at **claim** time | `max_attempts` then bounds real work, not waiting. A job nobody can run spends nothing, however long it sits. |
+| Each claim mints a fresh `lease_id` | Once a job is reaped and handed on, the previous holder's late upload is refused instead of overwriting work in progress. |
+| Lease expiry counts as a spent attempt | A PC that claims and dies repeatedly is bounded, not an infinite loop. |
+| A heartbeat does **not** renew a lease | Liveness is not progress. An agent that is breathing while its render has hung still loses the job. |
+| `RETRY_WAIT` backs off exponentially | 60s, then 120s, capped at 15 min. |
+| A worker can report a **permanent** failure | A missing checkpoint will still be missing in five minutes; burning two more GPU attempts on it only delays you finding out. |
+| A worker may only report `SUBMITTED`/`RUNNING`/`UPLOADING` | It cannot declare its own job succeeded. Only the control plane does that, and only after verifying the manifest. |
+
+`reap` runs at the top of every API request, so recovery needs no background
+timer: whatever the worker does next performs it.
+
+### Worker state
+
+`ONLINE` / `STALE` / `OFFLINE` is **derived from heartbeat age** every time it
+is read, never stored — a worker that loses power cannot leave an `ONLINE`
+flag behind it. Default thresholds: `ONLINE` within 90s, `STALE` to 10 min,
+`OFFLINE` beyond. A revoked worker is `OFFLINE` however recently it spoke.
+
+Only an `ONLINE` worker whose capabilities cover the job's
+`required_capabilities` is offered it, so a CPU-only worker is never handed a
+ComfyUI render.
+
+### Assets and manifests
+
+Assets are uploaded one at a time as raw bytes with their SHA-256 declared in
+a header, staged per job, and published only once a manifest accounts for
+them. The manifest is built from the bytes on the worker and **re-verified
+from the staged bytes on the VPS** — two independent hashes of the same file,
+so a truncated upload is a refusal rather than a corrupt asset that fails
+later in QC. A listed file that was never uploaded, an uploaded file missing
+from the manifest, a filename that is not a plain safe image name, or a hash
+that does not match are all refused.
+
+Published assets are named exactly as a local ComfyUI render would be
+(`gen_<digest>_NN.png`), so a remote result is indistinguishable downstream.
+
+### What a worker still cannot do
+
+A remote render is recorded as `produces_depicted: true` — ComfyUI does
+produce depicted imagery, and that is the strongest claim any machine may
+make. It does **not** set `production_grade`: that stays a human act (see
+[The production-grade claim](#the-production-grade-claim)), so review is still
+blocked until you make it. The publication gate also re-inspects the
+artefacts themselves, so a worker that uploads a flat placeholder is caught
+there regardless of what it reported.
 
 ## Visuals
 
@@ -583,7 +760,16 @@ Deliberately unimplemented, in dependency order:
 - **Verified against a real ComfyUI server** — the adapter is exercised
   against a local stand-in implementing ComfyUI's submit/poll/download
   protocol, not against a real instance. Expect to adjust the workflow
-  template for your checkpoint on first use.
+  template for your checkpoint on first use. The same applies to the
+  [remote worker](#remote-gpu-worker): the queue, leases, retries, uploads
+  and manifests are tested end to end over real sockets against that
+  stand-in, but no render has yet been produced by the GTX 1060.
+- **Automatic deferral to the worker** — `visuals` still fails when depicted
+  imagery is required and no synchronous provider can produce it; queueing
+  the work for the PC is a deliberate `worker enqueue` rather than something
+  the pipeline decides on its own. Wiring it into the routing failure path
+  changes what a failed `visuals` run means, which is a decision, not an
+  omission.
 - **A depicted-imagery route that needs no GPU** — built: the `gemini`
   provider. Off by default; `GEMINI_IMAGE_ENABLED=1` is the deliberate opt-in
   to spending. Until you enable it (or point `COMFYUI_URL` at a GPU), the 18

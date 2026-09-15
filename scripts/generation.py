@@ -94,6 +94,24 @@ def _env(name, default=None):
     return value.strip() or default
 
 
+def _notify(progress, event, detail=None):
+    """Call a progress callback without letting it break the generation.
+
+    A callback that reports upstream can fail for reasons that have nothing
+    to do with the render - a momentary network blip while telling the
+    control plane. Aborting a fifteen-minute render over that would throw
+    away the work it was reporting on, so the failure is logged and the
+    render continues; whatever the callback was protecting fails later, on
+    its own terms.
+    """
+    if progress is None:
+        return
+    try:
+        progress(event, detail)
+    except Exception as e:  # noqa: BLE001 - deliberately never fatal
+        log.warning("progress callback failed on %s: %s", event, e)
+
+
 def _env_float(name, default):
     raw = _env(name)
     if raw is None:
@@ -295,7 +313,18 @@ class ComfyUIProvider(Provider):
         with urllib.request.urlopen(req, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def generate(self, request, out_dir, timeout=DEFAULT_GENERATE_TIMEOUT):
+    def generate(self, request, out_dir, timeout=DEFAULT_GENERATE_TIMEOUT,
+                 progress=None):
+        """Submit, wait, download.
+
+        ``progress`` is an optional ``callable(event, detail)`` invoked with
+        ``("submitted", prompt_id)`` once ComfyUI accepts the graph and
+        ``("polling", prompt_id)`` on each poll. The remote worker agent needs
+        both: they are what distinguishes SUBMITTED from RUNNING on the
+        control plane, and the polling tick is when it renews its lease so a
+        long render is not reaped mid-flight. Callers that do not care pass
+        nothing and the behaviour is unchanged.
+        """
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         workflow = self._load_workflow(request)
@@ -310,7 +339,8 @@ class ComfyUIProvider(Provider):
         if not prompt_id:
             raise GenerationError(f"ComfyUI returned no prompt_id: {submitted}")
 
-        outputs = self._await_outputs(prompt_id, timeout)
+        _notify(progress, "submitted", prompt_id)
+        outputs = self._await_outputs(prompt_id, timeout, progress)
         assets = self._download(outputs, out_dir, request)
         if not assets:
             raise GenerationError(f"ComfyUI job {prompt_id} produced no images")
@@ -325,11 +355,12 @@ class ComfyUIProvider(Provider):
             "notes": f"generated on ComfyUI at {self.url}",
         }
 
-    def _await_outputs(self, prompt_id, timeout):
+    def _await_outputs(self, prompt_id, timeout, progress=None):
         """Poll /history until the job appears, bounded by ``timeout``."""
         deadline = time.monotonic() + timeout
         interval = 1.0
         while time.monotonic() < deadline:
+            _notify(progress, "polling", prompt_id)
             try:
                 with urllib.request.urlopen(
                         f"{self.url}/history/{prompt_id}",

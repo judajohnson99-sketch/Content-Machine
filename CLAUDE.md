@@ -65,6 +65,15 @@ them away.
   not be able to start spending money because something local hiccuped.
 - **No hard-coded endpoints or secrets.** `COMFYUI_URL` unset means "the PC
   is off" — never default it to localhost.
+- **The remote GPU worker is a worker, not an authority.** The VPS owns the
+  queue and the truth; the PC dials out and is replaceable. A queued job
+  waits when no capable worker is online - it must never fail or consume a
+  retry attempt for a machine that is merely off. Worker liveness stays
+  derived from heartbeat age, never stored. A worker may report progress but
+  may not declare its own job succeeded, and an uploaded manifest is
+  re-verified from the staged bytes before anything is published. Every
+  transition is table-driven, fail-closed, and appended to the job's audit
+  log. Nothing on this path may set `production_grade`.
 - **The knowledge graph is a lens, never the operational database.**
   `experiments/concepts.json` and `projects/<id>/metadata.json` stay
   authoritative for concepts and per-video state. A note points at them; it
@@ -78,7 +87,7 @@ them away.
 - Providers are adapters: vendor specifics stay inside the provider class.
 - New behaviour needs a test in `tests/`; external services are mocked or
   served by a local stand-in, never contacted for real.
-- Run `./content-machine test` before declaring anything done (174 tests, ~85s).
+- Run `./content-machine test` before declaring anything done (319 tests, ~85s).
 
 ## graphify
 

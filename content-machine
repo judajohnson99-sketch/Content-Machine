@@ -7,6 +7,7 @@
 #   ./content-machine status <video-id>
 #   ./content-machine knowledge <context|capture|refresh|status|query|open>
 #   ./content-machine experiment <list|show|blockers|validate|scaffold>
+#   ./content-machine worker <enroll|serve|enqueue|jobs|workers|show|agent>
 #   ./content-machine produce <video-id> --concept-id <id>
 #   ./content-machine test
 #
@@ -29,6 +30,11 @@ fi
 if [ "${1:-}" = "experiment" ]; then
     shift
     exec python3 scripts/experiment.py "$@"
+fi
+
+if [ "${1:-}" = "worker" ]; then
+    shift
+    exec python3 scripts/worker.py "$@"
 fi
 
 exec python3 scripts/project.py "$@"
