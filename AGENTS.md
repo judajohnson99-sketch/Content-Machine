@@ -1,7 +1,8 @@
 # Content Machine — architecture for coding agents
 
-Concise map for agents working in this repo. `README.md` is the user-facing
-manual; `CLAUDE.md` carries the non-negotiable rules. Read those too.
+Concise map for agents working in this repo. `CLAUDE.md` carries the rules and
+the working method; `.paul/STATE.md` is the resume point; `README.md` is the
+user manual (read by section, not whole).
 
 ## Layers
 
@@ -126,9 +127,22 @@ IDEA ─► RESEARCH ─► BRIEF ─► CONTENT ─► VISUAL/AUDIO PLAN ─►
   ─► ASSEMBLY ─► QC ─► PACKAGING ─► READY_FOR_REVIEW ─► [human] ─► PUBLISH
 ```
 
-Implemented today: visual/audio plan → generation → assembly → QC → packaging
-→ READY_FOR_REVIEW. Research, content generation, publishing and analytics are
-not built; see README "Not built yet".
+Implemented today: RESEARCH (format profiles in `scripts/research.py`, and
+source-backed subject research in `scripts/subject_research.py` for concepts
+flagged `requires_subject_research`) → BRIEF/CONTENT (`scripts/creative.py`,
+including batched per-scene visual motifs) → VISUAL/AUDIO PLAN → ASSET
+GENERATION (`scripts/storyboard.py` + `scripts/generation.py`) → ASSEMBLY →
+QC → PACKAGING → READY_FOR_REVIEW. Publishing and analytics are not built;
+see README "Not built yet".
+
+Subject research is search-backed only - it never asks an LLM what it
+"knows" about a topic - and fails closed rather than caching thin or
+unsourced results. It is cached once per video
+(`research/subjects/<video-id>.json`) and reused by `creative` and
+`storyboard`; concepts that don't set `requires_subject_research` never pay
+for it. `storyboard`'s per-scene visual motifs are likewise generated in one
+batched LLM call per video (`creative.generate_scene_motifs`), not one call
+per scene, and cached into `storyboard.json`'s `scene_motifs`.
 
 ## Knowledge layer
 
@@ -149,28 +163,23 @@ Before substantive work, retrieve a ranked brief instead of reading the corpus:
 ./content-machine knowledge context "add a second narration voice"
 ```
 
-`context` ranks the vault against the task (IDF-weighted lexical overlap,
-expanded one hop through the knowledge graph), and prints the active position
-from `.paul/STATE.md`, recent `projects/<id>/metadata.json` status, one-line
-note summaries with paths, and `file:line` pointers from the code graph - all
-under a hard token budget. It reads; it never writes. `--full N` adds bodies,
-`--budget N` raises the cap. The `context` skill in `.claude/skills/` wires it
-into Claude Code.
+It prints, under a hard token budget, the active position from
+`.paul/STATE.md`, recent `projects/<id>/metadata.json` status, ranked
+one-line note summaries with paths, and `file:line` pointers from the code
+graph. It reads; it never writes. Flags: `--full N`, `--budget N`, `--notes N`,
+`--code N`. The `context` skill wraps it.
 
-To follow a specific relationship rather than gather context for a task,
-consult the graph directly:
+To follow a specific relationship instead:
 
 ```bash
 ./content-machine knowledge query "what blocks the kids_sleep niche?"
-graphify path "Bedtime Stories" "Local Narration Capability" --graph knowledge/graphify-out/graph.json
-graphify explain "YouTube Inauthentic Content Policy" --graph knowledge/graphify-out/graph.json
+graphify path "A" "B" --graph knowledge/graphify-out/graph.json
+graphify explain "Concept" --graph knowledge/graphify-out/graph.json
 ```
 
-`knowledge/graphify-out/GRAPH_REPORT.md` gives hubs, communities and orphans in
-prose; `graph.json` is the machine-readable form (nodes carry `type`,
-`confidence`, `captured_at`, `contributor` and `source_url` from note
-frontmatter). Run `./content-machine knowledge status` first — a `STALE` graph
-means notes changed since it was built.
+`./content-machine knowledge status` reports `STALE` when notes changed since
+the graph was built; `graph.json` nodes carry `type`, `confidence`,
+`captured_at`, `contributor` and `source_url` from note frontmatter.
 
 ### Capturing into it
 

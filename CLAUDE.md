@@ -1,48 +1,103 @@
 # Content Machine — project instructions
 
 A deterministic pipeline turning images + audio into a YouTube-ready package,
-stopping at a human review gate. Read `README.md` for the full picture and
-`AGENTS.md` for architecture and conventions.
+stopping at a human review gate. `AGENTS.md` is the architecture map.
+`README.md` is the user manual (900+ lines: open a section by heading, never
+the whole file).
 
-## Graphify — project specifics
+## Start of session: resume, don't rediscover
 
-The query-first workflow is in the `## graphify` section below, which
-`graphify claude install` owns and rewrites on upgrade — edit that section
-only through the CLI. This section holds what is specific to this repo.
+1. Read `.paul/STATE.md`. It is the only resume file: current milestone, what
+   is done, what is blocked, the next task.
+2. For substantive work run `./content-machine knowledge context "<task>"`
+   once. It ranks the vault, both graphs, STATE.md and project metadata under
+   a token budget; open only the one or two paths it points at.
+3. No preflight beyond that: no `git status`/`log`/`diff`, no directory
+   listings, no reading AGENTS.md, README.md or `GRAPH_REPORT.md` "to get
+   oriented". Read them only when the task needs a specific section.
 
-**There are two graphs. Do not confuse them.**
+At every task boundary (done, blocked, before `/compact`, before a model
+switch) update only the `## Current Position` and `## Session Continuity`
+blocks of `.paul/STATE.md`: milestone, done, blockers, next. Plain sentences,
+under 40 lines, never logs, diffs or test output. Feature handoffs such as
+`WORKER_HANDOFF.md` are written once when a feature ships, not per session.
+
+## Model routing
+
+- Sonnet 5 is the project default (`.claude/settings.json`): coding, tests,
+  refactors, docs, UI, and routine debugging.
+- `/model claude-fable-5-1` only for architecture decisions, the worker state
+  machine, cross-system reasoning, or a bug two Sonnet attempts did not
+  crack. Switch back when that step ends.
+- `ANTHROPIC_MODEL` in the environment overrides both settings files. Keep it
+  unset when working here.
+
+## Reading and searching
+
+- Locate, then read the range: `graphify query "<question>"` for code
+  structure, `./content-machine knowledge query "<q>"` for doctrine, niches
+  and constraints, then `sed -n 'A,Bp'`. `cat` only files under ~100 lines.
+- Never `grep -r` the repo root, `cat` the vault, or read
+  `graphify-out/obsidian/` (800+ derived notes).
+- Batch independent reads and edits into one call. Don't re-read a file you
+  just edited.
+- Generated and runtime trees are never context: `graphify-out/`, `jobs/`,
+  `research/`, `output/`, `projects/*/output|logs`, `node_modules/`, `.venv/`,
+  `.playwright*/`, `webapp/staticfiles/`, `frontend/dist/`, archives, logs.
+- Bash, Read, Edit, Write and `graphify` cover nearly everything here. Do not
+  load or call Serena onboarding, Headroom, Unabyss, Playwright, browser or
+  other MCP/plugin tools unless the task itself needs that tool. Context7 is
+  for an external library API question only.
+
+## Testing and hygiene
+
+- While working, run only the suite you touched:
+  `python3 -m unittest tests.test_<x>`, `cd webapp && pytest apps/<app>`,
+  `cd frontend && npx vitest run <file>`.
+- Once at the end: `./content-machine test 2>&1 | tail -20` (420 tests,
+  ~2 min); add `webapp` pytest and frontend `npx tsc -b` + `npx vitest run`
+  only if you touched those trees. Never repeat a pass that no later change
+  could have invalidated.
+- Graphify refresh is milestone-based, not per edit. When a feature lands or
+  a module's structure changes: `graphify update .` (AST-only, free); if
+  vault notes changed: `./content-machine knowledge refresh`. If `update`
+  strands community labels, `graphify label . --backend=claude-cli`. The
+  CLI-owned `## graphify` section below says "after modifying code"; this
+  rule supersedes it.
+- Git hygiene once, at the end: `git status --short` and `git diff --stat`.
+  Commit only when asked.
+
+## Output discipline
+
+- No narration of routine tool calls, no restated plans, no preflight
+  summaries. Ask only when different readings would lead to materially
+  different work.
+- Completion report is exactly four parts: implemented, verification (what
+  ran, result), blockers, next step.
+- No new helper scripts, indexes, caches, state files or memory files for
+  workflow purposes; STATE.md, the vault and the two graphs are sufficient.
+
+## The two graphs
 
 | Graph | Corpus | Location | Refresh |
 |---|---|---|---|
 | Code | this repo's source | `graphify-out/` | `graphify update .` |
 | Knowledge | the `knowledge/` vault | `knowledge/graphify-out/` | `./content-machine knowledge refresh` |
 
-- **Everything under any `graphify-out/` is gitignored and regenerable.**
-  Nothing there is a source of truth. If a graph disagrees with its corpus,
-  the corpus wins — re-run rather than trusting the graph.
-- **Code graph.** Built 2026-08-30 over the full 101-file corpus: 804 nodes,
-  1310 edges, 40 communities. Refresh code changes with `graphify update .`
-  (AST-only, no API cost); docs and images need a full `/graphify` re-run.
-  Its `obsidian/` directory is a derived export of *code*, not the knowledge
-  vault, and is unrelated to `knowledge/`. Regenerate it with
-  `graphify export obsidian` (also `export html|wiki|svg|graphml`); the
-  exporters read `graphify-out/graph.json`, so they never re-extract.
-- **`graphify update .` re-clusters, which can strand the community labels.**
-  When the community set changes it falls back to naming each community after
-  its hub node and prints a warning. Restore real names with
-  `graphify label . --backend=claude-cli` — same free backend the knowledge
-  graph uses — then re-run any export, since the labels are what the
-  `_COMMUNITY_*.md` notes and the graph-view colouring are built from.
-- **Knowledge graph.** `knowledge/` is an Obsidian vault and the canonical
-  human-readable knowledge layer; the graph beneath it is derived. Flow is
-  one-way, notes → graph. Refresh defaults to the `claude-cli` backend, so it
-  adds no dependency and spends nothing through a metered API. Agents persist
-  durable knowledge with `./content-machine knowledge capture` and read
-  relationships with `./content-machine knowledge query`. See `AGENTS.md`
-  → "Knowledge layer".
-- A PreToolUse hook (`.claude/settings.json`) enforces query-first on Bash,
-  Grep, Read, and Glob. It spawns a subprocess per matching tool call.
-  Remove with `graphify claude uninstall`.
+- Everything under any `graphify-out/` is gitignored and regenerable. If a
+  graph disagrees with its corpus, the corpus wins: re-run, don't trust it.
+- `graphify update .` is AST-only; docs and images need a full `/graphify`
+  re-run. The code graph's `obsidian/` export is derived from code and
+  unrelated to `knowledge/`.
+- `knowledge/` is an Obsidian vault and the canonical human-readable layer;
+  its graph is derived one-way, notes → graph. Agents use
+  `./content-machine knowledge capture` and `... query` (AGENTS.md →
+  "Knowledge layer"). Search vault and graph before creating a note, reuse
+  canonical notes, use `knowledge/templates/knowledge-note.md`, and express
+  3–8 meaningful [[links]] in prose. Never hand-edit Graphify-owned output.
+  Full linking rules: `.claude/rules/knowledge-linking.md` (auto-loaded).
+- The PreToolUse hook in `.claude/settings.json` adds a query-first hint on
+  Grep and Glob; it never blocks. Remove with `graphify claude uninstall`.
 
 ## Non-negotiables
 
@@ -79,6 +134,13 @@ them away.
   authoritative for concepts and per-video state. A note points at them; it
   does not restate them, and no code path may read run state out of
   `graph.json`. Capture durable knowledge only — never operational activity.
+- **The vault is the long-term memory; Claude project memory is not.**
+  Durable knowledge belongs in `knowledge/` via `./content-machine knowledge
+  capture`, and is recalled with `... knowledge query` / `... context`. Claude's
+  per-project memory dir holds one pointer file and nothing else — never a copy
+  of a note, because Headroom owns that directory and syncs whatever sits in it
+  into its own store. See `knowledge/Captured/Claude Project Memory Is Not the
+  Knowledge Store.md`.
 
 ## Conventions
 
@@ -87,7 +149,13 @@ them away.
 - Providers are adapters: vendor specifics stay inside the provider class.
 - New behaviour needs a test in `tests/`; external services are mocked or
   served by a local stand-in, never contacted for real.
-- Run `./content-machine test` before declaring anything done (420 tests, ~2 min).
+- Pipeline LLM economy: research a subject once per video and cache it
+  (`research/subjects/<id>.json`); one visual-direction document per video
+  from which scene prompts derive; extra scene-level research only when
+  factual accuracy requires it; stages hand each other compact structured
+  artefacts (ids, beats, visual requirements), never the full script or
+  conversation; batch similar calls (scene motifs are one call per video) and
+  route routine calls to the cheapest capable model.
 
 ## graphify
 

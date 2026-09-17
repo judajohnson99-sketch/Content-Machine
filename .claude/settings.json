@@ -1,0 +1,41 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/root/.local/bin/graphify hook-guard search"
+          }
+        ]
+      },
+      {
+        "matcher": "Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/root/.local/bin/graphify hook-guard read"
+          }
+        ]
+      }
+    ]
+  },
+  "model": "claude-sonnet-5",
+  "permissions": {
+    "allow": [
+      "Bash(./content-machine test *)",
+      "Bash(./content-machine test)",
+      "Bash(./content-machine knowledge context *)",
+      "Bash(./content-machine knowledge query *)",
+      "Bash(./content-machine knowledge status)",
+      "Bash(python3 -m unittest *)",
+      "Bash(graphify query *)",
+      "Bash(graphify explain *)",
+      "Bash(graphify path *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)"
+    ]
+  }
+}

@@ -1,66 +1,59 @@
+# Secrets and local environment
 .env
-output/
-__pycache__/
-*.pyc
+frontend/.env
 
-# Rendered artefacts and run logs are reproducible from the project inputs.
-projects/*/output/
-projects/*/logs/
-projects/*/thumbnail/
-
-# Agent skills installed by `npx skills add` (vendored tooling, not project source).
-.agents/
-
-# Local virtualenv and derived knowledge-graph output. The bare pattern
-# matches at any depth, so it covers both the code graph at the repo root
-# and the knowledge graph at knowledge/graphify-out/. The knowledge vault
-# itself (knowledge/**.md) is source and IS tracked.
-.venv/
-graphify-out/
-
-# Symlinks created by the skills installer into the Claude Code skill dir.
-.claude/skills/
-# Machine-local editor/permission settings.
-.claude/settings.local.json
-
-# Composed audio tracks: deterministic output of `content-machine audio` from
-# metadata.audio_plan (see tests/test_audio.py::test_same_plan_produces_identical_bytes).
-# audio_manifest.json is kept - it carries the licence/provenance record, which
-# is NOT reproducible by inspection.
-projects/*/audio/track.wav
-
-# Generation job state (runtime, not source)
-jobs/
-
-# Local AI/tool runtime state
-.headroom/
-.serena/
-.claude/.headroom_wrap_settings.lock
-
-# Generated project/runtime assets (repo-root only - unanchored, this bare
-# name previously also matched and silently hid webapp/apps/projects/, a
-# real Django app).
-/projects/
-output/
-graphify-out/
-
-# Local test/sync artifacts
-SYNC_TEST.txt
-
-# Archives/backups
-*.tar
-*.tar.gz
-*.zip
-
-# Python/runtime caches
+# Language/runtime caches and dependencies
 __pycache__/
 *.pyc
 .venv/
 venv/
+node_modules/
 
-# Web control center (webapp/ Django, frontend/ React+Vite) - dev artifacts.
+# Rendered artefacts, run logs and runtime state: reproducible from inputs.
+output/
+projects/*/output/
+projects/*/logs/
+projects/*/thumbnail/
+# Composed audio is deterministic output of `content-machine audio`
+# (tests/test_audio.py::test_same_plan_produces_identical_bytes). The
+# audio_manifest.json beside it is kept: it carries the licence/provenance
+# record, which is not reproducible by inspection.
+projects/*/audio/track.wav
+# Generated project assets at the repo root only. Unanchored, this name also
+# hid webapp/apps/projects/, a real Django app.
+/projects/
+# Generation job state, worker registry and queue.
+jobs/
+# Format-intelligence profiles and cached subject research: derived,
+# regenerable from research.py / subject_research.py.
+research/
+*.log
+
+# Derived knowledge-graph output at any depth: the code graph at the repo root
+# and the knowledge graph at knowledge/graphify-out/. The vault itself
+# (knowledge/**.md) is source and IS tracked.
+graphify-out/
+
+# Local AI/tool runtime state and machine-local settings.
+.headroom/
+.serena/
+.claude/.headroom_wrap_*
+.claude/settings.local.json
+# Skills installed by `npx skills add` (vendored tooling, not project source).
+.claude/skills/
+.agents/
+.playwright/
+.playwright-mcp/
+.stfolder/
+
+# Web control center (webapp/ Django, frontend/ React+Vite) dev artefacts.
 webapp/db.sqlite3
 webapp/staticfiles/
-frontend/node_modules/
 frontend/dist/
-frontend/.env
+
+# Archives, backups, local sync artefacts.
+*.tar
+*.tar.gz
+*.zip
+archive-*/
+SYNC_TEST.txt
