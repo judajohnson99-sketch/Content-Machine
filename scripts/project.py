@@ -80,6 +80,15 @@ class ProjectBusyError(ProjectError):
         self.video_id = video_id
 
 
+class ReviewDecisionError(ProjectError):
+    """record_review_decision refused: stale digest, an unmet gate, or bad input."""
+
+    def __init__(self, problems):
+        if isinstance(problems, str):
+            problems = [problems]
+        super().__init__(problems)
+
+
 @contextmanager
 def project_lock(video_id):
     """The one concurrency primitive every mutating domain function uses.
@@ -1615,6 +1624,107 @@ def cmd_produce(args):
         production_grade_visuals=args.production_grade_visuals).exit_code
 
 
+REVIEW_DECISIONS = ("approved", "rejected")
+
+
+def record_review_decision(video_id, reviewer, decision, notes="", expected_digest=None):
+    """A human's review verdict on a project, recorded once, atomically.
+
+    This is the *only* place ``metadata.json.publish.approved_by_human`` is
+    written - it does not "publish" anything (``publish.published`` /
+    ``publication_id`` in ``output/publication_package.json`` stay
+    untouched; publishing is a separate, unbuilt capability).
+
+    ``decision`` is ``"approved"`` or ``"rejected"``. ``reviewer`` must be a
+    non-empty human-attributable identity - the CLI sources it from a
+    required ``--reviewer`` flag (never a default) and the DRF view sources
+    it from ``request.user``; this function itself refuses an empty one so
+    no automated caller can slip a system identity through either surface.
+
+    The gate is re-checked from scratch here, not trusted from the caller:
+    ``expected_digest`` must match a freshly computed ``gate_digest()`` (a
+    stale snapshot is refused rather than silently accepted), and approval
+    is refused outright whenever a fresh ``gate_blockers()`` call is
+    non-empty - rejection carries no such requirement, since flagging a
+    broken project is always allowed.
+    """
+    if decision not in REVIEW_DECISIONS:
+        raise ReviewDecisionError(
+            f"invalid decision: {decision!r} (expected 'approved' or 'rejected')")
+    if not reviewer or not reviewer.strip():
+        raise ReviewDecisionError("reviewer is required and must be a human identity")
+
+    with project_lock(video_id):
+        pdir = project_dir(video_id)
+        meta_path = pdir / "metadata.json"
+        if not meta_path.is_file():
+            raise ReviewDecisionError(f"not a project: {video_id}")
+        metadata = json.loads(meta_path.read_text())
+
+        video_path = pdir / "output" / f"{video_id}.mp4"
+        if not video_path.is_file():
+            raise ReviewDecisionError(f"{video_id} has not been rendered yet")
+
+        qc_path = pdir / "output" / "qc_report.json"
+        qc_report = json.loads(qc_path.read_text()) if qc_path.is_file() else {}
+        manifest_path = pdir / "audio" / "audio_manifest.json"
+        audio_manifest = (json.loads(manifest_path.read_text())
+                          if manifest_path.is_file() else {})
+
+        current_digest = gate_digest(pdir, metadata, video_path)
+        if expected_digest != current_digest:
+            raise ReviewDecisionError(
+                "expected_digest is stale: the project's current gate_digest "
+                "does not match what this review decision was based on - "
+                "re-fetch the project's status and retry")
+
+        blocking = gate_blockers(
+            pdir, metadata,
+            qc_report.get("status", "MISSING"), qc_report.get("failures", []),
+            bool(list_assets(pdir / "thumbnail", (".jpg", ".jpeg"))),
+            audio_manifest)
+        if decision == "approved" and blocking:
+            raise ReviewDecisionError([f"cannot approve: {b}" for b in blocking])
+
+        entry = {
+            "utc": utc_now(),
+            "reviewer": reviewer,
+            "decision": decision,
+            "notes": notes or "",
+            "gate_digest": current_digest,
+        }
+        metadata.setdefault("review_history", []).append(entry)
+        # A rejection revokes any prior approval - "approved" only ever
+        # means "the most recent human decision was approval".
+        metadata.setdefault("publish", {})["approved_by_human"] = decision == "approved"
+        save_metadata(pdir, metadata)
+        return entry
+
+
+def cmd_approve(args):
+    try:
+        entry = record_review_decision(
+            args.video_id, args.reviewer, "approved",
+            notes=args.notes, expected_digest=args.expected_digest)
+    except ProjectError as e:
+        log.error(str(e))
+        return 1
+    log.info("Approved by %s at %s", entry["reviewer"], entry["utc"])
+    return 0
+
+
+def cmd_reject(args):
+    try:
+        entry = record_review_decision(
+            args.video_id, args.reviewer, "rejected",
+            notes=args.notes, expected_digest=args.expected_digest)
+    except ProjectError as e:
+        log.error(str(e))
+        return 1
+    log.info("Rejected by %s at %s", entry["reviewer"], entry["utc"])
+    return 0
+
+
 def save_metadata(pdir, metadata):
     (pdir / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
 
@@ -1734,6 +1844,27 @@ def main():
         help="declare the generated visuals as production-grade (a human decision - see init)")
     p_produce.set_defaults(func=cmd_produce)
     p_status.set_defaults(func=cmd_status)
+
+    p_approve = sub.add_parser(
+        "approve", help="record a human's approval (requires a fresh, matching gate digest)")
+    p_approve.add_argument("video_id")
+    p_approve.add_argument("--reviewer", required=True,
+                           help="a human-attributable identity - never a service/system default")
+    p_approve.add_argument("--notes", default="")
+    p_approve.add_argument(
+        "--expected-digest", dest="expected_digest", required=True,
+        help="gate_digest this approval was based on (see 'status'); a mismatch is refused")
+    p_approve.set_defaults(func=cmd_approve)
+
+    p_reject = sub.add_parser("reject", help="record a human's rejection")
+    p_reject.add_argument("video_id")
+    p_reject.add_argument("--reviewer", required=True,
+                          help="a human-attributable identity - never a service/system default")
+    p_reject.add_argument("--notes", default="")
+    p_reject.add_argument(
+        "--expected-digest", dest="expected_digest", required=True,
+        help="gate_digest this rejection was based on (see 'status'); a mismatch is refused")
+    p_reject.set_defaults(func=cmd_reject)
 
     args = parser.parse_args()
 

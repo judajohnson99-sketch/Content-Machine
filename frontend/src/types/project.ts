@@ -27,5 +27,9 @@ export interface ProjectDetail {
   video_id: string;
   selected_title: string | null;
   experiment?: { concept_id?: string | null; niche?: string | null } | null;
-  status?: { overall?: string } | null;
+  // gate_digest is the last-recorded fingerprint of what a verdict was
+  // computed from (scripts/project.py's gate_digest()) - the Review Center
+  // sends it back verbatim as expected_digest; it is never recomputed or
+  // guessed client-side (architecture plan §5/§8).
+  status?: { overall?: string; gate_digest?: string | null } | null;
 }

@@ -896,5 +896,160 @@ class TypedDomainFunctionsTest(ProjectTestCase):
         self.assertEqual(proc.returncode, result.exit_code)
 
 
+class ReviewDecisionTest(ProjectTestCase):
+    """record_review_decision (architecture plan §5) - the four required
+    proofs plus the surrounding behavior they depend on."""
+
+    def _run_to_ready(self, title="Review Me", production_grade=True):
+        extra = ["--title", title]
+        if production_grade:
+            extra.append("--production-grade-visuals")
+        self.init_project(*extra)
+        self.write_metadata({"description": "A description, required before review."})
+        proc = self.cm("run", self.video_id)
+        self.assertEqual(proc.returncode, EXIT_OK, proc.stderr)
+        return self.metadata()["status"]["gate_digest"]
+
+    # --- (1) static: no automated caller ---------------------------------
+
+    def test_record_review_decision_is_never_called_automatically(self):
+        """The only permitted callers anywhere in scripts/project.py are the
+        CLI's own approve/reject shims - never a pipeline stage such as
+        run_produce/run_pipeline, and never apps/engine/tasks.py's Celery
+        dispatcher (checked separately in webapp's own test suite)."""
+        import ast
+        source = (ROOT / "scripts" / "project.py").read_text()
+        tree = ast.parse(source, filename="scripts/project.py")
+        callers = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                for child in ast.walk(node):
+                    if (isinstance(child, ast.Call)
+                            and isinstance(child.func, ast.Name)
+                            and child.func.id == "record_review_decision"):
+                        callers.add(node.name)
+        self.assertEqual(callers, {"cmd_approve", "cmd_reject"})
+
+    # --- (2) approval refused whenever gate_blockers() is non-empty ------
+
+    def test_approval_is_refused_when_gate_blockers_are_non_empty(self):
+        self.init_project("--title", "Missing Description")
+        proc = self.cm("run", self.video_id)
+        self.assertEqual(proc.returncode, EXIT_NEEDS_ATTENTION, proc.stderr)
+        digest = self.metadata()["status"]["gate_digest"]
+
+        proc = self.cm("approve", self.video_id, "--reviewer", "alice@example.com",
+                       "--expected-digest", digest)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("cannot approve", proc.stderr)
+        self.assertNotIn("review_history", self.metadata())
+        self.assertNotIn("publish", self.metadata())
+
+    def test_rejection_is_allowed_even_with_gate_blockers(self):
+        """Flagging a broken project is always allowed - only approval is
+        gated on a clean verdict."""
+        self.init_project("--title", "Missing Description")
+        proc = self.cm("run", self.video_id)
+        self.assertEqual(proc.returncode, EXIT_NEEDS_ATTENTION, proc.stderr)
+        digest = self.metadata()["status"]["gate_digest"]
+
+        proc = self.cm("reject", self.video_id, "--reviewer", "alice@example.com",
+                       "--notes", "not ready", "--expected-digest", digest)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        meta = self.metadata()
+        self.assertEqual(meta["review_history"][-1]["decision"], "rejected")
+        self.assertFalse(meta["publish"]["approved_by_human"])
+
+    def test_stale_digest_is_refused(self):
+        digest = self._run_to_ready()
+        proc = self.cm("approve", self.video_id, "--reviewer", "alice@example.com",
+                       "--expected-digest", digest + "stale")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("stale", proc.stderr)
+        self.assertNotIn("review_history", self.metadata())
+
+    # --- (3) production_grade regression ----------------------------------
+
+    def test_review_decision_never_touches_production_grade(self):
+        digest = self._run_to_ready()
+        before = self.metadata()["provenance"]["images"]["production_grade"]
+
+        proc = self.cm("approve", self.video_id, "--reviewer", "alice@example.com",
+                       "--expected-digest", digest)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        after = self.metadata()["provenance"]["images"]["production_grade"]
+        self.assertEqual(before, after)
+        self.assertIsInstance(after, bool, "production_grade must remain a human claim")
+
+    # --- (4) CLI/API parity: one shared implementation ---------------------
+
+    def test_cli_and_direct_call_produce_equivalent_metadata(self):
+        """cmd_approve (CLI) and a direct record_review_decision() call (what
+        the Django review view does) must write equivalent results - proof
+        there is exactly one implementation, not a CLI-side copy a web
+        caller could drift from."""
+        digest_a = self._run_to_ready(title="Parity")
+        proc = self.cm("approve", self.video_id, "--reviewer", "alice@example.com",
+                       "--notes", "looks good", "--expected-digest", digest_a)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        meta_a = self.metadata()
+
+        video_b = f"{self.video_id}-b"
+        pdir_b = ROOT / "projects" / video_b
+        self.addCleanup(lambda: shutil.rmtree(pdir_b, ignore_errors=True))
+        proc = self.cm(
+            "init", video_b, "--images", str(IMAGES), "--audio", str(AUDIO),
+            "--width", "480", "--height", "270", "--fps", "24",
+            "--duration", "5", "--seconds-per-image", "2",
+            "--title", "Parity", "--production-grade-visuals")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        meta_b_patch = json.loads((pdir_b / "metadata.json").read_text())
+        meta_b_patch["description"] = "A description, required before review."
+        (pdir_b / "metadata.json").write_text(json.dumps(meta_b_patch, indent=2) + "\n")
+        proc = self.cm("run", video_b)
+        self.assertEqual(proc.returncode, EXIT_OK, proc.stderr)
+        digest_b = json.loads((pdir_b / "metadata.json").read_text())["status"]["gate_digest"]
+
+        project.record_review_decision(
+            video_b, "alice@example.com", "approved",
+            notes="looks good", expected_digest=digest_b)
+        meta_b = json.loads((pdir_b / "metadata.json").read_text())
+
+        entry_a = dict(meta_a["review_history"][-1])
+        entry_b = dict(meta_b["review_history"][-1])
+        for entry in (entry_a, entry_b):
+            entry.pop("utc")
+            entry.pop("gate_digest")
+        self.assertEqual(entry_a, entry_b)
+        self.assertEqual(meta_a["publish"], meta_b["publish"])
+
+    # --- supporting behavior -------------------------------------------
+
+    def test_refuses_an_empty_reviewer(self):
+        with self.assertRaises(project.ReviewDecisionError):
+            project.record_review_decision(
+                self.video_id, "  ", "approved", expected_digest="anything")
+
+    def test_refuses_an_unrendered_project(self):
+        self.init_project()
+        with self.assertRaises(project.ReviewDecisionError):
+            project.record_review_decision(
+                self.video_id, "alice@example.com", "approved", expected_digest="anything")
+
+    def test_approval_persists_across_review_history(self):
+        digest = self._run_to_ready()
+        entry = project.record_review_decision(
+            self.video_id, "alice@example.com", "approved",
+            notes="ship it", expected_digest=digest)
+        self.assertEqual(entry["decision"], "approved")
+        self.assertEqual(entry["reviewer"], "alice@example.com")
+        meta = self.metadata()
+        self.assertEqual(len(meta["review_history"]), 1)
+        self.assertTrue(meta["publish"]["approved_by_human"])
+        self.assertFalse(json.loads(
+            (self.pdir / "output" / "publication_package.json").read_text()
+        )["publish"]["published"], "record_review_decision must never publish anything")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

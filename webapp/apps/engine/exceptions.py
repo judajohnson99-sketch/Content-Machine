@@ -22,6 +22,12 @@ class ProjectBusy(APIException):
     default_code = "project_busy"
 
 
+class ReviewDecisionRejected(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "Review decision refused."
+    default_code = "review_decision_rejected"
+
+
 def translate(exc):
     """Re-raise a scripts.project exception as its DRF equivalent.
 
@@ -31,6 +37,11 @@ def translate(exc):
     """
     if isinstance(exc, project.ProjectBusyError):
         raise ProjectBusy(str(exc)) from exc
+    if isinstance(exc, project.ReviewDecisionError):
+        # A stale gate_digest or an unmet blocker is a conflict with the
+        # project's current state, not a 400 (the request was well-formed)
+        # or a 404 (the project exists) - 409 matches ProjectBusy's reasoning.
+        raise ReviewDecisionRejected(str(exc)) from exc
     if isinstance(exc, project.ProjectError):
         raise ProjectNotFound(str(exc)) from exc
     raise exc

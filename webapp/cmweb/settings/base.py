@@ -35,6 +35,7 @@ INSTALLED_APPS = [
     'apps.engine',
     'apps.projects',
     'apps.pipeline',
+    'apps.review',
 ]
 
 MIDDLEWARE = [

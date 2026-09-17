@@ -10,4 +10,5 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/v1/projects/', include('apps.projects.urls')),
     path('api/v1/projects/', include('apps.pipeline.urls')),
+    path('api/v1/projects/', include('apps.review.urls')),
 ]
