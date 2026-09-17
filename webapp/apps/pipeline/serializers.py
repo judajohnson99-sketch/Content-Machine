@@ -73,6 +73,9 @@ class ProduceRequestSerializer(StageRequestSerializer):
     duration = serializers.FloatField(required=False, allow_null=True, default=None)
     production_grade_visuals = serializers.BooleanField(
         required=False, allow_null=True, default=None)
+    # None = let scripts.project.produce_uses_scenes() decide from the
+    # project itself; True/False are the operator's explicit override.
+    scenes = serializers.BooleanField(required=False, allow_null=True, default=None)
 
 
 STAGE_SERIALIZERS = {

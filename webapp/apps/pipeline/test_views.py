@@ -83,13 +83,27 @@ class TestStageActionView:
             response = client.post(
                 "/api/v1/projects/new-video/produce/",
                 {"client_request_id": crid, "concept_id": "sleep-brown-noise-dark",
-                 "duration": 60.0, "production_grade_visuals": True},
+                 "duration": 60.0, "production_grade_visuals": True, "scenes": True},
                 format="json")
         assert response.status_code == 202
         trig.assert_called_once_with(
             "new-video", "produce", uuid.UUID(crid),
             {"concept_id": "sleep-brown-noise-dark", "duration": 60.0,
-             "production_grade_visuals": True})
+             "production_grade_visuals": True, "scenes": True})
+
+    def test_produce_scenes_defaults_to_automatic(self, client):
+        """Omitting `scenes` must reach run_produce as None - the domain's
+        auto rule, not a web-layer guess of True or False."""
+        crid = str(uuid.uuid4())
+        fake_run = MagicMock(id=1)
+        with patch("apps.pipeline.views.pipeline_service.trigger_stage",
+                    return_value=(fake_run, True)) as trig, \
+                patch("apps.pipeline.views.PipelineRunSerializer") as ser:
+            ser.return_value.data = {"id": 1, "status": "QUEUED"}
+            client.post("/api/v1/projects/abc/produce/",
+                        {"client_request_id": crid}, format="json")
+        params = trig.call_args[0][3]
+        assert params["scenes"] is None
 
 
 @pytest.mark.django_db

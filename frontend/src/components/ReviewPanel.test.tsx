@@ -1,12 +1,22 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithClient } from "../test/renderWithClient";
 import { ReviewPanel } from "./ReviewPanel";
 import { ApiError } from "../api/client";
+import * as assetsApi from "../api/assets";
 import * as projectsApi from "../api/projects";
 import * as reviewApi from "../api/review";
 import type { ProjectDetail, StatusReport } from "../types/project";
+
+// The embedded DeliverablePanel reads project_assets(); an empty manifest
+// keeps these tests about the decision controls, not the preview.
+beforeEach(() => {
+  vi.spyOn(assetsApi, "getAssets").mockResolvedValue({
+    video_id: "abc", video: null, thumbnails: [], images: [], audio: null,
+    qc: null, storyboard: null, package: null, logs: [],
+  });
+});
 
 function project(overrides: Partial<ProjectDetail> = {}): ProjectDetail {
   return {

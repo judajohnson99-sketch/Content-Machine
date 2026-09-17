@@ -12,6 +12,7 @@ protocol is tested, not a mock of it, and the Gemini adapter the same way.
 import base64
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -893,3 +894,34 @@ class ProjectVisualsTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProceduralProviderHonoursRequestedSizeTestCase(unittest.TestCase):
+    """A storyboard scene asks for its own source size; the plate must be
+    that size or storyboard QC's scene_image_dimensions check fails."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+            raise unittest.SkipTest("ffmpeg/ffprobe not found on PATH")
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="cm-proc-size-"))
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def _dimensions(self, path):
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, check=True).stdout.strip()
+        return tuple(int(v) for v in out.split(","))
+
+    def test_generates_at_the_requested_source_size(self):
+        request = generation.GenerationRequest(prompt="x", width=512, height=512, seed=3)
+        job = generation.ProceduralProvider().generate(request, self.tmp)
+        self.assertEqual(self._dimensions(job["assets"][0]), (512, 512))
+
+    def test_default_request_still_renders_the_output_resolution(self):
+        request = generation.GenerationRequest(prompt="x", seed=3)
+        job = generation.ProceduralProvider().generate(request, self.tmp)
+        self.assertEqual(self._dimensions(job["assets"][0]), (request.width, request.height))

@@ -87,7 +87,7 @@ them away.
 - Providers are adapters: vendor specifics stay inside the provider class.
 - New behaviour needs a test in `tests/`; external services are mocked or
   served by a local stand-in, never contacted for real.
-- Run `./content-machine test` before declaring anything done (319 tests, ~85s).
+- Run `./content-machine test` before declaring anything done (420 tests, ~2 min).
 
 ## graphify
 

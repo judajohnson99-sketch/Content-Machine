@@ -3,7 +3,9 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
 import { triggerStage } from "../api/pipeline";
 import { newClientRequestId } from "../lib/clientRequestId";
+import { Button } from "./ui/Button";
 import type { StageName } from "../types/pipeline";
+import styles from "./StageActionButton.module.css";
 
 interface Props {
   videoId: string;
@@ -52,38 +54,21 @@ export function StageActionButton({ videoId, stage, label, params, disabled, dis
   const isDisabled = disabled || mutation.isPending;
 
   return (
-    <div>
-      <button
-        type="button"
+    <div className={styles.wrap}>
+      <Button
+        variant="primary"
+        size="sm"
         onClick={() => {
           setNotice(null);
           mutation.mutate();
         }}
         disabled={isDisabled}
         title={isDisabled ? disabledReason : undefined}
-        style={{
-          padding: "6px 14px",
-          borderRadius: 6,
-          border: "1px solid var(--border)",
-          background: isDisabled ? "var(--code-bg)" : "var(--accent)",
-          color: isDisabled ? "var(--text)" : "#fff",
-          cursor: isDisabled ? "not-allowed" : "pointer",
-          fontSize: 13,
-          fontWeight: 600,
-        }}
       >
         {mutation.isPending ? "Starting…" : label}
-      </button>
+      </Button>
       {notice && (
-        <p
-          role="alert"
-          style={{
-            margin: "4px 0 0",
-            fontSize: 12,
-            color: notice.kind === "busy" ? "#9a6700" : "#cf222e",
-            maxWidth: 240,
-          }}
-        >
+        <p role="alert" className={`${styles.notice} ${notice.kind === "busy" ? styles.busy : styles.error}`}>
           {notice.message}
         </p>
       )}

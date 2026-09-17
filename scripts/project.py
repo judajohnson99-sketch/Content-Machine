@@ -1266,6 +1266,163 @@ def list_projects():
     return summaries
 
 
+# The only project subdirectories any adapter may hand a file out of. Root
+# files (metadata.json, video_spec.json, storyboard.json) are deliberately
+# excluded: those are read models with their own endpoints, never raw
+# downloads, and nothing outside these five is a deliverable or evidence.
+ASSET_DIRS = ("output", "thumbnail", "images", "audio", "logs")
+
+
+def project_file_path(video_id, relative):
+    """Resolve a project-relative asset path that is safe to serve.
+
+    The one place the "which files may leave the project directory" rule
+    lives, so the web API, a future MCP adapter and the CLI all refuse the
+    same things: absolute paths, `..` traversal, anything outside ASSET_DIRS,
+    and symlinks that resolve out of the project. Raises ProjectError with a
+    single problem string; returns the resolved Path of an existing file.
+    """
+    raw = str(relative or "")
+    if not raw or raw.startswith(("/", "\\")) or "\\" in raw:
+        raise ProjectError([f"not a servable asset path: {raw!r}"])
+    parts = raw.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        raise ProjectError([f"not a servable asset path: {raw!r}"])
+    if parts[0] not in ASSET_DIRS:
+        raise ProjectError([f"{parts[0]!r} is not a servable asset directory"])
+    if len(parts) < 2:
+        raise ProjectError([f"no such asset: {raw}"])
+
+    pdir = project_dir(video_id)
+    if not (pdir / "metadata.json").is_file():
+        raise ProjectError([f"not a project: {video_id}"])
+    # resolve() follows symlinks, so a link planted inside images/ that points
+    # at /etc/passwd lands outside the allowed directory and is refused here.
+    allowed_root = pdir.resolve() / parts[0]
+    candidate = (pdir / raw).resolve()
+    if allowed_root not in candidate.parents:
+        raise ProjectError([f"{raw!r} resolves outside the project"])
+    if not candidate.is_file():
+        raise ProjectError([f"no such asset: {raw}"])
+    return candidate
+
+
+def _file_entry(pdir, path):
+    stat = path.stat()
+    return {
+        "path": str(path.relative_to(pdir)),
+        "bytes": stat.st_size,
+        "modified_utc": datetime.fromtimestamp(stat.st_mtime, timezone.utc)
+        .replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def _read_json(path):
+    try:
+        return json.loads(path.read_text()) if path.is_file() else None
+    except (OSError, ValueError):
+        return None
+
+
+def project_assets(video_id):
+    """Everything on disk a reviewer can look at, as one read model.
+
+    A pure filesystem read, like status_report(): it lists what exists and
+    summarises the artefacts' own JSON (QC report, audio manifest,
+    storyboard, publication package). It computes no verdict - status_report
+    stays the only place that does - and every path it returns is relative
+    and serveable through project_file_path(). None if there is no project.
+    """
+    pdir = project_dir(video_id)
+    metadata = _read_json(pdir / "metadata.json")
+    if metadata is None:
+        return None
+
+    video_path = pdir / "output" / f"{video_id}.mp4"
+    video = _file_entry(pdir, video_path) if video_path.is_file() else None
+
+    thumbnails = [_file_entry(pdir, p)
+                  for p in list_assets(pdir / "thumbnail", (".jpg", ".jpeg", ".png"))]
+
+    board = storyboard_mod.load(video_id)
+    scene_by_image = {}
+    if board:
+        for scene in board.get("scenes", []):
+            if scene.get("image"):
+                scene_by_image[scene["image"]] = scene["scene_id"]
+    images = []
+    for p in list_assets(pdir / "images", SUPPORTED_IMAGE_EXTENSIONS):
+        entry = _file_entry(pdir, p)
+        entry["scene_id"] = scene_by_image.get(entry["path"])
+        images.append(entry)
+
+    audio = None
+    audio_files = list_assets(pdir / "audio", SUPPORTED_AUDIO_EXTENSIONS)
+    if audio_files:
+        audio = _file_entry(pdir, audio_files[0])
+        manifest = _read_json(pdir / "audio" / "audio_manifest.json") or {}
+        audio.update({
+            "seconds": manifest.get("actual_seconds"),
+            "mean_volume_db": manifest.get("mean_volume_db"),
+            "layers": [
+                {"id": layer.get("layer_id"), "provider": layer.get("provider"),
+                 "license": layer.get("license"), "voice": layer.get("voice")}
+                for layer in manifest.get("layers", [])
+            ],
+            "commercial_use_cleared": manifest.get("commercial_use_cleared"),
+            "attributions_required": manifest.get("attributions_required", []),
+        })
+
+    qc_report = _read_json(pdir / "output" / "qc_report.json")
+    qc = None
+    if qc_report:
+        qc = {
+            "status": qc_report.get("status"),
+            "checks_run": qc_report.get("checks_run"),
+            "checks_failed": qc_report.get("checks_failed"),
+            "failures": qc_report.get("failures", []),
+            "checks": [
+                {"check": c.get("check"), "passed": c.get("passed"), "detail": c.get("detail")}
+                for c in qc_report.get("checks", [])
+            ],
+        }
+
+    storyboard = None
+    if board:
+        storyboard = {
+            "scene_count": len(board.get("scenes", [])),
+            "timeline_seconds": board.get("timeline_seconds"),
+            "scenes": storyboard_mod.scene_summary(board),
+        }
+
+    package_json = _read_json(pdir / "output" / "publication_package.json")
+    package = None
+    if package_json:
+        package = {
+            "status": package_json.get("status"),
+            "blocking_issues": package_json.get("blocking_issues", []),
+            "generated_utc": package_json.get("generated_utc"),
+            "path": "output/publication_package.json",
+        }
+
+    logs = sorted(
+        (_file_entry(pdir, p) for p in (pdir / "logs").glob("*.log")
+         if p.is_file()),
+        key=lambda e: e["modified_utc"], reverse=True)[:10]
+
+    return {
+        "video_id": video_id,
+        "video": video,
+        "thumbnails": thumbnails,
+        "images": images,
+        "audio": audio,
+        "qc": qc,
+        "storyboard": storyboard,
+        "package": package,
+        "logs": logs,
+    }
+
+
 def cmd_status(args):
     """Report a project's verdict and whether it still applies.
 
@@ -1337,10 +1494,11 @@ def run_pipeline(video_id):
                     for problem in problems:
                         log.error("  - %s", problem)
                     return StageResult(False, 1, "storyboard is not renderable", {"problems": problems})
-                audio_seconds = None
-                audio_files = list_assets(pdir / "audio", SUPPORTED_AUDIO_EXTENSIONS)
-                if audio_files:
-                    audio_seconds = audio_duration(audio_files[0])
+                # The track the spec declares (already validated by
+                # load_project) - not "the first file in audio/", which is
+                # the wrong one whenever a hand-supplied source sits next
+                # to the composed track.wav.
+                audio_seconds = audio_duration(spec["audio_path"])
                 storyboard_report = qc.qc_storyboard(board, pdir, audio_seconds=audio_seconds)
                 qc.log_report(storyboard_report)
                 (pdir / "output").mkdir(parents=True, exist_ok=True)
@@ -1552,8 +1710,25 @@ def cmd_run(args):
     return run_pipeline(args.video_id).exit_code
 
 
-def run_produce(video_id, concept_id=None, duration=None, production_grade_visuals=None):
-    """CONCEPT -> creative -> images -> audio -> render -> QC -> package.
+def produce_uses_scenes(video_id, metadata):
+    """Whether one-click produce should build a storyboard for this project.
+
+    The auto rule, kept deliberately small and inspectable: a project that
+    already has a storyboard keeps it (so a re-run never silently switches
+    format), and a project with narration gets one (a script is what the
+    storyboard distributes across scenes - that is the whole point of it).
+    Everything else - the long static and slow-drift ambient formats - keeps
+    the image-cycling render, which is the cheap configuration those
+    formats were measured against (see knowledge: Render Throughput).
+    """
+    if storyboard_mod.load(video_id) is not None:
+        return True
+    return bool((metadata.get("script") or "").strip())
+
+
+def run_produce(video_id, concept_id=None, duration=None, production_grade_visuals=None,
+                scenes=None):
+    """CONCEPT -> research -> creative -> images -> audio -> render -> QC -> package.
 
     Orchestration only: every stage below is the existing, independently
     tested typed domain function, called the same way its own cmd_* shim
@@ -1562,11 +1737,16 @@ def run_produce(video_id, concept_id=None, duration=None, production_grade_visua
     importing it back would be circular for no benefit over the same CLI
     boundary every other stage already crosses.
 
+    ``scenes`` picks the image stage: True forces storyboard -> scenes,
+    False forces the single-plate ``visuals`` path, None (the default) lets
+    produce_uses_scenes() decide from the project itself. Research is
+    always attempted first; it is a no-op for concepts that don't require
+    it and fails closed for those that do when no source is configured.
+
     Deliberately does not hold project_lock itself: each stage below
-    (run_creative/run_visuals/run_audio/run_pipeline) acquires and releases
-    its own lock, exactly as it does when the CLI calls them one at a time.
-    An outer lock here would deadlock against them - fcntl locks are not
-    reentrant within one process.
+    acquires and releases its own lock, exactly as it does when the CLI
+    calls them one at a time. An outer lock here would deadlock against
+    them - fcntl locks are not reentrant within one process.
     """
     pdir = project_dir(video_id)
     if not pdir.exists():
@@ -1575,7 +1755,7 @@ def run_produce(video_id, concept_id=None, duration=None, production_grade_visua
                 "Project %s does not exist and no --concept-id was given "
                 "to scaffold one from.", video_id)
             return StageResult(False, 1, "no project and no concept_id to scaffold from")
-        log.info("=== Stage 1/5: concept -> scaffold ===")
+        log.info("=== Stage 1/6: concept -> scaffold ===")
         scaffold_cmd = [sys.executable, str(ROOT / "scripts" / "experiment.py"), "scaffold",
                         concept_id, video_id]
         if duration:
@@ -1585,15 +1765,29 @@ def run_produce(video_id, concept_id=None, duration=None, production_grade_visua
             log.error("Scaffold failed (exit %d)", rc)
             return StageResult(False, rc, "scaffold failed")
     else:
-        log.info("=== Stage 1/5: concept === reusing existing project %s", video_id)
+        log.info("=== Stage 1/6: concept === reusing existing project %s", video_id)
 
-    log.info("=== Stage 2/5: creative (title, script, description, image direction, audio plan) ===")
+    log.info("=== Stage 2/6: research (source-backed; no-op unless the concept requires it) ===")
+    result = run_research(video_id)
+    if not result.ok:
+        return result
+
+    log.info("=== Stage 3/6: creative (title, script, description, image direction, audio plan) ===")
     result = run_creative(video_id, force=False)
     if not result.ok:
         return result
 
-    log.info("=== Stage 3/5: images ===")
-    result = run_visuals(video_id)
+    metadata = json.loads((pdir / "metadata.json").read_text())
+    use_scenes = scenes if scenes is not None else produce_uses_scenes(video_id, metadata)
+    if use_scenes:
+        log.info("=== Stage 4/6: images (storyboard -> one image per scene) ===")
+        result = run_storyboard(video_id)
+        if not result.ok:
+            return result
+        result = run_scenes(video_id)
+    else:
+        log.info("=== Stage 4/6: images (single plate set) ===")
+        result = run_visuals(video_id)
     if not result.ok:
         return result
 
@@ -1609,19 +1803,20 @@ def run_produce(video_id, concept_id=None, duration=None, production_grade_visua
                 "production_grade"] = production_grade_visuals
             save_metadata(pdir, metadata)
 
-    log.info("=== Stage 4/5: audio ===")
+    log.info("=== Stage 5/6: audio ===")
     result = run_audio(video_id)
     if not result.ok:
         return result
 
-    log.info("=== Stage 5/5: render -> QC -> package ===")
+    log.info("=== Stage 6/6: render -> QC -> package ===")
     return run_pipeline(video_id)
 
 
 def cmd_produce(args):
     return run_produce(
         args.video_id, concept_id=args.concept_id, duration=args.duration,
-        production_grade_visuals=args.production_grade_visuals).exit_code
+        production_grade_visuals=args.production_grade_visuals,
+        scenes=args.scenes).exit_code
 
 
 REVIEW_DECISIONS = ("approved", "rejected")
@@ -1842,6 +2037,13 @@ def main():
         "--production-grade-visuals", dest="production_grade_visuals",
         action="store_const", const=True, default=None,
         help="declare the generated visuals as production-grade (a human decision - see init)")
+    p_produce.add_argument(
+        "--scenes", dest="scenes", action="store_const", const=True, default=None,
+        help="build a storyboard and one image per scene (default: automatic - "
+             "projects with narration or an existing storyboard use scenes)")
+    p_produce.add_argument(
+        "--no-scenes", dest="scenes", action="store_const", const=False,
+        help="force the single-plate image path even if the project has narration")
     p_produce.set_defaults(func=cmd_produce)
     p_status.set_defaults(func=cmd_status)
 

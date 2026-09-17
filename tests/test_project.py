@@ -1053,3 +1053,157 @@ class ReviewDecisionTest(ProjectTestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class ProjectAssetsTest(ProjectTestCase):
+    """project_assets() is a read model over what is on disk: it lists, it
+    summarises the artefacts' own JSON, and it never computes a verdict."""
+
+    def test_unknown_project_is_none(self):
+        self.assertIsNone(project.project_assets("pytest-no-such-project"))
+
+    def test_fresh_project_lists_images_and_audio_but_no_deliverable(self):
+        self.assertEqual(self.init_project().returncode, EXIT_OK)
+        assets = project.project_assets(self.video_id)
+        self.assertEqual(assets["video_id"], self.video_id)
+        self.assertIsNone(assets["video"])
+        self.assertIsNone(assets["qc"])
+        self.assertIsNone(assets["package"])
+        self.assertIsNone(assets["storyboard"])
+        self.assertEqual(assets["thumbnails"], [])
+        self.assertTrue(assets["images"])
+        for image in assets["images"]:
+            self.assertTrue(image["path"].startswith("images/"))
+            self.assertGreater(image["bytes"], 0)
+            self.assertIsNone(image["scene_id"])
+        self.assertTrue(assets["audio"]["path"].startswith("audio/"))
+        # No manifest yet - the composed-audio summary fields are absent/None.
+        self.assertIsNone(assets["audio"]["seconds"])
+        self.assertEqual(assets["audio"]["layers"], [])
+
+    def test_rendered_project_exposes_video_thumbnails_qc_and_package(self):
+        self.assertEqual(self.init_project().returncode, EXIT_OK)
+        proc = self.cm("run", self.video_id)
+        self.assertIn(proc.returncode, (EXIT_OK, EXIT_NEEDS_ATTENTION), proc.stderr)
+        assets = project.project_assets(self.video_id)
+        self.assertEqual(assets["video"]["path"], f"output/{self.video_id}.mp4")
+        self.assertGreater(assets["video"]["bytes"], 1024)
+        self.assertTrue(assets["thumbnails"])
+        self.assertEqual(assets["qc"]["status"], "PASS")
+        self.assertTrue(all("check" in c for c in assets["qc"]["checks"]))
+        self.assertIn(assets["package"]["status"], ("READY_FOR_REVIEW", "NEEDS_ATTENTION"))
+        self.assertEqual(assets["package"]["path"], "output/publication_package.json")
+        self.assertTrue(assets["logs"])
+        # Every listed path must be servable through the one path rule.
+        for entry in [assets["video"], assets["audio"], *assets["thumbnails"],
+                      *assets["images"], *assets["logs"]]:
+            self.assertTrue(project.project_file_path(self.video_id, entry["path"]).is_file())
+
+
+class ProjectFilePathTest(ProjectTestCase):
+    """The single rule for which files may leave a project directory."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(self.init_project().returncode, EXIT_OK)
+        self.image = project.project_assets(self.video_id)["images"][0]["path"]
+
+    def test_a_listed_asset_resolves(self):
+        resolved = project.project_file_path(self.video_id, self.image)
+        self.assertEqual(resolved, (self.pdir / self.image).resolve())
+
+    def assert_refused(self, relative, fragment):
+        with self.assertRaises(project.ProjectError) as ctx:
+            project.project_file_path(self.video_id, relative)
+        self.assertIn(fragment, ctx.exception.problems[0])
+
+    def test_traversal_and_absolute_paths_are_refused(self):
+        self.assert_refused("../metadata.json", "not a servable asset path")
+        self.assert_refused("images/../metadata.json", "not a servable asset path")
+        self.assert_refused("images/./x.png", "not a servable asset path")
+        self.assert_refused("/etc/passwd", "not a servable asset path")
+        self.assert_refused("images\\x.png", "not a servable asset path")
+        self.assert_refused("", "not a servable asset path")
+
+    def test_project_root_files_are_never_served(self):
+        self.assert_refused("metadata.json", "not a servable asset directory")
+        self.assert_refused("video_spec.json", "not a servable asset directory")
+        self.assert_refused("storyboard.json", "not a servable asset directory")
+
+    def test_missing_file_and_unknown_project_are_refused(self):
+        self.assert_refused("images/does-not-exist.png", "no such asset")
+        with self.assertRaises(project.ProjectError):
+            project.project_file_path("pytest-no-such-project", self.image)
+
+    def test_a_symlink_escaping_the_project_is_refused(self):
+        link = self.pdir / "images" / "escape.png"
+        link.symlink_to(Path("/etc/hostname"))
+        self.assert_refused("images/escape.png", "resolves outside the project")
+
+    def test_a_directory_is_not_a_file(self):
+        self.assert_refused("images", "no such asset")
+
+
+class TestProduceSceneSelection(ProduceTestCase):
+    """produce picks storyboard->scenes or single-plate visuals per project;
+    the rule is produce_uses_scenes() and the override is --scenes/--no-scenes."""
+
+    def test_forced_scenes_builds_a_storyboard_and_renders_it(self):
+        video_id = f"pytest-produce-{self.video_id}"
+        self.addCleanup(lambda: shutil.rmtree(ROOT / "projects" / video_id, ignore_errors=True))
+        proc = self.cm("produce", video_id, "--concept-id", "sleep-brown-noise-dark",
+                       "--duration", "6", "--scenes")
+        self.assertEqual(proc.returncode, EXIT_NEEDS_ATTENTION, proc.stderr + proc.stdout)
+        board = json.loads((ROOT / "projects" / video_id / "storyboard.json").read_text())
+        self.assertGreaterEqual(len(board["scenes"]), 1)
+        self.assertTrue(all(s["image"] for s in board["scenes"]))
+        assets = project.project_assets(video_id)
+        self.assertEqual(assets["storyboard"]["scene_count"], len(board["scenes"]))
+        self.assertTrue(assets["video"])
+        self.assertTrue(any(i["scene_id"] for i in assets["images"]))
+
+    def test_a_narrated_project_uses_scenes_automatically(self):
+        self.init_project("--duration", "6")
+        self.write_metadata({
+            "script": "Breathe in slowly. Hold for a moment. Let it go.",
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                          "generation_cost_usd": 0.0, "generation_seconds": None, "variables": {}},
+        })
+        self.assertTrue(project.produce_uses_scenes(self.video_id, self.metadata()))
+        proc = self.cm("produce", self.video_id)
+        self.assertIn(proc.returncode, (EXIT_OK, EXIT_NEEDS_ATTENTION), proc.stderr + proc.stdout)
+        self.assertTrue((self.pdir / "storyboard.json").is_file())
+        self.assertEqual(self.metadata()["status"]["storyboard"], "OK")
+
+    def test_an_ambient_project_keeps_the_single_plate_path(self):
+        self.init_project("--duration", "6")
+        self.write_metadata({
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                          "generation_cost_usd": 0.0, "generation_seconds": None, "variables": {}},
+        })
+        self.assertFalse(project.produce_uses_scenes(self.video_id, self.metadata()))
+        proc = self.cm("produce", self.video_id)
+        self.assertIn(proc.returncode, (EXIT_OK, EXIT_NEEDS_ATTENTION), proc.stderr + proc.stdout)
+        self.assertFalse((self.pdir / "storyboard.json").exists())
+
+    def test_no_scenes_overrides_narration(self):
+        self.init_project("--duration", "6")
+        self.write_metadata({
+            "script": "A sentence of narration.",
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                          "generation_cost_usd": 0.0, "generation_seconds": None, "variables": {}},
+        })
+        proc = self.cm("produce", self.video_id, "--no-scenes")
+        self.assertIn(proc.returncode, (EXIT_OK, EXIT_NEEDS_ATTENTION), proc.stderr + proc.stdout)
+        self.assertFalse((self.pdir / "storyboard.json").exists())
+
+    def test_an_existing_storyboard_is_kept_on_rerun(self):
+        self.init_project("--duration", "6")
+        self.write_metadata({
+            "visual_plan": {"prompt": "a dark still", "negative_prompt": "text",
+                           "style": "deep-night"},
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                          "generation_cost_usd": 0.0, "generation_seconds": None, "variables": {}},
+        })
+        self.assertEqual(self.cm("storyboard", self.video_id, "--scenes", "2").returncode, EXIT_OK)
+        self.assertTrue(project.produce_uses_scenes(self.video_id, self.metadata()))

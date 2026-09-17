@@ -6,4 +6,7 @@ urlpatterns = [
     path("", views.ProjectListView.as_view(), name="project-list"),
     path("<str:video_id>/", views.ProjectDetailView.as_view(), name="project-detail"),
     path("<str:video_id>/status/", views.ProjectStatusView.as_view(), name="project-status"),
+    path("<str:video_id>/assets/", views.ProjectAssetsView.as_view(), name="project-assets"),
+    path("<str:video_id>/files/<path:relative>", views.ProjectFileView.as_view(),
+         name="project-file"),
 ]

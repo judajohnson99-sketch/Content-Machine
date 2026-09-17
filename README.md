@@ -121,6 +121,24 @@ ComfyUI, then procedural plates, then an external API. See
 [Generation](#generation). The prompt comes from `metadata.visual_plan.prompt`
 unless `--prompt` overrides it.
 
+### One-click produce
+
+```bash
+./content-machine produce my-video --concept-id sleep-brown-noise-dark --duration 1800
+./content-machine produce my-video --scenes      # force storyboard -> one image per scene
+./content-machine produce my-video --no-scenes   # force the single plate set
+```
+
+`produce` runs the whole chain - research (a no-op unless the concept
+requires it) → creative → images → audio → assemble/render → QC → package -
+calling the same stage functions the individual commands do, so every
+stage's caching and reuse applies. Which image path it takes is decided by
+`produce_uses_scenes()`: a project with narration, or one that already has a
+storyboard, gets storyboard → scenes (motion, transitions, one image per
+scene); everything else - the long static and slow-drift ambient formats -
+keeps the single plate set that those formats' render costs were measured
+against. `--scenes`/`--no-scenes` override that rule.
+
 ### Queue a render for the GPU machine
 
 ```bash
@@ -198,7 +216,7 @@ python3 scripts/qc.py --video output/video/test_render.mp4 --spec config/video_s
 ## Testing
 
 ```bash
-./content-machine test          # 319 tests, ~85s
+./content-machine test          # 420 tests, ~2 min
 ```
 
 Covers the real CLIs end to end and inspects real media with ffprobe:
@@ -778,6 +796,30 @@ cd webapp && .venv/bin/celery -A cmweb worker --loglevel=info       # background
 redis-server                                                        # Celery broker (or docker-compose.dev.yml)
 cd frontend && npm run dev                                          # UI, :5173
 ```
+
+The Workspace and Review Center show the deliverable itself - the render
+(seekable, via HTTP range requests), thumbnail candidates, the QC report,
+the publication package's blocking list, generated images with their scene
+lineage, the composed audio with each layer's licence, the storyboard plan
+and run logs - through two read-only endpoints:
+
+- `GET /api/v1/projects/{id}/assets/` — `scripts.project.project_assets()`
+  verbatim: what exists on disk plus each artefact's own summary. It computes
+  no verdict; `status_report()` remains the only thing that does.
+- `GET /api/v1/projects/{id}/files/{path}` — one file, only from
+  `output/`, `thumbnail/`, `images/`, `audio/` or `logs/`, resolved by
+  `scripts.project.project_file_path()` - the single rule for which files
+  may leave a project directory (no traversal, no root files such as
+  `metadata.json`, no symlinks resolving outside the project). Every refusal
+  is a 404. Session-authenticated like everything else.
+
+`POST .../produce/` accepts an optional `scenes` boolean matching the CLI's
+`--scenes`/`--no-scenes`; omit it for the automatic rule.
+
+Full architecture (shared-domain boundary, Celery/`worker.py` ownership
+split, Postgres data-ownership table, concurrency, human-review domain
+operation): `/root/.claude/plans/effervescent-snuggling-lighthouse.md`.
+
 
 Full architecture (shared-domain boundary, Celery/`worker.py` ownership
 split, Postgres data-ownership table, concurrency, human-review domain

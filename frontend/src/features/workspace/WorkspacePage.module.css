@@ -1,0 +1,35 @@
+.grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.produceRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.produceDescription {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  max-width: 520px;
+  margin: 0;
+}
+
+.produceOption {
+  display: inline-block;
+  margin-top: var(--space-3);
+}
+
+.produceOption select {
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+}

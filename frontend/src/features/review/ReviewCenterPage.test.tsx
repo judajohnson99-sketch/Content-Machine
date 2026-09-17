@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import { ReviewCenterPage } from "./ReviewCenterPage";
+import * as assetsApi from "../../api/assets";
 import * as projectsApi from "../../api/projects";
 import * as reviewApi from "../../api/review";
 import type { ProjectSummary } from "../../types/project";
@@ -66,6 +67,10 @@ describe("ReviewCenterPage", () => {
       blocking: [], stale: false, digest_state: "MATCHES",
     });
     vi.spyOn(reviewApi, "listReviewDecisions").mockResolvedValue([]);
+    vi.spyOn(assetsApi, "getAssets").mockResolvedValue({
+      video_id: "abc", video: null, thumbnails: [], images: [], audio: null,
+      qc: null, storyboard: null, package: null, logs: [],
+    });
 
     renderPage();
     await waitFor(() => expect(screen.getByRole("button", { name: /A Video/ })).toBeInTheDocument());

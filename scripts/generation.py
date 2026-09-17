@@ -226,7 +226,8 @@ class ProceduralProvider(Provider):
         assets = []
         for i in range(request.count):
             path = out_dir / f"{prefix}_{i + 1:02d}.png"
-            make_visuals.build_still(style, i, path, request.seed)
+            make_visuals.build_still(style, i, path, request.seed,
+                                     width=request.width, height=request.height)
             make_visuals.stamp_provenance(path, style, request.seed, i)
             luma = make_visuals.measure_luma(path)
             if luma is not None and luma < make_visuals.MIN_MEAN_LUMA:

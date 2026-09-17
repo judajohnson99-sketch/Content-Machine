@@ -46,17 +46,24 @@ STYLES = {
 MIN_MEAN_LUMA = 34.0
 
 
-def build_still(style, index, out_path, seed):
-    """One plate: radial gradient, vignette, and a little noise to stop banding."""
+def build_still(style, index, out_path, seed, width=WIDTH, height=HEIGHT):
+    """One plate: radial gradient, vignette, and a little noise to stop banding.
+
+    ``width``/``height`` default to the output resolution for the plain
+    `visuals` path; a storyboard scene asks for its own (smaller) source
+    size, and the plate must actually be that size or storyboard QC's
+    dimension check - which exists to catch exactly that mismatch - fails.
+    """
     inner, outer = STYLES[style][0], STYLES[style][1]
+    width, height = int(width), int(height)
     # Vary a sequence by moving the gradient's centre, NOT by rotating the
     # frame: rotating a 16:9 plate leaves black corners (and near 90 degrees,
     # black most of the frame), which trips QC's blackdetect.
     offsets = ((0.50, 0.50), (0.38, 0.44), (0.62, 0.56),
                (0.44, 0.62), (0.58, 0.40), (0.50, 0.58))
     fx, fy = offsets[index % len(offsets)]
-    source = (f"gradients=s={WIDTH}x{HEIGHT}:c0={inner}:c1={outer}"
-              f":type=radial:x0={int(WIDTH * fx)}:y0={int(HEIGHT * fy)}"
+    source = (f"gradients=s={width}x{height}:c0={inner}:c1={outer}"
+              f":type=radial:x0={int(width * fx)}:y0={int(height * fy)}"
               f":nb_colors=2:seed={seed + index}:d=1")
     # Slight blur smooths gradient steps; noise adds dither so large flat
     # areas do not band under h264. A gentle vignette shapes the edges

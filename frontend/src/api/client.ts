@@ -1,7 +1,7 @@
 // Thin fetch wrapper - one function per DRF action, typed promises consumed
 // by React Query hooks. No business logic here: it never interprets a
 // gate verdict or pipeline state, only moves JSON.
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
 
 export class ApiError extends Error {
   status: number;
