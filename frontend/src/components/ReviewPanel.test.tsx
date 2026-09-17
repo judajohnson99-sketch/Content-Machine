@@ -107,6 +107,29 @@ describe("ReviewPanel", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/expected_digest is stale/i);
   });
 
+  it("only records a production-grade claim after an explicit confirmation", async () => {
+    vi.spyOn(projectsApi, "getProject").mockResolvedValue(project());
+    vi.spyOn(projectsApi, "getProjectStatus").mockResolvedValue(status());
+    vi.spyOn(reviewApi, "listReviewDecisions").mockResolvedValue([]);
+    vi.spyOn(assetsApi, "getAssets").mockResolvedValue({
+      video_id: "abc", video: null, thumbnails: [], audio: null, qc: null, storyboard: null, package: null, logs: [],
+      images: [{ path: "images/gen_1.png", bytes: 10, modified_utc: "2026-09-17T00:00:00Z", scene_id: null, generation: null }],
+      images_provenance: { provider: "comfyui", model: null, production_grade: null, production_grade_claim: null, notes: null },
+      visual_plan: { prompt: "x", negative_prompt: null, style: null },
+    });
+    const grade = vi.spyOn(reviewApi, "recordVisualGrade").mockResolvedValue({
+      utc: "2026-09-17T00:00:00Z", reviewer: "owner@example.com", notes: "", asset_count: 1, production_grade: true,
+    });
+
+    renderWithClient(<ReviewPanel videoId="abc" />);
+    const mark = await screen.findByRole("button", { name: "Mark production-grade" });
+    expect(mark).toBeDisabled();
+    await userEvent.click(screen.getByLabelText(/inspected every image/));
+    expect(mark).toBeEnabled();
+    await userEvent.click(mark);
+    await waitFor(() => expect(grade).toHaveBeenCalledWith("abc", true, ""));
+  });
+
   it("renders decision history newest first", async () => {
     vi.spyOn(projectsApi, "getProject").mockResolvedValue(project());
     vi.spyOn(projectsApi, "getProjectStatus").mockResolvedValue(status());

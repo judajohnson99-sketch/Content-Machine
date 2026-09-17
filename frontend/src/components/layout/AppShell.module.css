@@ -2,48 +2,106 @@
   display: grid;
   grid-template-columns: var(--sidebar-width) 1fr;
   min-height: 100svh;
+  transition: grid-template-columns var(--dur-2) var(--ease);
+}
+
+.shellCollapsed {
+  grid-template-columns: var(--sidebar-width-collapsed) 1fr;
 }
 
 .sidebar {
-  background: var(--bg-surface);
-  border-right: 1px solid var(--border-subtle);
-  display: flex;
-  flex-direction: column;
-  padding: var(--space-5) var(--space-3);
   position: sticky;
   top: 0;
   height: 100svh;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-4) var(--space-3);
+  background: linear-gradient(180deg, rgba(14, 20, 36, 0.9) 0%, rgba(9, 13, 25, 0.94) 100%);
+  border-right: 1px solid var(--border-subtle);
+  backdrop-filter: blur(14px);
+  overflow: hidden;
+}
+
+.sidebarTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 0 var(--space-1) var(--space-5);
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-2) var(--space-6);
+  gap: 10px;
   color: var(--text-primary);
   text-decoration: none;
+  min-width: 0;
 }
 
 .brandMark {
-  width: 26px;
-  height: 26px;
-  border-radius: var(--radius-sm);
-  background: linear-gradient(145deg, var(--accent), #7c5cff);
+  position: relative;
+  width: 30px;
+  height: 30px;
   flex: none;
+  border-radius: 9px;
+  background: conic-gradient(from 210deg, var(--indigo), var(--aqua), var(--violet), var(--indigo));
+  box-shadow: 0 6px 18px -6px rgba(124, 140, 255, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  display: grid;
+  place-items: center;
+}
+
+.brandCore {
+  width: 12px;
+  height: 12px;
+  border-radius: 4px;
+  background: rgba(7, 10, 20, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+
+.brandText {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  min-width: 0;
 }
 
 .brandName {
   font-size: var(--text-sm);
   font-weight: 700;
   letter-spacing: -0.01em;
-  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .brandSub {
   font-size: 10px;
   color: var(--text-tertiary);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.12em;
+}
+
+.collapseButton {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-xs);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  flex: none;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+
+.collapseButton:hover {
+  background: rgba(148, 163, 209, 0.1);
+  color: var(--text-primary);
+}
+
+.shellCollapsed .sidebarTop {
+  flex-direction: column;
+  padding-bottom: var(--space-4);
 }
 
 .navGroup {
@@ -52,64 +110,249 @@
   gap: 2px;
 }
 
-.navLabel {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--text-tertiary);
-  padding: var(--space-4) var(--space-2) var(--space-1);
-}
-
 .navItem {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: 8px var(--space-2);
+  gap: 10px;
+  min-height: 38px;
+  padding: 0 10px;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   text-decoration: none;
   font-size: var(--text-sm);
   font-weight: 500;
+  border: 1px solid transparent;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+  white-space: nowrap;
 }
 
 .navItem:hover {
-  background: var(--bg-surface-raised);
+  background: rgba(148, 163, 209, 0.08);
   color: var(--text-primary);
 }
 
-.navItemActive {
-  background: var(--accent-bg);
-  color: var(--accent);
+.navItemActive,
+.navItemActive:hover {
+  background: linear-gradient(90deg, rgba(124, 140, 255, 0.18), rgba(95, 214, 232, 0.08));
+  border-color: rgba(124, 140, 255, 0.28);
+  color: var(--text-primary);
 }
 
-.navBadge {
-  margin-left: auto;
-  font-size: 10px;
+.navIcon {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  flex: none;
+  color: inherit;
+}
+
+.navItemActive .navIcon {
+  color: var(--accent-2);
+}
+
+.navLabel {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.navCount {
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  border: 1px solid var(--warning-border);
+  display: grid;
+  place-items: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.shellCollapsed .navLabel,
+.shellCollapsed .navCount,
+.shellCollapsed .context,
+.shellCollapsed .systemText,
+.shellCollapsed .systemHead {
+  display: none;
+}
+
+.shellCollapsed .navItem {
+  justify-content: center;
+  padding: 0;
+}
+
+.context {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.contextLabel {
+  font-size: var(--text-2xs);
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.1em;
   color: var(--text-tertiary);
-  background: var(--bg-inset);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-full);
-  padding: 1px 7px;
+  padding: 0 10px 6px;
 }
 
-.navItemDisabled {
+.contextItem {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: 8px var(--space-2);
+  gap: 8px;
+  padding: 8px 10px;
   border-radius: var(--radius-sm);
-  color: var(--text-tertiary);
+  color: var(--text-primary);
+  text-decoration: none;
   font-size: var(--text-sm);
-  font-weight: 500;
-  cursor: default;
+  background: rgba(9, 13, 25, 0.5);
+  border: 1px solid var(--border-subtle);
+}
+
+.contextDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--aqua);
+  box-shadow: 0 0 12px var(--aqua);
+  flex: none;
+}
+
+.contextName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: var(--text-xs);
 }
 
 .spacer {
   flex: 1;
+}
+
+.systemPanel {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-3);
+}
+
+.systemHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px 8px;
+}
+
+.systemTitle {
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-tertiary);
+}
+
+.activePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  color: var(--info-fg);
+  background: var(--info-bg);
+  border: 1px solid var(--info-border);
+  border-radius: var(--radius-full);
+  padding: 1px 7px;
+}
+
+.activePill svg {
+  animation: cm-pulse 1.4s ease-in-out infinite;
+}
+
+.systemList {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.systemRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  min-width: 0;
+}
+
+.shellCollapsed .systemRow {
+  justify-content: center;
+  padding: 6px 0;
+}
+
+.systemIcon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  flex: none;
+  border: 1px solid var(--border-subtle);
+  background: rgba(9, 13, 25, 0.6);
+  color: var(--text-tertiary);
+}
+
+.tone_success {
+  color: var(--success-fg);
+  border-color: var(--success-border);
+  background: var(--success-bg);
+}
+.tone_warning {
+  color: var(--warning-fg);
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+}
+.tone_danger {
+  color: var(--danger-fg);
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+}
+.tone_info {
+  color: var(--info-fg);
+  border-color: var(--info-border);
+  background: var(--info-bg);
+}
+.tone_neutral {
+  color: var(--neutral-fg);
+}
+.tone_accent {
+  color: var(--accent-hover);
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+}
+
+.systemText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.systemName {
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+.systemValue {
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .main {
@@ -123,16 +366,17 @@
 }
 
 .content {
-  padding: var(--space-8) var(--space-8);
+  padding: var(--space-8) var(--space-8) var(--space-12);
   max-width: var(--content-max-width);
   width: 100%;
   margin: 0 auto;
   flex: 1;
 }
 
-/* Mobile: sidebar becomes a slide-in drawer, topbar carries the toggle */
-@media (max-width: 860px) {
-  .shell {
+/* Mobile: sidebar becomes a drawer, topbar carries the toggle + GPU state */
+@media (max-width: 900px) {
+  .shell,
+  .shellCollapsed {
     grid-template-columns: 1fr;
   }
 
@@ -143,18 +387,22 @@
     height: var(--topbar-height);
     padding: 0 var(--space-4);
     border-bottom: 1px solid var(--border-subtle);
-    background: var(--bg-surface);
+    background: var(--bg-glass);
+    backdrop-filter: blur(14px);
     position: sticky;
     top: 0;
     z-index: 20;
   }
 
+  .topbarStatus {
+    margin-left: auto;
+  }
+
   .menuButton {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 34px;
-    height: 34px;
+    display: inline-grid;
+    place-items: center;
+    width: 38px;
+    height: 38px;
     border-radius: var(--radius-sm);
     border: 1px solid var(--border-default);
     background: var(--bg-surface-raised);
@@ -162,18 +410,35 @@
     cursor: pointer;
   }
 
+  .collapseButton {
+    display: none;
+  }
+
   .sidebar {
     position: fixed;
     inset: 0 auto 0 0;
     z-index: 30;
-    width: min(78vw, 280px);
+    width: min(82vw, 300px);
     transform: translateX(-100%);
-    transition: transform 0.18s ease;
+    transition: transform var(--dur-2) var(--ease);
     box-shadow: var(--shadow-lg);
   }
 
   .sidebarOpen {
     transform: translateX(0);
+  }
+
+  .shellCollapsed .navLabel,
+  .shellCollapsed .navCount,
+  .shellCollapsed .context,
+  .shellCollapsed .systemText,
+  .shellCollapsed .systemHead {
+    display: initial;
+  }
+
+  .shellCollapsed .navItem {
+    justify-content: flex-start;
+    padding: 0 10px;
   }
 
   .backdrop {
@@ -184,6 +449,6 @@
   }
 
   .content {
-    padding: var(--space-5) var(--space-4);
+    padding: var(--space-5) var(--space-4) var(--space-10);
   }
 }

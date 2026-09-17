@@ -17,6 +17,15 @@ CONTENT_MACHINE_ROOT = BASE_DIR.parent                              # content-ma
 if str(CONTENT_MACHINE_ROOT) not in sys.path:
     sys.path.insert(0, str(CONTENT_MACHINE_ROOT))
 
+# The repository's .env (LLM_PROVIDER, API keys, GENERATION_ORDER,
+# COMFYUI_URL, SEARCH_PROVIDER...) is loaded here so a stage triggered from
+# the web/Celery sees exactly the configuration the CLI does. Real
+# environment variables always win over the file; nothing here is a secret
+# of the web layer's own.
+from scripts.envfile import load_env_file  # noqa: E402
+
+load_env_file(CONTENT_MACHINE_ROOT / ".env")
+
 SECRET_KEY = 'django-insecure-55^1i)5y=cxo@z9#3svfm*f19w3a#xf+@@&9s-*%hqjj@y56r8'
 
 DEBUG = True
@@ -36,6 +45,8 @@ INSTALLED_APPS = [
     'apps.projects',
     'apps.pipeline',
     'apps.review',
+    'apps.concepts',
+    'apps.system',
 ]
 
 MIDDLEWARE = [

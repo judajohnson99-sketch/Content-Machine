@@ -145,7 +145,7 @@ Concept: {content_format}
 Niche: {niche}
 Target audience: {target_audience}
 Working title pattern: {working_title_pattern}
-Visual direction: {visual_concept}
+Visual direction: {visual_concept}{direction_section}
 Audio direction: {audio_concept}
 Monetization hypothesis: {monetization_hypothesis}
 Target length: {minutes:.0f} minutes
@@ -154,7 +154,7 @@ Return a JSON object with exactly these keys:
 - "title": a concrete YouTube title under 100 characters, following the working title pattern's spirit
 - "description": a 2-4 sentence YouTube description, plain language, no hashtag spam
 - "narration_script": spoken narration text if this concept calls for narration, otherwise an empty string. Flat and calm where the concept asks for monotony; never mention it is AI-generated.
-- "image_prompt": a text-to-image prompt capturing the visual direction, suitable for a diffusion model
+- "image_prompt": a text-to-image prompt capturing the visual direction, suitable for a diffusion model. Where a palette, motifs and things to avoid are given, the prompt must use that palette and those motifs and must not include anything listed to avoid.
 - "negative_prompt": what to exclude from the image (e.g. text, watermarks, people, if not wanted)
 
 Do not claim the video is professionally produced or hand-made. Do not invent facts about the audience or channel."""
@@ -170,9 +170,32 @@ Sourced facts about the subject (from {source_count} source(s) via {provider}). 
 """
 
 
+def direction_section(concept):
+    """The concept's curated visual direction, as prompt guidance.
+
+    Reference concepts carry a palette, motifs and an avoid-list (a channel
+    preference recorded on the concept, never a pipeline rule); when
+    present they are handed to the model verbatim so the image prompt it
+    writes stays inside that vocabulary.
+    """
+    direction = concept.get("visual_direction") or {}
+    if not direction:
+        return ""
+    lines = []
+    for key, label in (("atmosphere", "Atmosphere"), ("palette", "Palette"),
+                       ("motifs", "Motifs"), ("avoid", "Avoid")):
+        value = direction.get(key)
+        if isinstance(value, (list, tuple)):
+            value = ", ".join(str(v) for v in value)
+        if value:
+            lines.append(f"{label}: {value}")
+    return ("\n" + "\n".join(lines)) if lines else ""
+
+
 def _mock_brief(concept):
     """The TEST_MODE reply: no network, deterministic, same shape as a real
     one. Mirrors generate.py's own TEST_MODE convention."""
+    direction = concept.get("visual_direction") or {}
     return {
         "title": f"[MOCK] {concept.get('working_title_pattern', concept.get('id', 'Untitled'))}",
         "description": f"[MOCK] {concept.get('content_format', '')}".strip() or "[MOCK] description",
@@ -180,8 +203,8 @@ def _mock_brief(concept):
             f"[MOCK narration] {concept.get('audio_concept', '')}"
             if concept.get("audio_source_requirement") == "tts_required" else ""
         ),
-        "image_prompt": concept.get("visual_concept", "abstract calm backdrop"),
-        "negative_prompt": "text, watermark, logo, people, faces",
+        "image_prompt": direction.get("prompt_core") or concept.get("visual_concept", "abstract calm backdrop"),
+        "negative_prompt": direction.get("negative") or "text, watermark, logo, people, faces",
     }
 
 
@@ -266,8 +289,12 @@ def _call_llm(provider, prompt):
     except subprocess.TimeoutExpired as e:
         raise CreativeError(f"LLM call timed out ({provider})") from e
     if result.returncode != 0:
-        raise CreativeError(
-            f"LLM call failed ({provider}): {result.stderr.strip()[-500:]}")
+        # The last line of stderr is the exception itself; the traceback
+        # above it belongs in the log, not in a message an operator reads.
+        lines = [line for line in result.stderr.strip().splitlines() if line.strip()]
+        reason = lines[-1][-500:] if lines else f"exit {result.returncode}"
+        log.error("LLM call failed (%s):\n%s", provider, result.stderr.strip()[-2000:])
+        raise CreativeError(f"LLM call failed ({provider}): {reason}")
     return result.stdout
 
 
@@ -312,6 +339,7 @@ def generate_brief(concept, target_seconds, subject_research=None):
         monetization_hypothesis=concept.get("monetization_hypothesis", ""),
         minutes=(target_seconds or 0) / 60.0,
         facts_section=facts_section,
+        direction_section=direction_section(concept),
     )
 
     provider = os.environ.get("LLM_PROVIDER", "anthropic").lower()

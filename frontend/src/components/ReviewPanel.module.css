@@ -1,13 +1,43 @@
 .panel {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-5);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.sectionTitle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-tertiary);
+}
+
+.stepNo {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  color: var(--accent-hover);
+  font-size: var(--text-2xs);
+  font-weight: 700;
 }
 
 .verdictRow {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: 10px;
   flex-wrap: wrap;
 }
 
@@ -16,30 +46,35 @@
   color: var(--warning-fg);
 }
 
+.digestOk {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
 .blockingList {
-  margin: 0;
   padding-left: 18px;
   font-size: var(--text-sm);
-  color: var(--text-secondary);
+  color: var(--warning-fg);
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 
 .notes {
   width: 100%;
-  max-width: 520px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-default);
+  padding: 10px 12px;
   border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-inset);
   color: var(--text-primary);
-  font-family: inherit;
   font-size: var(--text-sm);
-  padding: var(--space-2) var(--space-3);
   resize: vertical;
 }
-.notes::placeholder {
-  color: var(--text-tertiary);
+
+.notes:focus {
+  border-color: var(--accent-border);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-bg);
 }
 
 .actions {
@@ -47,64 +82,144 @@
   gap: var(--space-2);
 }
 
-.notice {
-  margin: 0;
+.noticeConflict,
+.noticeError {
   font-size: var(--text-sm);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-  max-width: 520px;
+  padding: 8px 10px;
+  border-radius: var(--radius-xs);
+  border: 1px solid;
 }
+
 .noticeConflict {
-  composes: notice;
   color: var(--warning-fg);
   background: var(--warning-bg);
-  border: 1px solid var(--warning-border);
+  border-color: var(--warning-border);
 }
+
 .noticeError {
-  composes: notice;
   color: var(--danger-fg);
   background: var(--danger-bg);
-  border: 1px solid var(--danger-border);
+  border-color: var(--danger-border);
 }
 
 .historyTitle {
-  font-size: var(--text-xs);
+  font-size: var(--text-2xs);
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.12em;
   color: var(--text-tertiary);
-  margin: 0 0 var(--space-2);
-}
-
-.historyList {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  list-style: none;
-}
-
-.historyItem {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
-  flex-wrap: wrap;
-}
-
-.historyMeta {
-  color: var(--text-tertiary);
-  font-size: var(--text-xs);
-}
-
-.historyNotes {
-  width: 100%;
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-  padding-left: 2px;
 }
 
 .emptyHistory {
   font-size: var(--text-sm);
   color: var(--text-tertiary);
-  margin: 0;
+}
+
+.historyList {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.historyItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: var(--text-sm);
+}
+
+.historyMeta {
+  color: var(--text-tertiary);
+}
+
+.historyNotes {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* Visual grade */
+.grade {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: rgba(9, 13, 25, 0.5);
+}
+
+.gradeHead {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.gradeIcon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--accent-hover);
+  flex: none;
+}
+
+.gradeText {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.gradeState {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.gradeHint {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.gradeForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.gradeConfirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.gradeConfirm input {
+  margin-top: 3px;
+  accent-color: var(--teal);
+}
+
+.gradeNotes {
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-default);
+  background: var(--bg-inset);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+
+.gradeActions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
 }

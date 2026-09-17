@@ -6,6 +6,7 @@ fixtures inside a temporary projects/ entry, then verifies the rendered
 MP4, QC report, and publication package. Standard library only.
 """
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -1207,3 +1208,149 @@ class TestProduceSceneSelection(ProduceTestCase):
         })
         self.assertEqual(self.cm("storyboard", self.video_id, "--scenes", "2").returncode, EXIT_OK)
         self.assertTrue(project.produce_uses_scenes(self.video_id, self.metadata()))
+
+
+class TestGpuWorkerDeferral(unittest.TestCase):
+    """A depicted-imagery stage that no synchronous provider can serve is
+    queued for the GPU worker (exit 2, never FAILED) when one is enrolled,
+    and the next run resumes from the completed job through the digest seam."""
+
+    PNG = b"\x89PNG\r\n\x1a\nFAKE-IMAGE-BYTES"
+
+    def setUp(self):
+        import experiment
+        import generation
+        import worker
+        self.experiment, self.generation, self.worker = experiment, generation, worker
+        self.video_id = f"pytest-gpu-{uuid.uuid4().hex[:8]}"
+        self.pdir = ROOT / "projects" / self.video_id
+        self.addCleanup(lambda: shutil.rmtree(self.pdir, ignore_errors=True))
+        self.tmp = Path(tempfile.mkdtemp(prefix="cm-deferral-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._jobs_dir = generation.JOBS_DIR
+        self._provider_state = generation.PROVIDER_STATE_PATH
+        generation.JOBS_DIR = self.tmp / "jobs"
+        generation.PROVIDER_STATE_PATH = generation.JOBS_DIR / "_provider_state.json"
+        self._env = {k: os.environ.pop(k, None) for k in (
+            "COMFYUI_URL", "GEMINI_IMAGE_ENABLED", "IMAGE_API_URL", "IMAGE_API_KEY",
+            "GENERATION_ORDER", "TEST_MODE")}
+        os.environ["TEST_MODE"] = "1"
+
+    def tearDown(self):
+        self.generation.JOBS_DIR = self._jobs_dir
+        self.generation.PROVIDER_STATE_PATH = self._provider_state
+        for key, value in self._env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def scaffold(self):
+        self.experiment.scaffold_project("ref-moonlit-victorian-glasshouse", self.video_id,
+                                         duration=20)
+        meta = json.loads((self.pdir / "metadata.json").read_text())
+        meta["visual_plan"] = {"prompt": "moonlit glasshouse", "negative_prompt": "text",
+                               "style": "deep-night"}
+        (self.pdir / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n")
+        return meta
+
+    def render_remotely(self, job_id):
+        """What the PC agent would do, minus the GPU: claim, upload, complete."""
+        worker = self.worker
+        worker.heartbeat("home-gpu-01", {"comfyui": "reachable", "comfyui_reachable": True})
+        job, reason = worker.claim("home-gpu-01")
+        self.assertEqual(reason, "CLAIMED")
+        self.assertEqual(job["job_id"], job_id)
+        lease = job["lease"]["lease_id"]
+        worker.report_progress(job_id, "home-gpu-01", lease, worker.SUBMITTED)
+        worker.report_progress(job_id, "home-gpu-01", lease, worker.RUNNING)
+        worker.report_progress(job_id, "home-gpu-01", lease, worker.UPLOADING)
+        digest = hashlib.sha256(self.PNG).hexdigest()
+        worker.stage_asset(job_id, "home-gpu-01", lease, "content-machine_0001.png",
+                           self.PNG, digest)
+        return worker.complete(job_id, "home-gpu-01", lease,
+                               [{"filename": "content-machine_0001.png", "sha256": digest,
+                                 "bytes": len(self.PNG)}],
+                               provider_job_id="prompt-1", model="test.safetensors")
+
+    def test_visuals_fail_when_no_worker_is_enrolled(self):
+        self.scaffold()
+        result = project.run_visuals(self.video_id)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(self.worker.load_jobs(), [])
+
+    def test_visuals_queue_for_the_gpu_worker_and_resume_once_it_lands(self):
+        self.scaffold()
+        self.worker.enroll("home-gpu-01", ("comfyui",))
+        result = project.run_visuals(self.video_id)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.exit_code, EXIT_NEEDS_ATTENTION, result.message)
+        self.assertTrue(result.data["waiting_for_gpu"])
+        self.assertIn("waiting for GPU worker", result.message)
+        self.assertEqual(result.data["gpu_state"], self.worker.GPU_OFFLINE)
+        jobs = self.worker.jobs_for_project(self.video_id)
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["wait_reason"], self.worker.WAITING_FOR_CAPABLE_WORKER)
+        self.assertEqual(jobs[0]["attempt"], 0)
+        meta = json.loads((self.pdir / "metadata.json").read_text())
+        self.assertEqual(meta["status"]["visuals"], project.VISUALS_WAITING_FOR_GPU)
+        self.assertIsNone(meta["provenance"]["images"].get("production_grade"))
+
+        # Re-running while it is still queued queues nothing new.
+        again = project.run_visuals(self.video_id)
+        self.assertEqual(again.exit_code, EXIT_NEEDS_ATTENTION)
+        self.assertEqual(len(self.worker.load_jobs()), 1)
+
+        # The PC renders it; the next run reuses the completed job.
+        self.render_remotely(jobs[0]["job_id"])
+        resumed = project.run_visuals(self.video_id)
+        self.assertTrue(resumed.ok, resumed.message)
+        meta = json.loads((self.pdir / "metadata.json").read_text())
+        images = meta["provenance"]["images"]
+        self.assertEqual(images["provider"], "comfyui")
+        self.assertEqual(images["job_id"], jobs[0]["job_id"])
+        self.assertIsNone(images["production_grade"], "a machine never affirms the claim")
+        self.assertEqual(meta["status"]["visuals"], "OK")
+        assets = project.project_assets(self.video_id)
+        self.assertEqual(len(assets["images"]), 1)
+        lineage = assets["images"][0]["generation"]
+        self.assertEqual(lineage["provider"], "comfyui")
+        self.assertEqual(lineage["worker_id"], "home-gpu-01")
+        self.assertEqual(lineage["prompt"], "moonlit glasshouse")
+        self.assertEqual(assets["visual_plan"]["prompt"], "moonlit glasshouse")
+        self.assertIsNone(assets["images_provenance"]["production_grade"])
+
+    def test_scenes_queue_one_job_per_unresolved_scene(self):
+        self.scaffold()
+        self.worker.enroll("home-gpu-01", ("comfyui",))
+        board = project.run_storyboard(self.video_id, scene_count=2)
+        self.assertTrue(board.ok, board.message)
+        result = project.run_scenes(self.video_id)
+        self.assertEqual(result.exit_code, EXIT_NEEDS_ATTENTION, result.message)
+        self.assertEqual(len(result.data["remote_jobs"]), 2)
+        storyboard = json.loads((self.pdir / "storyboard.json").read_text())
+        for scene in storyboard["scenes"]:
+            self.assertIn(scene["generation"]["job_id"], result.data["remote_jobs"])
+            self.assertEqual(scene["generation"]["remote_state"], self.worker.QUEUED)
+            self.assertIsNone(scene.get("image"))
+        summary = project.project_assets(self.video_id)["storyboard"]["scenes"]
+        self.assertTrue(all(s["job_id"] for s in summary))
+
+    def test_visual_grade_is_an_explicit_human_claim(self):
+        self.scaffold()
+        with self.assertRaises(project.ReviewDecisionError):
+            project.record_visual_grade(self.video_id, "", True)
+        with self.assertRaises(project.ReviewDecisionError):
+            project.record_visual_grade(self.video_id, "owner@example.com", True)   # no images
+        entry = project.record_visual_grade(self.video_id, "owner@example.com", False,
+                                            notes="plates only")
+        self.assertFalse(entry["production_grade"])
+        (self.pdir / "images").mkdir(exist_ok=True)
+        (self.pdir / "images" / "gen_1.png").write_bytes(self.PNG)
+        entry = project.record_visual_grade(self.video_id, "owner@example.com", True)
+        meta = json.loads((self.pdir / "metadata.json").read_text())
+        self.assertTrue(meta["provenance"]["images"]["production_grade"])
+        self.assertEqual(meta["provenance"]["images"]["production_grade_claim"]["reviewer"],
+                         "owner@example.com")
+        self.assertEqual(entry["asset_count"], 1)

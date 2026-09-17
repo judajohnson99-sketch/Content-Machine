@@ -11,6 +11,7 @@ protocol is tested, not a mock of it, and the Gemini adapter the same way.
 """
 import base64
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -304,19 +305,38 @@ class FakeComfyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    # What the stand-in reports as installed. Tests that need "no checkpoint"
+    # or "a different one" override this on the class.
+    checkpoints = ["test-checkpoint.safetensors", "other.safetensors"]
+
     def do_GET(self):
         if self.path.startswith("/system_stats"):
             if self.behaviour["mode"] == "unhealthy":
                 self._json(500, {"error": "down"})
             else:
-                self._json(200, {"system": {"comfyui_version": "test"}})
+                self._json(200, {"system": {"comfyui_version": "test"},
+                                 "devices": [{"name": "cuda:0 Fake GPU 3GB",
+                                              "vram_total": 3 * 1024 ** 3,
+                                              "vram_free": 2 * 1024 ** 3}]})
+        elif self.path.startswith("/object_info/CheckpointLoaderSimple"):
+            self._json(200, {"CheckpointLoaderSimple": {"input": {"required": {
+                "ckpt_name": [list(self.checkpoints), {}]}}}})
         elif self.path.startswith("/history/"):
             prompt_id = self.path.rsplit("/", 1)[-1]
             if self.behaviour["mode"] == "never_finishes":
                 self._json(200, {})
             elif self.behaviour["mode"] == "job_error":
-                self._json(200, {prompt_id: {"status": {"status_str": "error",
-                                                        "completed": True}}})
+                self._json(200, {prompt_id: {"status": {
+                    "status_str": "error", "completed": True,
+                    "messages": [["execution_start", {}], ["execution_error", {
+                        "node_type": "VAEDecode", "exception_type": "RuntimeError",
+                        "exception_message": "transient decode failure"}]]}}})
+            elif self.behaviour["mode"] == "oom":
+                self._json(200, {prompt_id: {"status": {
+                    "status_str": "error", "completed": True,
+                    "messages": [["execution_start", {}], ["execution_error", {
+                        "node_type": "KSampler", "exception_type": "torch.OutOfMemoryError",
+                        "exception_message": "CUDA out of memory. Tried to allocate 1.2 GiB"}]]}}})
             elif self.behaviour["mode"] == "no_images":
                 self._json(200, {prompt_id: {"status": {"completed": True},
                                              "outputs": {}}})
@@ -444,6 +464,101 @@ class ComfyUIAdapterTestCase(unittest.TestCase):
         self.assertEqual(graph["5"]["inputs"]["width"], 1280)
         self.assertEqual(graph["5"]["inputs"]["height"], 720)
         self.assertEqual(graph["3"]["inputs"]["seed"], 7)
+
+
+class LowVramWorkflowTestCase(unittest.TestCase):
+    """The default graph renders a bounded latent and upscales in-graph, and
+    the checkpoint is resolved rather than hard-coded."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = HTTPServer(("127.0.0.1", 0), FakeComfyHandler)
+        cls.url = f"http://127.0.0.1:{cls.server.server_port}"
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self):
+        FakeComfyHandler.behaviour["mode"] = "ok"
+        self.tmp = Path(tempfile.mkdtemp(prefix="cm-comfy-"))
+        self.request = generation.GenerationRequest(prompt="a lit window", count=1)
+        self._model_env = os.environ.pop("COMFYUI_MODEL", None)
+        self._budget_env = os.environ.pop("COMFYUI_LATENT_MAX_PIXELS", None)
+        FakeComfyHandler.checkpoints = ["test-checkpoint.safetensors", "other.safetensors"]
+        self.provider = generation.ComfyUIProvider(url=self.url)   # default workflow
+
+    def tearDown(self):
+        if self._model_env is not None:
+            os.environ["COMFYUI_MODEL"] = self._model_env
+        if self._budget_env is not None:
+            os.environ["COMFYUI_LATENT_MAX_PIXELS"] = self._budget_env
+        FakeComfyHandler.checkpoints = ["test-checkpoint.safetensors", "other.safetensors"]
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_latent_size_keeps_aspect_within_the_budget(self):
+        self.assertEqual(generation.latent_size(1920, 1080, 512 * 512), (680, 384))
+        self.assertEqual(generation.latent_size(512, 512, 512 * 512), (512, 512))
+        self.assertEqual(generation.latent_size(400, 300, 512 * 512), (400, 300))
+        w, h = generation.latent_size(1920, 1080, 768 * 768)
+        self.assertEqual((w % 8, h % 8), (0, 0))
+        self.assertLessEqual(w * h, 768 * 768)
+
+    def test_default_workflow_renders_small_and_upscales_to_the_request(self):
+        request = generation.GenerationRequest(prompt="x", width=1920, height=1080)
+        graph = self.provider._load_workflow(request)
+        self.assertEqual((graph["5"]["inputs"]["width"], graph["5"]["inputs"]["height"]), (680, 384))
+        self.assertEqual((graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]), (1920, 1080))
+        self.assertEqual(graph["9"]["inputs"]["images"], ["10", 0])
+        self.assertEqual(graph["4"]["inputs"]["ckpt_name"], "test-checkpoint.safetensors")
+
+    def test_model_precedence_request_then_env_then_installed(self):
+        self.assertEqual(self.provider.resolve_model(
+            generation.GenerationRequest(prompt="x", model="other.safetensors")), "other.safetensors")
+        os.environ["COMFYUI_MODEL"] = "other.safetensors"
+        self.assertEqual(self.provider.resolve_model(generation.GenerationRequest(prompt="x")),
+                         "other.safetensors")
+        os.environ.pop("COMFYUI_MODEL")
+        self.assertEqual(self.provider.resolve_model(generation.GenerationRequest(prompt="x")),
+                         "test-checkpoint.safetensors")
+
+    def test_a_checkpoint_comfyui_does_not_have_is_refused_before_rendering(self):
+        with self.assertRaises(generation.GenerationError) as ctx:
+            self.provider.resolve_model(generation.GenerationRequest(prompt="x", model="nope.ckpt"))
+        self.assertIn("checkpoint not installed", str(ctx.exception))
+
+    def test_no_checkpoint_anywhere_is_a_clear_error(self):
+        FakeComfyHandler.checkpoints = []
+        provider = generation.ComfyUIProvider(url=self.url)
+        with self.assertRaises(generation.GenerationError) as ctx:
+            provider.resolve_model(generation.GenerationRequest(prompt="x"))
+        self.assertIn("no checkpoint available", str(ctx.exception))
+
+    def test_execution_errors_surface_the_real_reason(self):
+        FakeComfyHandler.behaviour["mode"] = "oom"
+        with self.assertRaises(generation.GenerationError) as ctx:
+            self.provider.generate(self.request, self.tmp, timeout=5)
+        self.assertIn("CUDA out of memory", str(ctx.exception))
+        self.assertIn("KSampler", str(ctx.exception))
+
+    def test_probe_reports_gpu_and_installed_checkpoints(self):
+        report = self.provider.probe(timeout=5)
+        self.assertTrue(report["reachable"])
+        self.assertEqual(report["gpu"], "cuda:0 Fake GPU 3GB")
+        self.assertEqual(report["vram_total_mb"], 3072)
+        self.assertEqual(report["checkpoints"], ["test-checkpoint.safetensors", "other.safetensors"])
+        offline = generation.ComfyUIProvider(url="http://127.0.0.1:1")
+        self.assertFalse(offline.probe(timeout=1)["reachable"])
+
+    def test_generate_records_the_upscale_in_its_notes(self):
+        result = self.provider.generate(
+            generation.GenerationRequest(prompt="x", width=1920, height=1080, count=1),
+            self.tmp, timeout=5)
+        self.assertEqual(result["model"], "test-checkpoint.safetensors")
+        self.assertIn("680x384 -> 1920x1080", result["notes"])
 
 
 class ProceduralProviderTestCase(unittest.TestCase):

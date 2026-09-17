@@ -24,6 +24,10 @@ def list_review_decisions(video_id):
     return metadata.get("review_history", [])
 
 
+def record_visual_grade(video_id, reviewer, production_grade, notes):
+    return project.record_visual_grade(video_id, reviewer, production_grade, notes=notes)
+
+
 def record_decision(video_id, reviewer, decision, notes, expected_digest):
     return project.record_review_decision(
         video_id, reviewer, decision, notes=notes, expected_digest=expected_digest)

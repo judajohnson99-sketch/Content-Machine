@@ -8,8 +8,45 @@ export interface AssetFile {
   modified_utc: string;
 }
 
+// How one image was made - scripts.project's _image_lineage(), read from
+// the generation job store. Null when the job record is gone.
+export interface ImageLineage {
+  job_id: string;
+  provider: string | null;
+  model: string | null;
+  worker_id: string | null;
+  produces_depicted: boolean | null;
+  prompt: string | null;
+  negative_prompt: string | null;
+  seed: number | null;
+  width: number | null;
+  height: number | null;
+  completed_at: string | null;
+  notes: string | null;
+}
+
 export interface ImageAsset extends AssetFile {
   scene_id: string | null;
+  generation?: ImageLineage | null;
+}
+
+export interface ImagesProvenance {
+  provider: string | null;
+  model: string | null;
+  production_grade: boolean | null;
+  production_grade_claim: {
+    utc: string;
+    reviewer: string;
+    notes: string;
+    asset_count: number;
+  } | null;
+  notes: string | null;
+}
+
+export interface VisualPlan {
+  prompt: string | null;
+  negative_prompt: string | null;
+  style: string | null;
 }
 
 export interface AudioLayer {
@@ -69,6 +106,8 @@ export interface ProjectAssets {
   video: AssetFile | null;
   thumbnails: AssetFile[];
   images: ImageAsset[];
+  images_provenance?: ImagesProvenance | null;
+  visual_plan?: VisualPlan | null;
   audio: AudioAsset | null;
   qc: QcSummary | null;
   storyboard: StoryboardSummary | null;

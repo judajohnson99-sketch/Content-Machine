@@ -1,5 +1,5 @@
 // Mirrors apps/review/serializers.py exactly - the API is the source of
-// truth for this shape.
+// truth for these shapes.
 
 export type ReviewDecisionKind = "approved" | "rejected";
 
@@ -9,4 +9,12 @@ export interface ReviewDecision {
   decision: ReviewDecisionKind;
   notes: string;
   gate_digest: string;
+}
+
+export interface VisualGradeClaim {
+  utc: string;
+  reviewer: string;
+  notes: string;
+  asset_count: number;
+  production_grade: boolean;
 }

@@ -18,11 +18,15 @@ taken on faith.
 import argparse
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import generation  # noqa: E402
+import worker  # noqa: E402
 import project as project_mod  # noqa: E402
+import subject_research  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 log = logging.getLogger("experiment")
@@ -235,39 +239,67 @@ def cmd_validate(args):
     return 0
 
 
-def cmd_scaffold(args):
-    """Turn a concept into a real project directory."""
-    _, concepts = load_concepts()
-    concept = next((c for c in concepts if c["id"] == args.concept_id), None)
-    if not concept:
-        log.error("No such concept: %s", args.concept_id)
-        return 1
+class ScaffoldError(project_mod.ProjectError):
+    """scaffold_project refused. ``code`` is one of "invalid" (bad input),
+    "unknown_concept", "exists" or "assets" so an adapter can map it to the
+    right HTTP status without parsing the message."""
 
-    pdir = project_mod.project_dir(args.video_id)
-    if pdir.exists() and not args.force:
-        log.error("Project already exists: %s (use --force)", pdir)
-        return 1
+    def __init__(self, code, problem):
+        super().__init__([problem])
+        self.code = code
+
+
+# A project id is a directory name, a URL segment and a YouTube-facing
+# slug at once: lowercase, digits and hyphens only, 3-64 characters.
+VIDEO_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
+
+
+def find_concept(concept_id, concepts=None):
+    if concepts is None:
+        _, concepts = load_concepts()
+    return next((c for c in concepts if c["id"] == concept_id), None)
+
+
+def scaffold_project(concept_id, video_id, duration=None, images=None, audio=None, force=False):
+    """Turn a concept into a real project directory.
+
+    The one implementation behind `experiment.py scaffold`, the web API's
+    POST /projects/ and run_produce's scaffold step. Returns a summary dict;
+    raises ScaffoldError rather than logging-and-returning so every caller
+    sees the same refusal.
+    """
+    if not VIDEO_ID_RE.match(video_id or ""):
+        raise ScaffoldError(
+            "invalid",
+            f"invalid project id {video_id!r}: use 3-64 lowercase letters, digits or hyphens")
+    concept = find_concept(concept_id)
+    if not concept:
+        raise ScaffoldError("unknown_concept", f"No such concept: {concept_id}")
+    if duration is not None and float(duration) <= 0:
+        raise ScaffoldError("invalid", f"duration must be positive, got {duration!r}")
+
+    pdir = project_mod.project_dir(video_id)
+    if pdir.exists() and not force:
+        raise ScaffoldError("exists", f"project already exists: {video_id}")
 
     template_path = EXPERIMENTS_DIR / concept["spec_template"]
     spec = json.loads(template_path.read_text())
     spec.pop("_comment", None)
-    if args.duration:
-        spec["duration_seconds"] = float(args.duration)
+    if duration:
+        spec["duration_seconds"] = float(duration)
 
     for sub in project_mod.SUBDIRS:
         (pdir / sub).mkdir(parents=True, exist_ok=True)
 
     assets_ready = False
-    if args.images and args.audio:
-        images_src = Path(args.images).expanduser().resolve()
-        audio_src = Path(args.audio).expanduser().resolve()
+    if images and audio:
+        images_src = Path(images).expanduser().resolve()
+        audio_src = Path(audio).expanduser().resolve()
         sources = project_mod.list_assets(images_src, project_mod.SUPPORTED_IMAGE_EXTENSIONS)
         if not sources:
-            log.error("No supported images found in %s", images_src)
-            return 1
+            raise ScaffoldError("assets", f"no supported images found in {images_src}")
         if not audio_src.is_file():
-            log.error("Audio file not found: %s", audio_src)
-            return 1
+            raise ScaffoldError("assets", f"audio file not found: {audio_src}")
         for image in sources:
             project_mod.ingest(image, pdir / "images")
         audio_dest, _ = project_mod.ingest(audio_src, pdir / "audio")
@@ -278,7 +310,7 @@ def cmd_scaffold(args):
     (pdir / "video_spec.json").write_text(json.dumps(spec, indent=2) + "\n")
 
     metadata = project_mod.build_metadata(
-        args.video_id,
+        video_id,
         title=concept.get("working_title_pattern"),
         concept=concept["content_format"],
         audience=concept["target_audience"],
@@ -310,16 +342,192 @@ def cmd_scaffold(args):
     })
     metadata["status"]["assets"] = "READY" if assets_ready else "PENDING"
     project_mod.save_metadata(pdir, metadata)
-
     log.info("Scaffolded %s from concept '%s'", pdir, concept["id"])
-    if assets_ready:
+    return {
+        "video_id": video_id,
+        "concept_id": concept["id"],
+        "project_dir": str(pdir),
+        "duration_seconds": spec["duration_seconds"],
+        "assets_ready": assets_ready,
+    }
+
+
+def cmd_scaffold(args):
+    """Turn a concept into a real project directory."""
+    try:
+        result = scaffold_project(
+            args.concept_id, args.video_id, duration=args.duration,
+            images=args.images, audio=args.audio, force=args.force)
+    except ScaffoldError as e:
+        log.error("%s", e)
+        if e.code == "exists":
+            log.error("Use --force to re-scaffold over it.")
+        return 1
+
+    if result["assets_ready"]:
         log.info("Assets present. Render with: ./content-machine run %s", args.video_id)
     else:
+        pdir = Path(result["project_dir"])
         log.info("Assets PENDING. Add images to %s/images and audio to %s/audio,",
                  pdir.name, pdir.name)
         log.info("then: ./content-machine validate %s", args.video_id)
+        concept = find_concept(result["concept_id"])
         log.info("Audio requirement: %s", AUDIO_CAPABILITY[concept["audio_source_requirement"]])
     return 0
+
+
+# --------------------------------------------------------------------------
+# concept catalogue - the read model behind "start a new production"
+# --------------------------------------------------------------------------
+
+AUDIO_READINESS = {
+    "synthesisable_now": "ok",
+    "tts_required": "ok",
+    "licensed_or_recorded": "partial",
+    "licensed_or_recorded_plus_mixing": "partial",
+    "music_generation_or_licensed": "blocked",
+    "music_generation_plus_mixing": "blocked",
+}
+
+
+# Concept kinds. "reference" is the curated showcase set - what the channel
+# would actually publish; "technical" is a regression concept kept for the
+# pipeline's own sake (dark-screen noise beds that exercise the QC floor);
+# "experiment" is the ranked information-value batch. The New Production
+# surface leads with reference, keeps technical out of the default view.
+CONCEPT_KINDS = ("reference", "experiment", "technical")
+DEFAULT_CONCEPT_KIND = "experiment"
+
+# Which GPU-worker readiness states mean a depicted render would start now.
+_GPU_STARTS_NOW = ("worker_ready", "worker_busy")
+
+
+def host_capabilities():
+    """What this host can do right now, from configuration and the worker
+    registry alone.
+
+    No network probes: ``configured()`` is a pure settings check and the GPU
+    worker's readiness is derived from its last heartbeat on disk, so this
+    is cheap enough for a page load. Live provider health is `providers`'
+    job. A future control adapter (or NeuroSpace) reads the same dict.
+    """
+    router = generation.Router()
+    depicted = [p.name for p in router.candidates() if p.produces_depicted and p.configured()]
+    search = subject_research.provider_status()
+    gpu = worker.depicted_readiness()
+    if depicted:
+        state, detail = "provider_configured", f"depicted-image provider configured: {', '.join(depicted)}"
+    elif gpu["state"] == worker.GPU_NO_WORKER:
+        state, detail = "unavailable", gpu["detail"]
+    else:
+        state, detail = gpu["state"], gpu["detail"]
+    return {
+        "depicted_image_providers": depicted,
+        "procedural_images": True,
+        "search_provider": search["configured"],
+        "search_available": search["available"],
+        "narration_available": True,
+        "depicted_imagery": {"state": state, "detail": detail,
+                             "starts_now": bool(depicted) or gpu["state"] in _GPU_STARTS_NOW,
+                             "worker_id": gpu.get("worker_id")},
+        "remote_gpu": gpu,
+    }
+
+
+def concept_readiness(concept, capabilities):
+    """Per-concept answer to "can this run here, and what would stop it?"
+
+    Derived from the concept's declared requirements and host_capabilities()
+    only - never from a run's outcome, and never a promise about quality.
+    """
+    notes = []
+    depicted = capabilities.get("depicted_imagery") or {}
+    gpu_state = (capabilities.get("remote_gpu") or {}).get("state")
+    if concept.get("procedural_visuals_acceptable"):
+        images, images_via = "ok", "procedural"
+    elif capabilities["depicted_image_providers"]:
+        images, images_via = "ok", f"provider:{capabilities['depicted_image_providers'][0]}"
+    elif gpu_state in _GPU_STARTS_NOW:
+        images, images_via = "ok", "gpu-worker"
+    elif gpu_state and gpu_state != worker.GPU_NO_WORKER:
+        # A worker exists but cannot start right now: the job will queue
+        # and wait, at no cost, and production pauses at the image stage.
+        images, images_via = "partial", "gpu-worker"
+        notes.append(f"Depicted imagery will queue for the GPU worker "
+                     f"({depicted.get('detail', gpu_state)}); production pauses at "
+                     "the image stage until it renders.")
+    else:
+        images, images_via = "blocked", None
+        notes.append("Needs depicted imagery; no image provider that produces it is "
+                     "configured and no GPU worker is enrolled (procedural plates "
+                     "would be rejected at review).")
+
+    audio = AUDIO_READINESS.get(concept.get("audio_source_requirement"), "blocked")
+    if audio != "ok":
+        notes.append(AUDIO_CAPABILITY.get(concept.get("audio_source_requirement"), "audio requirement unknown"))
+
+    if not concept.get("requires_subject_research"):
+        research = "n/a"
+    elif capabilities["search_available"]:
+        research = "ok"
+    else:
+        research = "blocked"
+        notes.append("Needs source-backed subject research; no SEARCH_PROVIDER is configured, "
+                     "so produce fails closed at the research stage.")
+
+    return {
+        "images": images,
+        "images_via": images_via,
+        "audio": audio,
+        "research": research,
+        "runnable_now": images == "ok" and audio != "blocked" and research != "blocked",
+        "waits_for_gpu": images == "partial",
+        "notes": notes,
+    }
+
+
+def concept_kind(concept):
+    kind = concept.get("kind") or DEFAULT_CONCEPT_KIND
+    return kind if kind in CONCEPT_KINDS else DEFAULT_CONCEPT_KIND
+
+
+def narration_status(concept):
+    requirement = concept.get("audio_source_requirement")
+    if requirement == "tts_required":
+        return "narrated"
+    return "none"
+
+
+def concept_catalog():
+    """Every concept as the new-production UI needs it, ranked as `list` ranks."""
+    _, concepts = load_concepts()
+    capabilities = host_capabilities()
+    catalog = []
+    for concept in ranked(concepts):
+        catalog.append({
+            "id": concept["id"],
+            "kind": concept_kind(concept),
+            "niche": concept["niche"],
+            "title_pattern": concept.get("working_title_pattern"),
+            "tagline": concept.get("tagline"),
+            "creative_intent": concept.get("creative_intent"),
+            "visual_direction": concept.get("visual_direction") or {},
+            "narration": narration_status(concept),
+            "preview_seconds": concept.get("preview_seconds"),
+            "content_format": concept["content_format"],
+            "target_audience": concept["target_audience"],
+            "video_length_minutes": concept["video_length_minutes"],
+            "visual_concept": concept["visual_concept"],
+            "audio_concept": concept["audio_concept"],
+            "audio_requirement": concept["audio_source_requirement"],
+            "procedural_visuals_acceptable": bool(concept.get("procedural_visuals_acceptable")),
+            "requires_subject_research": bool(concept.get("requires_subject_research")),
+            "production_complexity": concept["production_complexity"],
+            "risks": concept["risks"],
+            "score": round(score(concept), 3),
+            "readiness": concept_readiness(concept, capabilities),
+        })
+    return {"capabilities": capabilities, "concepts": catalog}
 
 
 def main():

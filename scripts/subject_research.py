@@ -157,6 +157,25 @@ def _select_provider(providers=None):
     return providers.get(name)
 
 
+def provider_status(providers=None):
+    """Whether sourced research can run here, from configuration alone.
+
+    ``configured`` is what SEARCH_PROVIDER names (or "fixture" under
+    TEST_MODE); ``available`` is whether that resolves to a provider this
+    build knows and which reports itself configured. Read by the concept
+    catalogue so the UI can say, before a run, that a research-required
+    concept would fail closed - never a reason to fall back to model memory.
+    """
+    providers = providers if providers is not None else build_search_providers()
+    provider = _select_provider(providers)
+    configured = "fixture" if os.environ.get("TEST_MODE") == "1" else _env("SEARCH_PROVIDER")
+    return {
+        "configured": configured,
+        "available": bool(provider is not None and provider.configured()),
+        "known": sorted(providers),
+    }
+
+
 # --------------------------------------------------------------------------
 # topic derivation - deterministic, no LLM
 # --------------------------------------------------------------------------

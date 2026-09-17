@@ -5,12 +5,13 @@ import { ArrowLeftIcon } from "./icons";
 
 interface Props {
   title: ReactNode;
+  eyebrow?: ReactNode;
   description?: ReactNode;
   backTo?: { to: string; label: string };
   actions?: ReactNode;
 }
 
-export function PageHeader({ title, description, backTo, actions }: Props) {
+export function PageHeader({ title, eyebrow, description, backTo, actions }: Props) {
   return (
     <div className={styles.header}>
       <div>
@@ -20,6 +21,7 @@ export function PageHeader({ title, description, backTo, actions }: Props) {
             {backTo.label}
           </Link>
         )}
+        {eyebrow && <div className={styles.eyebrow}>{eyebrow}</div>}
         <h1 className={styles.title}>{title}</h1>
         {description && <p className={styles.description}>{description}</p>}
       </div>

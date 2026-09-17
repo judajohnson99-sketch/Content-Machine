@@ -138,3 +138,38 @@ class TestNoAutomatedCaller:
     def test_tasks_module_never_imports_review_service(self):
         import apps.engine.tasks as tasks_module
         assert not hasattr(tasks_module, "review")
+
+
+@pytest.mark.django_db
+class TestVisualGradeView:
+    def test_records_the_claim_with_the_session_user_as_reviewer(self, client, owner):
+        entry = {"utc": "2026-09-17T00:00:00Z", "reviewer": owner.get_username(),
+                 "notes": "reviewed at full size", "asset_count": 3, "production_grade": True}
+        with patch("apps.review.views.review_service.record_visual_grade",
+                   return_value=entry) as record:
+            response = client.post("/api/v1/projects/abc/visual-grade/",
+                                   {"production_grade": True, "notes": "reviewed at full size"},
+                                   format="json")
+        assert response.status_code == 201
+        assert response.json() == entry
+        record.assert_called_once_with("abc", owner.email or owner.get_username(), True,
+                                       "reviewed at full size")
+
+    def test_the_claim_is_required_never_defaulted(self, client):
+        with patch("apps.review.views.review_service.record_visual_grade") as record:
+            response = client.post("/api/v1/projects/abc/visual-grade/", {}, format="json")
+        assert response.status_code == 400
+        record.assert_not_called()
+
+    def test_a_refused_claim_is_a_409(self, client):
+        import scripts.project as project
+        with patch("apps.review.views.review_service.record_visual_grade",
+                   side_effect=project.ReviewDecisionError("no images")):
+            response = client.post("/api/v1/projects/abc/visual-grade/",
+                                   {"production_grade": True}, format="json")
+        assert response.status_code == 409
+
+    def test_unauthenticated_request_is_rejected(self):
+        response = APIClient().post("/api/v1/projects/abc/visual-grade/",
+                                    {"production_grade": True}, format="json")
+        assert response.status_code == 403

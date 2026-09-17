@@ -130,3 +130,74 @@ class TestProjectFileView:
                                   HTTP_RANGE="bytes=500-600")
         assert response.status_code == 416
         assert response["Content-Range"] == "bytes */100"
+
+
+@pytest.mark.django_db
+class TestProjectCreateView:
+    def _summary(self):
+        return {"video_id": "calm-001", "selected_title": None, "concept_id": "sleep-brown-noise-dark",
+                "niche": "adult_sleep", "overall_status": "DRAFT", "created_utc": "2026-09-17T00:00:00Z"}
+
+    def test_scaffolds_and_returns_the_new_summary(self, client):
+        with patch("apps.projects.views.concepts_service.create_project",
+                   return_value=self._summary()) as create:
+            response = client.post("/api/v1/projects/",
+                                   {"video_id": "calm-001", "concept_id": "sleep-brown-noise-dark",
+                                    "duration": 600}, format="json")
+        assert response.status_code == 201
+        assert response.json()["video_id"] == "calm-001"
+        create.assert_called_once_with("calm-001", "sleep-brown-noise-dark", duration=600.0)
+
+    def test_duration_is_optional(self, client):
+        with patch("apps.projects.views.concepts_service.create_project",
+                   return_value=self._summary()) as create:
+            client.post("/api/v1/projects/",
+                        {"video_id": "calm-001", "concept_id": "sleep-brown-noise-dark"}, format="json")
+        create.assert_called_once_with("calm-001", "sleep-brown-noise-dark", duration=None)
+
+    def test_malformed_id_is_refused_before_the_domain_layer(self, client):
+        with patch("apps.projects.views.concepts_service.create_project") as create:
+            response = client.post("/api/v1/projects/",
+                                   {"video_id": "../etc", "concept_id": "x"}, format="json")
+        assert response.status_code == 400
+        create.assert_not_called()
+
+    def test_existing_project_is_a_409(self, client):
+        import scripts.experiment as experiment
+        with patch("apps.projects.views.concepts_service.create_project",
+                   side_effect=experiment.ScaffoldError("exists", "project already exists: calm-001")):
+            response = client.post("/api/v1/projects/",
+                                   {"video_id": "calm-001", "concept_id": "sleep-brown-noise-dark"},
+                                   format="json")
+        assert response.status_code == 409
+        assert response.json()["code"] == "exists"
+
+    def test_unknown_concept_is_a_400(self, client):
+        import scripts.experiment as experiment
+        with patch("apps.projects.views.concepts_service.create_project",
+                   side_effect=experiment.ScaffoldError("unknown_concept", "no such concept: nope")):
+            response = client.post("/api/v1/projects/",
+                                   {"video_id": "calm-001", "concept_id": "nope"}, format="json")
+        assert response.status_code == 400
+        assert response.json()["code"] == "unknown_concept"
+
+    def test_unauthenticated_create_is_rejected(self):
+        response = APIClient().post("/api/v1/projects/",
+                                    {"video_id": "calm-001", "concept_id": "x"}, format="json")
+        assert response.status_code == 403
+
+
+@pytest.mark.django_db
+class TestProjectGpuJobsView:
+    def test_returns_404_for_an_unknown_project(self, client):
+        with patch("apps.projects.views.projects_service.get_metadata", return_value=None):
+            response = client.get("/api/v1/projects/nope/gpu-jobs/")
+        assert response.status_code == 404
+
+    def test_returns_the_queues_own_view(self, client):
+        fake = [{"job_id": "abc", "state": "QUEUED", "wait_reason": "WAITING_FOR_CAPABLE_WORKER"}]
+        with patch("apps.projects.views.projects_service.get_metadata", return_value={"video_id": "vid"}), \
+             patch("apps.projects.views.workers_service.project_jobs", return_value=fake):
+            response = client.get("/api/v1/projects/vid/gpu-jobs/")
+        assert response.status_code == 200
+        assert response.json() == fake

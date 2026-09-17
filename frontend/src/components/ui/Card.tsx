@@ -3,10 +3,13 @@ import styles from "./Card.module.css";
 
 interface CardProps extends HTMLAttributes<HTMLDivElement> {
   padded?: boolean;
+  inset?: boolean;
 }
 
-export function Card({ padded = true, className, children, ...rest }: CardProps) {
-  const classes = [styles.card, padded ? styles.padded : "", className].filter(Boolean).join(" ");
+export function Card({ padded = true, inset = false, className, children, ...rest }: CardProps) {
+  const classes = [styles.card, padded ? styles.padded : "", inset ? styles.inset : "", className]
+    .filter(Boolean)
+    .join(" ");
   return (
     <div className={classes} {...rest}>
       {children}
@@ -16,14 +19,16 @@ export function Card({ padded = true, className, children, ...rest }: CardProps)
 
 interface CardHeaderProps {
   title: ReactNode;
+  eyebrow?: ReactNode;
   description?: ReactNode;
   actions?: ReactNode;
 }
 
-export function CardHeader({ title, description, actions }: CardHeaderProps) {
+export function CardHeader({ title, eyebrow, description, actions }: CardHeaderProps) {
   return (
     <div className={styles.header}>
       <div>
+        {eyebrow && <div className={styles.eyebrow}>{eyebrow}</div>}
         <h3 className={styles.title}>{title}</h3>
         {description && <p className={styles.description}>{description}</p>}
       </div>

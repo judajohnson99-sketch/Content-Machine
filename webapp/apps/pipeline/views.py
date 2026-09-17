@@ -84,6 +84,18 @@ class PipelineRunDetailView(APIView):
         return Response(PipelineRunSerializer(run).data)
 
 
+class RecentPipelineRunsView(APIView):
+    """GET /api/v1/pipeline-runs/ - in-flight runs plus the latest finished
+    ones across all projects, for the dashboard's activity view."""
+
+    def get(self, request):
+        runs = pipeline_service.recent_runs()
+        return Response({
+            "active": PipelineRunSerializer(runs["active"], many=True).data,
+            "recent": PipelineRunSerializer(runs["recent"], many=True).data,
+        })
+
+
 class PipelineRunListView(APIView):
     """GET /api/v1/projects/{video_id}/pipeline-runs/ - the latest run per
     stage, for the pipeline view (architecture plan §13's

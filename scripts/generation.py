@@ -57,7 +57,10 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 log = logging.getLogger("generation")
 
 ROOT = Path(__file__).resolve().parent.parent
-JOBS_DIR = ROOT / "jobs"
+# CONTENT_MACHINE_JOBS_DIR relocates the whole job store (completed jobs,
+# provider cooldowns, the worker registry and queue) - tests use it so a
+# subprocess never touches the real registry or queues real GPU work.
+JOBS_DIR = Path(os.environ.get("CONTENT_MACHINE_JOBS_DIR") or (ROOT / "jobs"))
 PROVIDER_STATE_PATH = JOBS_DIR / "_provider_state.json"
 
 # Order matters: free providers first (workstation, then always-on local),
@@ -69,6 +72,14 @@ DEFAULT_ORDER = ("comfyui", "procedural", "gemini", "api")
 
 DEFAULT_HEALTH_TIMEOUT = 5.0
 DEFAULT_GENERATE_TIMEOUT = 300.0
+
+# ComfyUI renders a *latent* no larger than this and lets the workflow graph
+# upscale to the requested size. 512x512 is what the GTX 1060 3GB worker is
+# verified to fit (knowledge: GPU Worker Render Capacity); a bigger card
+# raises COMFYUI_LATENT_MAX_PIXELS. The request keeps its real width/height,
+# so the digest still describes the asset the pipeline asked for.
+DEFAULT_LATENT_MAX_PIXELS = 512 * 512
+DEFAULT_COMFYUI_WORKFLOW = ROOT / "config" / "comfyui_workflow_lowvram_upscale.json"
 DEFAULT_COOLDOWN_SECONDS = 300.0
 DEFAULT_ATTEMPTS = 2
 
@@ -110,6 +121,22 @@ def _notify(progress, event, detail=None):
         progress(event, detail)
     except Exception as e:  # noqa: BLE001 - deliberately never fatal
         log.warning("progress callback failed on %s: %s", event, e)
+
+
+def latent_size(width, height, max_pixels=None):
+    """The largest latent (multiples of 8) with ``width:height``'s aspect
+    ratio that fits ``max_pixels``. A request already inside the budget is
+    rendered at its own size - nothing is ever upscaled needlessly."""
+    width, height = int(width), int(height)
+    budget = int(max_pixels if max_pixels is not None
+                 else _env_float("COMFYUI_LATENT_MAX_PIXELS", DEFAULT_LATENT_MAX_PIXELS))
+    budget = max(budget, 64 * 64)
+    if width * height <= budget:
+        return width, height
+    scale = (budget / float(width * height)) ** 0.5
+    lw = max(64, int(width * scale) // 8 * 8)
+    lh = max(64, int(height * scale) // 8 * 8)
+    return lw, lh
 
 
 def _env_float(name, default):
@@ -255,16 +282,98 @@ class ComfyUIProvider(Provider):
     produces_depicted = True
     costs_money = False
 
-    # Placeholders substituted into the workflow template.
-    PLACEHOLDERS = ("%prompt%", "%negative%", "%width%", "%height%", "%seed%", "%model%")
+    # Placeholders substituted into the workflow template. %latent_width% /
+    # %latent_height% are the VRAM-bounded render size (see latent_size);
+    # %width% / %height% stay the size the caller asked for, which a
+    # low-VRAM graph reaches by upscaling before SaveImage.
+    PLACEHOLDERS = ("%prompt%", "%negative%", "%width%", "%height%", "%seed%", "%model%",
+                    "%latent_width%", "%latent_height%")
 
     def __init__(self, url=None, workflow_path=None):
         self.url = (url if url is not None else _env("COMFYUI_URL") or "").rstrip("/")
         self.workflow_path = workflow_path or _env(
-            "COMFYUI_WORKFLOW", str(ROOT / "config" / "comfyui_workflow.example.json"))
+            "COMFYUI_WORKFLOW", str(DEFAULT_COMFYUI_WORKFLOW))
+        self._checkpoints = None
 
     def configured(self):
         return bool(self.url)
+
+    def _get_json(self, endpoint, timeout):
+        with urllib.request.urlopen(f"{self.url}{endpoint}", timeout=timeout) as response:
+            if response.status != 200:
+                raise OSError(f"HTTP {response.status} from {endpoint}")
+            return json.loads(response.read().decode("utf-8"))
+
+    def installed_checkpoints(self, timeout=DEFAULT_HEALTH_TIMEOUT):
+        """Checkpoint names ComfyUI itself reports, or [] when it cannot say.
+
+        Asked once per provider instance: the answer only changes when
+        someone installs a model, and a render must not re-probe every scene.
+        """
+        if self._checkpoints is not None:
+            return self._checkpoints
+        names = []
+        if self.configured():
+            try:
+                info = self._get_json("/object_info/CheckpointLoaderSimple", timeout)
+                node = info.get("CheckpointLoaderSimple") or {}
+                required = ((node.get("input") or {}).get("required") or {})
+                options = (required.get("ckpt_name") or [[]])[0]
+                names = [str(n) for n in options if isinstance(n, str)]
+            except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError,
+                    AttributeError, IndexError, TypeError):
+                names = []
+        self._checkpoints = names
+        return names
+
+    def resolve_model(self, request=None):
+        """The checkpoint a render will use, in order of explicitness.
+
+        The request may name one, COMFYUI_MODEL may configure one, and
+        failing both the first checkpoint ComfyUI reports as installed is
+        used - so no model name is ever hard-coded here. When ComfyUI knows
+        the installed list and the chosen name is not on it, that is a
+        configuration fault on this machine, reported before any GPU time
+        is spent on it.
+        """
+        chosen = (request.model if request is not None else None) or _env("COMFYUI_MODEL")
+        installed = self.installed_checkpoints()
+        if not chosen:
+            if not installed:
+                raise GenerationError(
+                    "no checkpoint available: set COMFYUI_MODEL or install a "
+                    "checkpoint in ComfyUI (it reported none)")
+            chosen = installed[0]
+        elif installed and chosen not in installed:
+            raise GenerationError(
+                f"checkpoint not installed in ComfyUI: {chosen!r} "
+                f"(installed: {', '.join(installed[:8]) or 'none'})")
+        return chosen
+
+    def probe(self, timeout=DEFAULT_HEALTH_TIMEOUT):
+        """What this ComfyUI is: reachability, the GPU it drives, and the
+        checkpoints it can load. Never raises; the worker agent reports it
+        in every heartbeat so the control plane can tell 'the PC is on' from
+        'the PC can actually render'."""
+        ok, detail = self.health(timeout)
+        report = {"reachable": ok, "detail": detail, "gpu": None,
+                  "vram_total_mb": None, "vram_free_mb": None, "checkpoints": []}
+        if not ok:
+            return report
+        try:
+            stats = self._get_json("/system_stats", timeout)
+            device = ((stats.get("devices") or [{}])[0]) or {}
+            report["gpu"] = device.get("name")
+            if device.get("vram_total"):
+                report["vram_total_mb"] = int(device["vram_total"] / (1024 * 1024))
+            if device.get("vram_free"):
+                report["vram_free_mb"] = int(device["vram_free"] / (1024 * 1024))
+        except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError,
+                TypeError, IndexError):
+            pass
+        self._checkpoints = None
+        report["checkpoints"] = self.installed_checkpoints(timeout)
+        return report
 
     def health(self, timeout=DEFAULT_HEALTH_TIMEOUT):
         if not self.configured():
@@ -286,13 +395,16 @@ class ComfyUIProvider(Provider):
         if not path.is_file():
             raise GenerationError(f"ComfyUI workflow template not found: {path}")
         raw = path.read_text()
+        latent_width, latent_height = latent_size(request.width, request.height)
         substitutions = {
             "%prompt%": request.prompt,
             "%negative%": request.negative_prompt,
             "%width%": str(request.width),
             "%height%": str(request.height),
+            "%latent_width%": str(latent_width),
+            "%latent_height%": str(latent_height),
             "%seed%": str(request.seed),
-            "%model%": request.model or _env("COMFYUI_MODEL", "sd_xl_base_1.0.safetensors"),
+            "%model%": self.resolve_model(request),
         }
         for token, value in substitutions.items():
             # json.dumps then strip the quotes: escapes quotes/newlines in a
@@ -311,8 +423,15 @@ class ComfyUIProvider(Provider):
         req = urllib.request.Request(
             f"{self.url}{endpoint}", data=data,
             headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            # ComfyUI explains a 400 in the body (node_errors: which node,
+            # which input, e.g. an unknown ckpt_name). Without it the
+            # operator sees "Bad Request" and has to guess.
+            body = e.read().decode("utf-8", "replace").strip()
+            raise OSError(f"HTTP {e.code}: {_summarise_comfy_error(body)}")
 
     def generate(self, request, out_dir, timeout=DEFAULT_GENERATE_TIMEOUT,
                  progress=None):
@@ -339,6 +458,7 @@ class ComfyUIProvider(Provider):
         prompt_id = submitted.get("prompt_id")
         if not prompt_id:
             raise GenerationError(f"ComfyUI returned no prompt_id: {submitted}")
+        latent_width, latent_height = latent_size(request.width, request.height)
 
         _notify(progress, "submitted", prompt_id)
         outputs = self._await_outputs(prompt_id, timeout, progress)
@@ -350,10 +470,11 @@ class ComfyUIProvider(Provider):
             "provider_job_id": prompt_id,
             # The model actually submitted, resolved the same way the workflow
             # substitution resolves it - so provenance matches what ran.
-            "model": (request.model or _env("COMFYUI_MODEL")
-                      or "sd_xl_base_1.0.safetensors"),
+            "model": self.resolve_model(request),
             "cost_usd": 0.0,
-            "notes": f"generated on ComfyUI at {self.url}",
+            "notes": (f"generated on ComfyUI at {self.url} via "
+                      f"{Path(self.workflow_path).name}, latent "
+                      f"{latent_width}x{latent_height} -> {request.width}x{request.height}"),
         }
 
     def _await_outputs(self, prompt_id, timeout, progress=None):
@@ -376,7 +497,8 @@ class ComfyUIProvider(Provider):
             if entry:
                 status = (entry.get("status") or {})
                 if status.get("status_str") == "error":
-                    raise GenerationError(f"ComfyUI job {prompt_id} failed: {status}")
+                    raise GenerationError(
+                        f"ComfyUI job {prompt_id} failed: {_execution_error(status)}")
                 images = []
                 for node in (entry.get("outputs") or {}).values():
                     images.extend(node.get("images") or [])
@@ -670,6 +792,43 @@ class GeminiProvider(Provider):
         raise GenerationError(
             "Gemini returned no image data (finishReason="
             f"{candidate.get('finishReason')!r})")
+
+
+def _execution_error(status):
+    """The one line ComfyUI's history buries in its message list: which node
+    failed and why. This is where 'CUDA out of memory' and 'checkpoint not
+    found' surface, and the worker agent classifies failures from it."""
+    for item in status.get("messages") or []:
+        try:
+            event, data = item[0], item[1]
+        except (TypeError, IndexError, KeyError):
+            continue
+        if event == "execution_error" and isinstance(data, dict):
+            return (f"{data.get('node_type') or 'node'}: "
+                    f"{data.get('exception_type') or 'error'}: "
+                    f"{str(data.get('exception_message') or '').strip()[:300]}")
+    return json.dumps({k: v for k, v in status.items() if k != "messages"})[:300]
+
+
+def _summarise_comfy_error(body):
+    """Flatten a /prompt rejection body to its node_errors, when it has any."""
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return body[:300]
+    if not isinstance(parsed, dict):
+        return body[:300]
+    parts = []
+    for node_id, node in (parsed.get("node_errors") or {}).items():
+        for err in (node.get("errors") or []) if isinstance(node, dict) else []:
+            parts.append(f"node {node_id} ({node.get('class_type', '?')}): "
+                         f"{err.get('message', '')} {err.get('details', '')}".strip())
+    if parts:
+        return "; ".join(parts)[:300]
+    error = parsed.get("error")
+    if isinstance(error, dict):
+        return f"{error.get('message', '')} {error.get('details', '')}".strip()[:300]
+    return body[:300]
 
 
 def build_providers():

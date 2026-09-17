@@ -130,3 +130,127 @@ export function FolderIcon(props: IconProps) {
     </svg>
   );
 }
+
+export function ImageIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <rect x="3" y="4" width="14" height="12" rx="1.6" />
+      <circle cx="7.2" cy="8" r="1.3" />
+      <path d="m3.5 14.5 4.2-4 3 2.8 2.3-2.2 3.5 3.4" />
+    </svg>
+  );
+}
+
+export function FilmIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <rect x="3" y="4" width="14" height="12" rx="1.6" />
+      <path d="M3 8h14M3 12h14M7 4v12M13 4v12" />
+    </svg>
+  );
+}
+
+export function WaveIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M3 10h1.5l1.5-4 2 8 2-9 2 10 2-7 1.5 2H17" />
+    </svg>
+  );
+}
+
+export function GpuIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <rect x="2.5" y="5" width="15" height="9" rx="1.6" />
+      <circle cx="8" cy="9.5" r="2.2" />
+      <path d="M12.5 8h2.5M12.5 11h2.5M5 14v2M9 14v2M13 14v2" />
+    </svg>
+  );
+}
+
+export function ActivityIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M2.5 10h3l2-5 3 10 2.5-7 1.5 2h3" />
+    </svg>
+  );
+}
+
+export function SparkIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M10 3v3.5M10 13.5V17M3 10h3.5M13.5 10H17M5.4 5.4l2.2 2.2M12.4 12.4l2.2 2.2M14.6 5.4l-2.2 2.2M7.6 12.4l-2.2 2.2" />
+    </svg>
+  );
+}
+
+export function EyeIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M2.5 10s2.8-5 7.5-5 7.5 5 7.5 5-2.8 5-7.5 5-7.5-5-7.5-5Z" />
+      <circle cx="10" cy="10" r="2.4" />
+    </svg>
+  );
+}
+
+export function ShieldIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M10 2.8 4 5v4.4c0 3.6 2.6 6.5 6 7.8 3.4-1.3 6-4.2 6-7.8V5l-6-2.2Z" />
+      <path d="m7.4 10 1.8 1.8 3.4-3.6" />
+    </svg>
+  );
+}
+
+export function RefreshIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M16 9.5A6 6 0 0 0 5.2 6.4M4 10.5a6 6 0 0 0 10.8 3.1" />
+      <path d="M15.5 3.5v3.3h-3.3M4.5 16.5v-3.3h3.3" />
+    </svg>
+  );
+}
+
+export function SearchIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <circle cx="9" cy="9" r="5.2" />
+      <path d="m13 13 4 4" />
+    </svg>
+  );
+}
+
+export function CollapseIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <rect x="3" y="3.5" width="14" height="13" rx="1.6" />
+      <path d="M8 3.5v13M13.5 8 11.5 10l2 2" />
+    </svg>
+  );
+}
+
+export function XIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="m5 5 10 10M15 5 5 15" />
+    </svg>
+  );
+}
+
+export function InfoIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <circle cx="10" cy="10" r="7" />
+      <path d="M10 9v4.5" />
+      <circle cx="10" cy="6.6" r="0.2" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+export function CheckIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="m4.5 10.5 3.5 3.5 7.5-8" />
+    </svg>
+  );
+}

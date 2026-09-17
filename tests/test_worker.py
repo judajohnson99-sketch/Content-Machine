@@ -770,6 +770,81 @@ class _CountingProvider(generation.Provider):
 
 # --- HTTP API --------------------------------------------------------------
 
+class ReadinessTests(WorkerTestCase):
+    """Readiness is derived on every read and distinguishes 'the PC is on'
+    from 'the PC can render this'."""
+
+    def test_no_enrolled_worker_means_nowhere_to_run(self):
+        self.assertFalse(worker.remote_capable())
+        report = worker.depicted_readiness()
+        self.assertEqual(report["state"], worker.GPU_NO_WORKER)
+        self.assertEqual(report["workers"], [])
+
+    def test_an_enrolled_but_silent_worker_is_offline_yet_capable(self):
+        self.enroll()
+        self.assertTrue(worker.remote_capable())
+        self.assertFalse(worker.remote_capable(("comfyui", "sdxl")))
+        report = worker.depicted_readiness()
+        self.assertEqual(report["state"], worker.GPU_OFFLINE)
+        self.assertEqual(report["worker_id"], "home-gpu-01")
+
+    def test_a_revoked_worker_does_not_count(self):
+        self.enroll()
+        worker.set_revoked("home-gpu-01")
+        self.assertFalse(worker.remote_capable())
+        self.assertEqual(worker.depicted_readiness()["state"], worker.GPU_NO_WORKER)
+
+    def test_online_states_follow_the_heartbeat_report(self):
+        self.enroll()
+        worker.heartbeat("home-gpu-01", {"comfyui": "unavailable: unreachable",
+                                         "comfyui_reachable": False})
+        self.assertEqual(worker.depicted_readiness()["state"], worker.GPU_COMFYUI_UNAVAILABLE)
+        worker.heartbeat("home-gpu-01", {"comfyui": "reachable", "comfyui_reachable": True,
+                                         "checkpoints": ["a.safetensors"], "model": "b.safetensors"})
+        report = worker.depicted_readiness()
+        self.assertEqual(report["state"], worker.GPU_MODEL_UNAVAILABLE)
+        self.assertIn("b.safetensors", report["detail"])
+        worker.heartbeat("home-gpu-01", {"comfyui": "reachable", "comfyui_reachable": True,
+                                         "checkpoints": ["a.safetensors"], "model": "a.safetensors",
+                                         "current_job": "abcdef0123456789"})
+        self.assertEqual(worker.depicted_readiness()["state"], worker.GPU_BUSY)
+        worker.heartbeat("home-gpu-01", {"comfyui": "reachable", "comfyui_reachable": True,
+                                         "checkpoints": ["a.safetensors"], "model": "a.safetensors",
+                                         "current_job": None})
+        self.assertEqual(worker.depicted_readiness()["state"], worker.GPU_READY)
+        stale = worker.depicted_readiness(now=time.time() + worker.online_seconds() + 5)
+        self.assertEqual(stale["state"], worker.GPU_STALE)
+
+    def test_the_best_worker_decides_the_state(self):
+        self.enroll("gpu-a")
+        self.enroll("gpu-b")
+        worker.heartbeat("gpu-b", {"comfyui": "reachable", "comfyui_reachable": True})
+        report = worker.depicted_readiness()
+        self.assertEqual((report["state"], report["worker_id"]), (worker.GPU_READY, "gpu-b"))
+
+    def test_jobs_for_project_and_queue_summary(self):
+        self.enroll()
+        a = self.enqueue("scene one", project_id="vid-1")
+        self.enqueue("scene two", project_id="vid-1")
+        self.enqueue("other project", project_id="vid-2")
+        views = worker.jobs_for_project("vid-1")
+        self.assertEqual(len(views), 2)
+        self.assertIn(a["job_id"], {v["job_id"] for v in views})
+        self.assertTrue(all(v["project_id"] == "vid-1" for v in views))
+        self.assertEqual(views[0]["wait_reason"], worker.WAITING_FOR_CAPABLE_WORKER)
+        self.assertEqual(views[0]["last_transition"]["to"], worker.QUEUED)
+        summary = worker.depicted_readiness()["queue"]
+        self.assertEqual(summary["queued"], 3)
+        self.assertEqual(worker.queue_summary(project_id="vid-2")["queued"], 1)
+
+    def test_heartbeat_keeps_only_status_keys_the_plane_understands(self):
+        self.enroll()
+        record = worker.heartbeat("home-gpu-01", {"checkpoints": ["a"], "gpu": "GTX",
+                                                  "vram_total_mb": 3072, "scratchpad": "no"})
+        self.assertEqual(record["status"]["checkpoints"], ["a"])
+        self.assertNotIn("scratchpad", record["status"])
+
+
 class ApiTestCase(WorkerTestCase):
     """The real handler over a real socket, on loopback."""
 
@@ -917,6 +992,12 @@ class AgentTests(ApiTestCase):
             (worker.workers_dir() / "home-gpu-01.json").read_text())
         self.assertEqual(worker.worker_state(record), worker.ONLINE)
         self.assertIn("reachable", record["status"]["comfyui"])
+        # The heartbeat carries what the PC can actually render with.
+        self.assertTrue(record["status"]["comfyui_reachable"])
+        self.assertEqual(record["status"]["gpu"], "cuda:0 Fake GPU 3GB")
+        self.assertEqual(record["status"]["checkpoints"][0], "test-checkpoint.safetensors")
+        self.assertEqual(record["status"]["model"], "test-checkpoint.safetensors")
+        self.assertEqual(worker.depicted_readiness()["state"], worker.GPU_READY)
 
     def test_a_full_cycle_lands_a_verified_asset_in_the_project(self):
         job = self.enqueue()
@@ -934,6 +1015,16 @@ class AgentTests(ApiTestCase):
                          finished["manifest"][0]["sha256"])
         self.assertEqual(generation.load_job(job["job_id"])["status"],
                          generation.COMPLETED)
+
+    def test_an_out_of_memory_render_fails_permanently(self):
+        """A latent that does not fit this card will not fit on retry."""
+        FakeComfyHandler.behaviour["mode"] = "oom"
+        job = self.enqueue()
+        self.assertEqual(self.agent.poll_once(), worker.FAILED)
+        failed = worker.load_job(job["job_id"])
+        self.assertEqual(failed["state"], worker.FAILED)
+        self.assertIn("out of memory", failed["error"].lower())
+        self.assertEqual(failed["attempt"], 1)
 
     def test_a_render_failure_is_reported_and_the_job_is_deferred(self):
         FakeComfyHandler.behaviour["mode"] = "job_error"

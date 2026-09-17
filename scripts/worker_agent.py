@@ -51,7 +51,7 @@ from generation import GenerationRequest, GenerationError  # noqa: E402
 
 log = logging.getLogger("worker.agent")
 
-AGENT_VERSION = "0.1"
+AGENT_VERSION = "0.2"
 DEFAULT_REQUEST_TIMEOUT = 30.0
 DEFAULT_UPLOAD_TIMEOUT = 120.0
 
@@ -62,6 +62,13 @@ PERMANENT_MARKERS = (
     "workflow template not found",
     "not valid JSON after substitution",
     "rejected the workflow",
+    "no checkpoint available",
+    "checkpoint not installed",
+    # A latent that does not fit this card will not fit it on the next try
+    # either; the fix is a smaller COMFYUI_LATENT_MAX_PIXELS or a bigger GPU.
+    "out of memory",
+    "outofmemory",
+    "allocation on device",
 )
 
 
@@ -152,14 +159,29 @@ class Agent:
     def status(self, current_job=None):
         """What the control plane learns about this machine each heartbeat.
 
-        ComfyUI's reachability is reported rather than acted on: the control
-        plane decides whether to hand out work, and a worker whose GPU host
-        is down should say so instead of quietly claiming jobs it will fail.
+        ComfyUI's reachability, GPU and installed checkpoints are reported
+        rather than acted on: the control plane decides whether to hand out
+        work, and a worker whose GPU host is down (or lacks the checkpoint
+        it would use) should say so instead of quietly claiming jobs it
+        will fail.
         """
-        ok, detail = self.provider.health()
+        probe = self.provider.probe() if hasattr(self.provider, "probe") else None
+        if probe is None:
+            ok, detail = self.provider.health()
+            probe = {"reachable": ok, "detail": detail, "gpu": None,
+                     "vram_total_mb": None, "vram_free_mb": None, "checkpoints": []}
+        ok, detail = probe["reachable"], probe["detail"]
+        model = _env("COMFYUI_MODEL") or (probe["checkpoints"][0] if probe["checkpoints"] else None)
         return {
             "agent_version": AGENT_VERSION,
             "comfyui": detail if ok else f"unavailable: {detail}",
+            "comfyui_reachable": ok,
+            "gpu": probe.get("gpu"),
+            "vram_total_mb": probe.get("vram_total_mb"),
+            "vram_free_mb": probe.get("vram_free_mb"),
+            "checkpoints": probe.get("checkpoints") or [],
+            "model": model,
+            "workflow": Path(getattr(self.provider, "workflow_path", "") or "").name or None,
             "current_job": current_job,
         }
 

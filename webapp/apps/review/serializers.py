@@ -14,6 +14,22 @@ class ReviewDecisionRequestSerializer(serializers.Serializer):
     expected_digest = serializers.CharField()
 
 
+class VisualGradeRequestSerializer(serializers.Serializer):
+    """POST .../visual-grade/ body: the human's explicit claim. A boolean,
+    never a default - the field is required so an empty body cannot grant."""
+    production_grade = serializers.BooleanField()
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class VisualGradeSerializer(serializers.Serializer):
+    """Mirrors the claim record scripts.project.record_visual_grade() writes."""
+    utc = serializers.CharField()
+    reviewer = serializers.CharField()
+    notes = serializers.CharField(allow_blank=True)
+    asset_count = serializers.IntegerField()
+    production_grade = serializers.BooleanField()
+
+
 class ReviewDecisionSerializer(serializers.Serializer):
     """Mirrors the entry shape record_review_decision() appends to
     metadata.json.review_history - a plain Serializer, not a

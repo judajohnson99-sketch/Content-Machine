@@ -22,9 +22,14 @@ project assets ─► validate ─► render ─► thumbnails ─► QC ─► 
 | Component | File | Responsibility |
 |---|---|---|
 | Generation router | `scripts/generation.py` | provider-agnostic image generation: ComfyUI → procedural → API |
+| Creative brief | `scripts/creative.py` | one LLM call for title/script/description/image direction per video, plus batched per-scene visual motifs |
+| Format research | `scripts/research.py` | per-niche statistical shape (duration, pacing, visual categories) |
+| Subject research | `scripts/subject_research.py` | search-backed, source-attributed facts for a video's subject, cached once; fails closed rather than falling back to model knowledge |
+| Storyboard | `scripts/storyboard.py` | deterministic per-scene plan (narration slice, prompt, motion, transition) from a video's script and visual/audio plan |
+| Motion | `scripts/motion.py` | pure ffmpeg filter-string arithmetic for Ken Burns motion and scene transitions |
 | Renderer | `scripts/render.py` | images + audio + spec → H.264/AAC MP4 (FFmpeg) |
 | Quality control | `scripts/qc.py` | probes a finished MP4 for spec conformance and render faults |
-| Project lifecycle | `scripts/project.py` | `init` / `validate` / `run` orchestration |
+| Project lifecycle | `scripts/project.py` | `init` / `validate` / `research` / `creative` / `storyboard` / `scenes` / `run` orchestration |
 | Entry point | `./content-machine` | thin wrapper; fixes the working directory |
 | Fixtures | `scripts/make_test_fixtures.py` | generates test images/audio via FFmpeg |
 | Article generator | `generate.py` | pre-existing; writes Markdown articles via an LLM |
@@ -120,6 +125,25 @@ Images come from whichever provider is healthy, in order: the workstation's
 ComfyUI, then procedural plates, then an external API. See
 [Generation](#generation). The prompt comes from `metadata.visual_plan.prompt`
 unless `--prompt` overrides it.
+
+### Research, brief, and a multi-scene storyboard
+
+```bash
+./content-machine research my-video      # source-backed subject facts (only if the concept requires them)
+./content-machine creative my-video      # title, script, description, image direction
+./content-machine storyboard my-video --scenes 8   # a scene-by-scene plan
+./content-machine scenes my-video        # one image per scene, via the same provider router
+```
+
+`research` is a no-op for concepts that don't set `requires_subject_research`
+- most niches never pay for it. When a concept does set it (e.g. narrated
+factual content), `creative` and `storyboard` both refuse to run until a
+cached artifact exists at `research/subjects/<video-id>.json`: the narration
+script and the storyboard's per-scene visual motifs may only draw on those
+sourced facts, never on an LLM's own unverified memory of the topic. Scene
+motifs are generated in one batched LLM call per video, not one per scene,
+and cached into `storyboard.json`'s `scene_motifs` so rebuilding the
+storyboard doesn't call the model again.
 
 ### One-click produce
 
@@ -408,12 +432,25 @@ python3 scripts/generation.py jobs
 Set `COMFYUI_URL` to your workstation (e.g. `http://192.168.1.50:8188`).
 Nothing is hard-coded and no endpoint is assumed.
 
-The submitted graph is a template
-(`config/comfyui_workflow.example.json`, override with `COMFYUI_WORKFLOW`),
-with `%prompt%`, `%negative%`, `%width%`, `%height%`, `%seed%` and `%model%`
-substituted in. Prompt text is JSON-escaped, so quotes and newlines cannot
-corrupt the graph. Point `COMFYUI_WORKFLOW` at your own export to use a
-different pipeline without touching code.
+The submitted graph is a template, with `%prompt%`, `%negative%`,
+`%width%`, `%height%`, `%latent_width%`, `%latent_height%`, `%seed%` and
+`%model%` substituted in. Prompt text is JSON-escaped, so quotes and newlines
+cannot corrupt the graph. Point `COMFYUI_WORKFLOW` at your own export to use
+a different pipeline without touching code.
+
+The default template is `config/comfyui_workflow_lowvram_upscale.json`: it
+renders a latent no larger than `COMFYUI_LATENT_MAX_PIXELS` (default 262144,
+i.e. 512x512 - what the GTX 1060 3GB worker is verified to fit) with the
+request's aspect ratio, then upscales to the requested `%width%x%height%`
+inside the graph (core `ImageScale` node, no extra models). The pipeline's
+1080p request is honoured without asking the card for a 1080p latent, and the
+request digest still describes the asset that was asked for.
+`config/comfyui_workflow.example.json` is the direct-latent variant for a card
+with the VRAM. No checkpoint name is hard-coded: `%model%` is the request's
+model, else `COMFYUI_MODEL`, else the first checkpoint ComfyUI reports
+installed; a configured name ComfyUI does not have is refused before any GPU
+time is spent, and a CUDA out-of-memory is treated as permanent (a smaller
+latent budget is the fix, not a retry).
 
 Do not expose ComfyUI to the public internet. Keep it on the LAN or behind a
 VPN/SSH tunnel; it has no authentication of its own.
@@ -461,8 +498,12 @@ stored, so a leaked registry file does not leak the credential.
 ./content-machine worker serve                    # binds 127.0.0.1:8788
 ```
 
-On the GPU machine, set three things — none of them has a default — and run
-the agent:
+On the GPU machine, check out this repository too — the agent renders through
+`generation.ComfyUIProvider`, which reads the workflow template from
+`config/comfyui_workflow.example.json` under its own checkout unless
+`COMFYUI_WORKFLOW` points elsewhere. A checkout without that file fails the
+job permanently rather than retrying. Then set three things — none of them
+has a default — and run the agent:
 
 ```bash
 CONTROL_PLANE_URL=https://vps.example      # where the VPS answers
@@ -482,6 +523,10 @@ travels in a header, so put TLS in front of it — a reverse proxy, or reach it
 through an SSH or WireGuard tunnel. Binding anything else has to be asked for
 explicitly (`WORKER_API_BIND`), because it cannot be the safe default.
 
+`WORKER_RUNBOOK.md` is the short operational version of this section: the
+exact start order for both machines, the SSH tunnel, and what the common
+failures look like.
+
 ### Queueing work
 
 ```bash
@@ -497,6 +542,27 @@ explicitly (`WORKER_API_BIND`), because it cannot be the safe default.
 Queueing is idempotent on the request digest: the same request queued twice
 is one job, and a request that has *already* been generated is refused rather
 than re-rendered.
+
+`visuals` and `scenes` queue here **automatically** when a concept requires
+depicted imagery, every synchronous provider has declined, and a worker with
+the `comfyui` capability is enrolled (online or not). The stage then exits
+with code 2 - `NEEDS_ATTENTION` in the web layer, never `FAILED` - and
+`metadata.status.visuals`/`.scenes` reads `WAITING_FOR_GPU_WORKER`. Nothing
+retries and nothing spends: the job waits on the queue at attempt 0 until
+the PC claims it. Once the render lands, re-running the stage (or Produce)
+finds the completed job through the digest and continues without
+regenerating anything. Per-scene jobs record their `job_id` on the storyboard
+scene so the lineage is visible before the image exists. With no worker
+enrolled the failure stays a failure, exactly as before.
+
+Readiness for depicted imagery is derived on every read from the registry's
+last heartbeat (`worker.depicted_readiness()`), never stored:
+`no_worker`, `worker_offline`, `worker_stale`, `comfyui_unavailable`,
+`model_unavailable` (the checkpoint it would use is not installed),
+`worker_busy`, `worker_ready`. The agent reports ComfyUI reachability, the
+GPU and its VRAM, the installed checkpoints and the checkpoint it will use
+in each heartbeat, which is what makes those states honest. The concept
+catalogue and the web control center read the same function.
 
 ### Job lifecycle
 
@@ -816,10 +882,46 @@ and run logs - through two read-only endpoints:
 `POST .../produce/` accepts an optional `scenes` boolean matching the CLI's
 `--scenes`/`--no-scenes`; omit it for the automatic rule.
 
-Full architecture (shared-domain boundary, Celery/`worker.py` ownership
-split, Postgres data-ownership table, concurrency, human-review domain
-operation): `/root/.claude/plans/effervescent-snuggling-lighthouse.md`.
+A production can be started from scratch in the browser ("New production"):
 
+- `GET /api/v1/concepts/` — `scripts.experiment.concept_catalog()`: every
+  concept, ranked as `experiment.py list` ranks them, with a per-concept
+  *readiness* derived from configuration alone (procedural plates
+  acceptable or a depicted-image provider configured; audio requirement
+  synthesisable; `SEARCH_PROVIDER` set when subject research is required).
+  It is honest about what would stop a run here, and never a quality claim.
+- `POST /api/v1/projects/` `{video_id, concept_id, duration?}` — the same
+  scaffold `experiment.py scaffold` performs (`scaffold_project()`), 201 with
+  the new project's summary, 409 if the id is taken, 400 for an unknown
+  concept or a malformed id. Starting production is then the ordinary,
+  idempotent `POST .../produce/`, so "couldn't create" and "couldn't start"
+  stay distinct failures. The Workspace shows the running/last job with its
+  message and log tail, and refreshes the deliverable when the job ends.
+
+`./content-machine providers` now also reports the search provider, since
+subject research fails closed without one.
+
+Readiness and the GPU queue are visible through
+`GET /api/v1/system/readiness/` (`experiment.host_capabilities()`, which now
+carries `depicted_imagery` and `remote_gpu`), `GET /api/v1/system/gpu-jobs/`
+and `GET /api/v1/projects/{id}/gpu-jobs/` (`worker.jobs_for_project()`),
+and `GET /api/v1/pipeline-runs/` (in-flight and recently finished runs
+across projects, for the dashboard). The human production-grade claim has a
+web surface: `POST /api/v1/projects/{id}/visual-grade/`
+`{production_grade: bool, notes}` calls `project.record_visual_grade()`
+with the session user as reviewer (CLI: `./content-machine visual-grade
+<id> true|false --reviewer <who>`); the Review Center asks for an explicit
+inspection confirmation before it will send `true`, and a machine still only
+ever writes `false`. `project_assets()` now attaches each image's lineage
+(job, provider, worker, model, prompt, seed, size) from the generation job
+store, plus `images_provenance` and `visual_plan`.
+
+The concept catalogue carries a `kind` per concept: `reference` (the curated
+showcase set - dreamlike, depicted-only, synthesisable audio, 60 s quality
+preview; a channel preference recorded in `experiments/concepts.json`, not a
+pipeline rule), `experiment` (the ranked batch) and `technical` (dark-screen
+regression concepts). New Production leads with the reference catalogue and
+keeps technical concepts out of the default view.
 
 Full architecture (shared-domain boundary, Celery/`worker.py` ownership
 split, Postgres data-ownership table, concurrency, human-review domain
@@ -833,14 +935,17 @@ Deliberately unimplemented, in dependency order:
   attempted: no GPU (`nvidia-smi` absent), 4 CPU cores, 3.8 GB RAM. The
   answer is not to shrink a model onto this box but to route the work
   elsewhere — see [Generation](#generation). The ComfyUI adapter is built and
-  tested; it needs only `COMFYUI_URL` pointed at a machine that has a GPU.
-- **Verified against a real ComfyUI server** — the adapter is exercised
-  against a local stand-in implementing ComfyUI's submit/poll/download
-  protocol, not against a real instance. Expect to adjust the workflow
-  template for your checkpoint on first use. The same applies to the
-  [remote worker](#remote-gpu-worker): the queue, leases, retries, uploads
-  and manifests are tested end to end over real sockets against that
-  stand-in, but no render has yet been produced by the GTX 1060.
+  verified against a real ComfyUI instance; it needs only `COMFYUI_URL`
+  pointed at a machine that has a GPU.
+- **1080p on the GPU worker** — the real path is verified end to end (VPS
+  queue → SSH tunnel → PC worker → its own ComfyUI → DreamShaper on a GTX
+  1060 3GB → verified upload → `SUCCEEDED`), but only at 512x512. The
+  workflow template feeds `%width%`/`%height%` straight into
+  `EmptyLatentImage`, so `worker enqueue <video-id>`, which takes 1920x1080
+  from the video spec, is still untried on this card and not expected to fit
+  in 3 GB. Rendering small and upscaling belongs in the workflow graph, not
+  in the enqueued dimensions — those are part of the job digest that makes
+  the result reusable.
 - **Automatic deferral to the worker** — `visuals` still fails when depicted
   imagery is required and no synchronous provider can produce it; queueing
   the work for the PC is a deliberate `worker enqueue` rather than something

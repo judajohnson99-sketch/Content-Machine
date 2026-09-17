@@ -2,18 +2,26 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 4px;
+  gap: 6px;
 }
 
 .notice {
-  margin: 0;
   font-size: var(--text-xs);
-  max-width: 240px;
+  max-width: 34ch;
   text-align: right;
+  padding: 6px 10px;
+  border-radius: var(--radius-xs);
+  border: 1px solid;
 }
+
 .busy {
   color: var(--warning-fg);
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
 }
+
 .error {
   color: var(--danger-fg);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
 }

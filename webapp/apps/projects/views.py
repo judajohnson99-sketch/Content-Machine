@@ -8,6 +8,8 @@ import mimetypes
 import re
 
 from django.http import FileResponse, HttpResponse, StreamingHttpResponse
+from rest_framework import status
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -15,17 +17,43 @@ import scripts.project as project
 
 from apps.engine.exceptions import ProjectNotFound
 from apps.engine.services import assets as assets_service
+from apps.engine.services import concepts as concepts_service
 from apps.engine.services import projects as projects_service
+from apps.engine.services import workers as workers_service
 
-from .serializers import ProjectSummarySerializer, StatusReportSerializer
+from .serializers import (
+    ProjectCreateSerializer, ProjectSummarySerializer, StatusReportSerializer,
+)
 
 
 class ProjectListView(APIView):
-    """GET /api/v1/projects/ - live-computed, no cache (architecture plan §9)."""
+    """GET /api/v1/projects/ - live-computed, no cache (architecture plan §9).
+
+    POST /api/v1/projects/ - scaffold a new project from a concept, the
+    exact operation `experiment.py scaffold` performs. 201 with the new
+    project's summary; 409 if the id is taken; 400 for an unknown concept
+    or malformed input. Nothing is produced yet - that is a separate,
+    idempotent POST .../produce/, so creating and starting stay two
+    explicit acts with their own failure modes.
+    """
 
     def get(self, request):
         summaries = projects_service.list_projects()
         return Response(ProjectSummarySerializer(summaries, many=True).data)
+
+    def post(self, request):
+        serializer = ProjectCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            summary = concepts_service.create_project(
+                data["video_id"], data["concept_id"], duration=data["duration"])
+        except concepts_service.ScaffoldError as e:
+            if e.code == "exists":
+                return Response({"detail": str(e), "code": e.code},
+                                status=status.HTTP_409_CONFLICT)
+            raise ValidationError({"detail": str(e), "code": e.code}) from e
+        return Response(ProjectSummarySerializer(summary).data, status=status.HTTP_201_CREATED)
 
 
 class ProjectDetailView(APIView):
@@ -60,6 +88,20 @@ class ProjectAssetsView(APIView):
         if manifest is None:
             raise ProjectNotFound(f"no such project: {video_id}")
         return Response(manifest)
+
+
+class ProjectGpuJobsView(APIView):
+    """GET /api/v1/projects/{id}/gpu-jobs/ - this project's remote GPU jobs.
+
+    scripts.worker.jobs_for_project() verbatim: the queue's own view of
+    what is waiting, rendering, done or failed on the PC. Read-only; the
+    job state machine is never driven from here.
+    """
+
+    def get(self, request, video_id):
+        if projects_service.get_metadata(video_id) is None:
+            raise ProjectNotFound(f"no such project: {video_id}")
+        return Response(workers_service.project_jobs(video_id))
 
 
 _RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")

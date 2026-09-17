@@ -16,7 +16,10 @@ import scripts.project as project
 from apps.engine.exceptions import ProjectNotFound, translate
 from apps.engine.services import review as review_service
 
-from .serializers import ReviewDecisionRequestSerializer, ReviewDecisionSerializer
+from .serializers import (
+    ReviewDecisionRequestSerializer, ReviewDecisionSerializer,
+    VisualGradeRequestSerializer, VisualGradeSerializer,
+)
 
 
 class ReviewDecisionListCreateView(APIView):
@@ -43,3 +46,26 @@ class ReviewDecisionListCreateView(APIView):
             translate(e)
 
         return Response(ReviewDecisionSerializer(entry).data, status=status.HTTP_201_CREATED)
+
+
+class VisualGradeView(APIView):
+    """POST /api/v1/projects/{video_id}/visual-grade/ - the human's
+    production-grade claim for the project's visuals.
+
+    Reviewer identity comes from request.user, never the body, exactly as
+    for review decisions: only a person in a session can make this claim,
+    and scripts.project.record_visual_grade() is the sole writer of it.
+    """
+
+    def post(self, request, video_id):
+        serializer = VisualGradeRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        reviewer = request.user.email or request.user.get_username()
+        try:
+            entry = review_service.record_visual_grade(
+                video_id, reviewer,
+                serializer.validated_data["production_grade"],
+                serializer.validated_data["notes"])
+        except project.ProjectError as e:
+            translate(e)
+        return Response(VisualGradeSerializer(entry).data, status=status.HTTP_201_CREATED)

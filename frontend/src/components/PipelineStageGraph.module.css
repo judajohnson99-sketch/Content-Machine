@@ -1,127 +1,165 @@
 .list {
   list-style: none;
-  padding: 0;
-  margin: 0;
   display: flex;
   flex-direction: column;
 }
 
 .node {
-  display: flex;
-  gap: var(--space-4);
-  position: relative;
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: var(--space-3);
+  --node-color: var(--neutral-fg);
+  --node-bg: var(--neutral-bg);
+  --node-border: var(--neutral-border);
+}
+
+.state_complete {
+  --node-color: var(--success-fg);
+  --node-bg: var(--success-bg);
+  --node-border: var(--success-border);
+}
+.state_running,
+.state_queued {
+  --node-color: var(--info-fg);
+  --node-bg: var(--info-bg);
+  --node-border: var(--info-border);
+}
+.state_warning,
+.state_blocked {
+  --node-color: var(--warning-fg);
+  --node-bg: var(--warning-bg);
+  --node-border: var(--warning-border);
+}
+.state_failed {
+  --node-color: var(--danger-fg);
+  --node-bg: var(--danger-bg);
+  --node-border: var(--danger-border);
 }
 
 .railCol {
   display: flex;
   flex-direction: column;
   align-items: center;
-  flex: none;
 }
 
 .marker {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: grid;
+  place-items: center;
   font-size: var(--text-xs);
   font-weight: 700;
+  color: var(--node-color);
+  background: var(--node-bg);
+  border: 1px solid var(--node-border);
   flex: none;
-  border: 2px solid var(--border-strong);
-  background: var(--bg-surface);
-  color: var(--text-tertiary);
+  transition: background var(--dur-2) var(--ease), color var(--dur-2) var(--ease);
 }
 
-.markerSuccess {
-  border-color: var(--success-fg);
-  color: var(--success-fg);
-  background: var(--success-bg);
-}
-.markerInfo {
-  border-color: var(--info-fg);
-  color: var(--info-fg);
-  background: var(--info-bg);
-}
-.markerDanger {
-  border-color: var(--danger-fg);
-  color: var(--danger-fg);
-  background: var(--danger-bg);
+.state_running .marker {
+  box-shadow: 0 0 0 4px var(--info-bg);
+  animation: cm-pulse 1.4s ease-in-out infinite;
 }
 
 .rail {
   width: 2px;
   flex: 1;
-  background: var(--border-default);
-  margin: 2px 0;
-  min-height: 24px;
+  min-height: 18px;
+  background: linear-gradient(180deg, var(--node-border), var(--border-subtle));
+  margin: 4px 0;
 }
 
 .card {
-  flex: 1;
-  min-width: 0;
-  padding: var(--space-3) 0 var(--space-6);
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: var(--space-4);
-  flex-wrap: wrap;
+  padding: 8px 0 var(--space-4);
+  min-width: 0;
 }
 
 .info {
-  min-width: 220px;
+  min-width: 0;
+  flex: 1;
 }
 
 .headRow {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 10px;
   flex-wrap: wrap;
+  margin-bottom: 2px;
 }
 
 .label {
   font-weight: 600;
-  font-size: var(--text-md);
-  color: var(--text-primary);
+  font-size: var(--text-base);
+}
+
+.stateLabel {
+  font-size: var(--text-xs);
+  color: var(--node-color);
+  font-weight: 600;
 }
 
 .description {
-  margin: 3px 0 0;
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-  max-width: 420px;
-}
-
-.errorMessage {
-  margin: 6px 0 0;
-  font-size: var(--text-xs);
-  color: var(--danger-fg);
-  background: var(--danger-bg);
-  border: 1px solid var(--danger-border);
-  border-radius: var(--radius-sm);
-  padding: 4px 8px;
-  display: inline-block;
-}
-
-.finishedAt {
-  margin: 4px 0 0;
   font-size: var(--text-xs);
   color: var(--text-tertiary);
 }
 
+.errorMessage {
+  margin-top: 6px;
+  font-size: var(--text-sm);
+  color: var(--danger-fg);
+  padding: 8px 10px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--danger-border);
+  background: var(--danger-bg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.warningMessage {
+  margin-top: 6px;
+  font-size: var(--text-sm);
+  color: var(--warning-fg);
+  padding: 8px 10px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--warning-border);
+  background: var(--warning-bg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.finishedAt {
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+  margin-top: 4px;
+}
+
 .controls {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
+  align-items: center;
+  gap: var(--space-3);
+  flex: none;
 }
 
 .forceLabel {
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
   cursor: pointer;
+}
+
+.forceLabel input {
+  accent-color: var(--indigo);
+}
+
+@media (max-width: 640px) {
+  .card {
+    flex-direction: column;
+  }
 }

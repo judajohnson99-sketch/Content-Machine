@@ -1,59 +1,74 @@
-/* Design tokens — dark-first, single source of truth for the control
-   center's visual language. Every component reads these instead of
-   hard-coding colors/spacing, so Phases 4-6 extend one system rather than
-   inventing another. */
+/* Design tokens - the single source of truth for the control center's
+   visual language. Dark, cinematic, calm: deep midnight foundations with
+   indigo / sapphire / aqua / violet accents, silver text and one restrained
+   warm accent. Every component reads these; nothing hard-codes a colour. */
 :root {
-  /* Surfaces, darkest to lightest */
-  --bg-canvas: #0b0c10;
-  --bg-surface: #14161c;
-  --bg-surface-raised: #1b1e26;
-  --bg-inset: #0e0f14;
-  --bg-overlay: rgba(6, 7, 10, 0.72);
+  /* Foundations, darkest to lightest */
+  --bg-canvas: #070a14;
+  --bg-surface: #0e1424;
+  --bg-surface-raised: #141c31;
+  --bg-surface-hover: #182140;
+  --bg-inset: #090d19;
+  --bg-overlay: rgba(4, 6, 14, 0.72);
+  --bg-glass: rgba(14, 20, 36, 0.72);
 
-  /* Borders */
-  --border-subtle: #22252f;
-  --border-default: #2c2f3a;
-  --border-strong: #3d4150;
+  /* Borders and hairlines */
+  --border-subtle: rgba(148, 163, 209, 0.1);
+  --border-default: rgba(148, 163, 209, 0.18);
+  --border-strong: rgba(148, 163, 209, 0.32);
+  --border-glow: rgba(124, 140, 255, 0.45);
 
   /* Text */
-  --text-primary: #eef0f4;
-  --text-secondary: #a4a9b8;
-  --text-tertiary: #6c7284;
-  --text-on-accent: #16101f;
+  --text-primary: #e9edf7;
+  --text-secondary: #a9b3cc;
+  --text-tertiary: #717c9c;
+  --text-on-accent: #0a0d1c;
 
-  /* Brand accent */
-  --accent: #b28dff;
-  --accent-hover: #c6a8ff;
-  --accent-bg: rgba(178, 141, 255, 0.14);
-  --accent-border: rgba(178, 141, 255, 0.4);
+  /* Accent family */
+  --indigo: #7c8cff;
+  --sapphire: #5b8def;
+  --aqua: #5fd6e8;
+  --teal: #3ecfb2;
+  --violet: #a78bfa;
+  --silver: #c9d1e6;
+  --warm: #f0b35a;
 
-  /* Semantic status tones: fg / bg tint / border, each usable on dark surfaces */
-  --success-fg: #4ade80;
-  --success-bg: rgba(74, 222, 128, 0.12);
-  --success-border: rgba(74, 222, 128, 0.32);
+  --accent: var(--indigo);
+  --accent-hover: #93a0ff;
+  --accent-bg: rgba(124, 140, 255, 0.14);
+  --accent-border: rgba(124, 140, 255, 0.42);
+  --accent-2: var(--aqua);
+  --accent-2-bg: rgba(95, 214, 232, 0.12);
 
-  --warning-fg: #fbbf24;
-  --warning-bg: rgba(251, 191, 36, 0.12);
-  --warning-border: rgba(251, 191, 36, 0.32);
+  /* Semantic status tones: fg / bg tint / border, usable on dark surfaces */
+  --success-fg: #4be0a8;
+  --success-bg: rgba(75, 224, 168, 0.12);
+  --success-border: rgba(75, 224, 168, 0.36);
 
-  --danger-fg: #f87171;
-  --danger-bg: rgba(248, 113, 113, 0.12);
-  --danger-border: rgba(248, 113, 113, 0.32);
+  --warning-fg: #f5c063;
+  --warning-bg: rgba(245, 192, 99, 0.12);
+  --warning-border: rgba(245, 192, 99, 0.36);
 
-  --info-fg: #60a5fa;
-  --info-bg: rgba(96, 165, 250, 0.12);
-  --info-border: rgba(96, 165, 250, 0.32);
+  --danger-fg: #ff7a8a;
+  --danger-bg: rgba(255, 122, 138, 0.12);
+  --danger-border: rgba(255, 122, 138, 0.36);
 
-  --neutral-fg: #9aa0b0;
-  --neutral-bg: rgba(154, 160, 176, 0.1);
-  --neutral-border: rgba(154, 160, 176, 0.24);
+  --info-fg: #7fb2ff;
+  --info-bg: rgba(127, 178, 255, 0.12);
+  --info-border: rgba(127, 178, 255, 0.36);
 
-  --focus-ring: #b28dff;
+  --neutral-fg: #9aa4bf;
+  --neutral-bg: rgba(154, 164, 191, 0.1);
+  --neutral-border: rgba(154, 164, 191, 0.26);
 
-  /* Shadows (subtle on dark; mostly used for popover/menu elevation) */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.45);
-  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.55);
+  --focus-ring: var(--aqua);
+
+  /* Elevation and glow */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 10px 30px -10px rgba(2, 6, 23, 0.8);
+  --shadow-lg: 0 24px 60px -20px rgba(2, 6, 23, 0.9);
+  --glow-accent: 0 0 0 1px rgba(124, 140, 255, 0.35), 0 10px 40px -12px rgba(124, 140, 255, 0.45);
+  --glow-aqua: 0 0 0 1px rgba(95, 214, 232, 0.3), 0 10px 40px -12px rgba(95, 214, 232, 0.4);
 
   /* Spacing scale */
   --space-1: 4px;
@@ -67,12 +82,15 @@
   --space-12: 48px;
 
   /* Radii */
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
   --radius-full: 999px;
 
   /* Type scale */
+  --text-2xs: 11px;
   --text-xs: 12px;
   --text-sm: 13px;
   --text-base: 14px;
@@ -80,22 +98,27 @@
   --text-lg: 17px;
   --text-xl: 20px;
   --text-2xl: 26px;
+  --text-3xl: 32px;
 
   /* Layout */
-  --sidebar-width: 224px;
+  --sidebar-width: 248px;
+  --sidebar-width-collapsed: 72px;
   --topbar-height: 56px;
-  --content-max-width: 1180px;
+  --content-max-width: 1440px;
 
-  --sans: -apple-system, 'Segoe UI', system-ui, Roboto, sans-serif;
-  --mono: ui-monospace, 'SF Mono', Consolas, monospace;
+  /* Motion */
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur-1: 120ms;
+  --dur-2: 220ms;
+  --dur-3: 480ms;
+
+  --sans: "Inter Variable", "Inter", -apple-system, "Segoe UI", system-ui, Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Consolas, monospace;
 
   font: var(--text-base) / 1.5 var(--sans);
-  /* Dark is the only theme today, unconditionally - not gated behind the
-     OS/browser's prefers-color-scheme. A control center an operator lives
-     in during production runs should look the same regardless of what
-     their system happens to be set to; a light theme, if ever added, needs
-     to be an explicit in-app toggle, not something that silently changes
-     under a shared token set. */
+  /* Dark is the only theme, unconditionally - a control center an operator
+     lives in during production runs must not change under them because
+     their OS flipped its scheme. */
   color-scheme: dark;
   color: var(--text-primary);
   background: var(--bg-canvas);
@@ -113,8 +136,16 @@
 
 body {
   margin: 0;
-  background: var(--bg-canvas);
   color: var(--text-primary);
+  /* Atmospheric foundation: a deep midnight field with two soft glows -
+     indigo high-left, aqua low-right - fixed so the page scrolls over it. */
+  background-color: var(--bg-canvas);
+  background-image:
+    radial-gradient(1100px 700px at -10% -20%, rgba(93, 106, 255, 0.16), transparent 60%),
+    radial-gradient(900px 600px at 110% 110%, rgba(95, 214, 232, 0.1), transparent 60%),
+    radial-gradient(700px 500px at 60% -30%, rgba(167, 139, 250, 0.08), transparent 60%);
+  background-attachment: fixed;
+  min-height: 100svh;
 }
 
 #root {
@@ -129,7 +160,7 @@ h4 {
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
 }
 
 h1 {
@@ -155,11 +186,18 @@ button {
   color: inherit;
 }
 
+input,
+select,
+textarea {
+  font: inherit;
+}
+
 code {
   font-family: var(--mono);
   font-size: 0.92em;
   background: var(--bg-inset);
-  border-radius: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
   padding: 1px 6px;
   color: var(--text-secondary);
 }
@@ -173,15 +211,68 @@ ol {
 :focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 ::selection {
-  background: var(--accent-bg);
+  background: rgba(124, 140, 255, 0.35);
 }
 
-/* Thin, unobtrusive scrollbars that still work with dark surfaces */
+/* Thin scrollbars that still read on dark surfaces */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
+}
+
+/* Shared micro-animations. Every use respects reduced motion below. */
+@keyframes cm-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes cm-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes cm-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes cm-shimmer {
+  from {
+    background-position: -200% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-1: 0ms;
+    --dur-2: 0ms;
+    --dur-3: 0ms;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

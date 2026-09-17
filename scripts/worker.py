@@ -101,6 +101,23 @@ OFFLINE = "OFFLINE"
 
 # Why a QUEUED job is not moving. A view over state, not a state itself.
 WAITING_FOR_CAPABLE_WORKER = "WAITING_FOR_CAPABLE_WORKER"
+
+# What a worker may say about itself in a heartbeat. Everything else it
+# sends is dropped: the record is a status report, not a scratchpad.
+HEARTBEAT_STATUS_KEYS = frozenset({
+    "comfyui", "comfyui_reachable", "gpu", "vram_mb", "vram_total_mb",
+    "vram_free_mb", "checkpoints", "model", "workflow", "agent_version",
+    "current_job", "host", "detail"})
+
+# Readiness of depicted imagery through the remote GPU, derived on every
+# read from the registry and the queue - never stored, like worker state.
+GPU_NO_WORKER = "no_worker"
+GPU_OFFLINE = "worker_offline"
+GPU_STALE = "worker_stale"
+GPU_COMFYUI_UNAVAILABLE = "comfyui_unavailable"
+GPU_MODEL_UNAVAILABLE = "model_unavailable"
+GPU_BUSY = "worker_busy"
+GPU_READY = "worker_ready"
 READY_TO_CLAIM = "READY_TO_CLAIM"
 RETRY_BACKOFF = "RETRY_BACKOFF"
 
@@ -367,9 +384,7 @@ def heartbeat(worker_id, status=None):
         record["heartbeats"] = record.get("heartbeats", 0) + 1
         if status:
             record["status"] = {k: v for k, v in status.items()
-                               if k in ("comfyui", "gpu", "vram_mb",
-                                        "agent_version", "current_job",
-                                        "host", "detail")}
+                               if k in HEARTBEAT_STATUS_KEYS}
         _write_json(path, record)
     return record
 
@@ -517,7 +532,12 @@ def wait_reason(job, workers=None, now=None):
 def job_view(job, workers=None, now=None):
     now = now if now is not None else time.time()
     lease = job.get("lease") or {}
+    last = (job.get("transitions") or [{}])[-1]
     return {
+        "provider_job_id": job.get("provider_job_id"),
+        "last_transition": {"at": last.get("at"), "to": last.get("to"),
+                            "detail": last.get("detail")},
+        "completed_at": job.get("completed_at"),
         "job_id": job["job_id"],
         "state": job["state"],
         "wait_reason": wait_reason(job, workers, now),
@@ -535,6 +555,115 @@ def job_view(job, workers=None, now=None):
         "created_at": job.get("created_at"),
         "updated_at": job.get("updated_at"),
     }
+
+
+def remote_capable(capabilities=("comfyui",)):
+    """Whether any enrolled, un-revoked worker could ever run such a job.
+
+    Liveness is deliberately not part of this: a job for a machine that is
+    merely off should be queued and wait, which is the whole reason the
+    queue exists. Only an operator who never enrolled a worker has nowhere
+    to send depicted-imagery work.
+    """
+    required = set(capabilities)
+    return any(not r.get("revoked")
+               and required.issubset(set(r.get("capabilities") or []))
+               for r in load_workers())
+
+
+def queue_summary(jobs=None, project_id=None):
+    counts = {"queued": 0, "running": 0, "succeeded": 0, "failed": 0, "cancelled": 0}
+    for job in (jobs if jobs is not None else load_jobs()):
+        if project_id is not None and job.get("project_id") != project_id:
+            continue
+        state = job["state"]
+        if state in (QUEUED, RETRY_WAIT):
+            counts["queued"] += 1
+        elif state in LEASED:
+            counts["running"] += 1
+        elif state == SUCCEEDED:
+            counts["succeeded"] += 1
+        elif state == FAILED:
+            counts["failed"] += 1
+        elif state == CANCELLED:
+            counts["cancelled"] += 1
+    return counts
+
+
+def _age(seconds):
+    seconds = int(seconds)
+    if seconds < 90:
+        return f"{seconds}s"
+    if seconds < 5400:
+        return f"{seconds // 60}m"
+    if seconds < 172800:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+def depicted_readiness(now=None):
+    """Can depicted imagery be rendered through the remote GPU right now?
+
+    A file read over the registry and the queue: no network, cheap enough
+    for a page load, and honest - 'the PC is on' (ONLINE) is distinguished
+    from 'ComfyUI answers' (its own heartbeat report), from 'the checkpoint
+    it would use is installed', and from 'it is already rendering'. Nothing
+    here is a quality claim; it says only whether work would start.
+    """
+    now = now if now is not None else time.time()
+    views = [worker_view(r, now) for r in load_workers() if not r.get("revoked")]
+    capable = [v for v in views if "comfyui" in (v.get("capabilities") or [])]
+    jobs = load_jobs()
+    summary = {"workers": views, "queue": queue_summary(jobs), "worker_id": None,
+               "state": GPU_NO_WORKER,
+               "detail": "No GPU worker is enrolled; depicted imagery has nowhere to run."}
+    if not capable:
+        return summary
+
+    def rank(view):
+        status = view.get("status") or {}
+        state = view["state"]
+        if state == OFFLINE:
+            return GPU_OFFLINE, f"{view['worker_id']} is offline (no heartbeat" + (
+                f" for {_age(view['heartbeat_age_seconds'])})"
+                if view.get("heartbeat_age_seconds") else " yet)")
+        if state == STALE:
+            return GPU_STALE, (f"{view['worker_id']} last reported "
+                               f"{_age(view.get('heartbeat_age_seconds') or 0)} ago; "
+                               "it may be shutting down or the tunnel dropped")
+        comfy = str(status.get("comfyui") or "")
+        if status.get("comfyui_reachable") is False or comfy.startswith("unavailable"):
+            return GPU_COMFYUI_UNAVAILABLE, (f"{view['worker_id']} is online but its ComfyUI "
+                                             f"is not answering: {comfy or 'unreachable'}")
+        checkpoints = status.get("checkpoints") or []
+        model = status.get("model")
+        if checkpoints and model and model not in checkpoints:
+            return GPU_MODEL_UNAVAILABLE, (f"{view['worker_id']} has ComfyUI but not the "
+                                           f"checkpoint {model!r} (installed: "
+                                           f"{', '.join(checkpoints[:5])})")
+        if status.get("comfyui") is not None and not checkpoints and "checkpoints" in status:
+            return GPU_MODEL_UNAVAILABLE, (f"{view['worker_id']}'s ComfyUI reports no "
+                                           "installed checkpoints")
+        if status.get("current_job"):
+            return GPU_BUSY, (f"{view['worker_id']} is rendering job "
+                              f"{str(status['current_job'])[:8]}; new work queues behind it")
+        return GPU_READY, f"{view['worker_id']} is online with ComfyUI reachable"
+
+    order = [GPU_READY, GPU_BUSY, GPU_MODEL_UNAVAILABLE, GPU_COMFYUI_UNAVAILABLE,
+             GPU_STALE, GPU_OFFLINE]
+    best = min((rank(v) + (v["worker_id"],) for v in capable),
+               key=lambda item: order.index(item[0]))
+    summary.update({"state": best[0], "detail": best[1], "worker_id": best[2]})
+    return summary
+
+
+def jobs_for_project(video_id, workers=None, now=None):
+    """Every remote job queued for one project, newest first."""
+    now = now if now is not None else time.time()
+    workers = workers if workers is not None else load_workers()
+    views = [job_view(j, workers, now) for j in load_jobs()
+             if j.get("project_id") == video_id]
+    return sorted(views, key=lambda v: v.get("created_at") or "", reverse=True)
 
 
 # --- Leases ----------------------------------------------------------------

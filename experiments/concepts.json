@@ -1,7 +1,7 @@
 {
   "batch_id": "batch-001",
   "created_utc": "2026-08-27",
-  "notes": "Hypotheses only. No market data here is measured; every monetization claim is an assumption to be tested, and items in assumptions_requiring_research MUST be verified before spending real production time. Scores are judgement calls on a 1-5 scale, used only to rank information value reproducibly.",
+  "notes": "Hypotheses only. No market data here is measured; every monetization claim is an assumption to be tested, and items in assumptions_requiring_research MUST be verified before spending real production time. Scores are judgement calls on a 1-5 scale, used only to rank information value reproducibly. | 2026-09-17: added the curated reference catalogue (kind=reference, niche immersive_ambience) - current channel preferences for depicted imagery, not pipeline rules; technical regression concepts are tagged kind=technical.",
   "scoring_scale": {
     "uncertainty_reduction": "1=we can already guess the answer, 5=we genuinely cannot predict the outcome",
     "generalizability": "1=result applies only to this concept, 5=result redirects the whole portfolio",
@@ -52,7 +52,8 @@
       ],
       "audio_source_requirement": "synthesisable_now",
       "spec_template": "templates/long_static_ambient.json",
-      "procedural_visuals_acceptable": true
+      "procedural_visuals_acceptable": true,
+      "kind": "technical"
     },
     {
       "id": "sleep-rain-window-static",
@@ -284,7 +285,8 @@
       ],
       "audio_source_requirement": "synthesisable_now",
       "spec_template": "templates/long_static_ambient.json",
-      "procedural_visuals_acceptable": true
+      "procedural_visuals_acceptable": true,
+      "kind": "technical"
     },
     {
       "id": "kids-music-box-starfield",
@@ -461,6 +463,7 @@
         "Factual accuracy: LLM-written history can contain confident errors; requires verification before publishing",
         "Dry delivery may read as low-effort to reviewers"
       ],
+      "requires_subject_research": true,
       "continue_evidence": [
         "Median view duration > 20 min",
         "Adult (non-kids) RPM confirmed"
@@ -786,6 +789,586 @@
       "audio_source_requirement": "tts_required",
       "spec_template": "templates/explainer_slideshow.json",
       "procedural_visuals_acceptable": false
+    },
+    {
+      "kind": "reference",
+      "niche": "immersive_ambience",
+      "publishing_format": "Long-form ambience, evergreen; 60 s quality preview first",
+      "monetization_hypothesis": "Distinctive dreamlike environments retain sleep/relaxation viewers longer than commodity dark-screen uploads. UNVERIFIED.",
+      "production_complexity": 2,
+      "generation_dependence": 4,
+      "continue_evidence": [
+        "Median view duration > 20 min",
+        "Returning viewers within 14 days",
+        "CTR above channel baseline on the still"
+      ],
+      "kill_evidence": [
+        "Median view duration < 5 min across 3 uploads",
+        "Depicted imagery repeatedly fails review"
+      ],
+      "scores": {
+        "uncertainty_reduction": 4,
+        "generalizability": 4,
+        "repeatability": 4,
+        "monetization_clarity": 3,
+        "policy_risk": 2
+      },
+      "assumptions_requiring_research": [
+        "Whether dreamlike environments out-retain plain nature footage in this niche"
+      ],
+      "audio_source_requirement": "synthesisable_now",
+      "spec_template": "templates/long_slow_motion_ambient.json",
+      "procedural_visuals_acceptable": false,
+      "requires_subject_research": false,
+      "preview_seconds": 60,
+      "video_length_minutes": 120,
+      "target_audience": "Adults who fall asleep or unwind to immersive, cinematic environments; light sleepers who prefer a slow, dim image over a black screen",
+      "id": "ref-moonlit-victorian-glasshouse",
+      "working_title_pattern": "Moonlit Victorian Glasshouse | Sleep Ambience | Rain-Free Night",
+      "tagline": "A glass conservatory at midnight, breathing with tropical leaves and moonlight.",
+      "creative_intent": "Peaceful, cinematic, slightly surreal: the viewer rests inside an enormous Victorian glasshouse after closing time, lit only by the moon through condensation.",
+      "content_format": "3-5 dreamlike stills of one glasshouse, imperceptible drift, 2h",
+      "visual_concept": "Moonlit Victorian glass conservatory at midnight: enormous tropical plants, condensation on glass, deep indigo and aqua moonlight, silver mist, wet stone reflections, volumetric light.",
+      "visual_direction": {
+        "atmosphere": "peaceful, cinematic, ethereal, slightly surreal, premium",
+        "palette": [
+          "deep indigo",
+          "sapphire",
+          "violet",
+          "aqua",
+          "silver mist",
+          "moonlight"
+        ],
+        "motifs": [
+          "iron-and-glass conservatory ribs",
+          "condensation and droplets",
+          "enormous tropical leaves",
+          "wet stone floor reflections",
+          "silver mist",
+          "volumetric moonlight"
+        ],
+        "avoid": [
+          "people meditating",
+          "stock wellness cliches",
+          "harsh or saturated colour",
+          "frantic detail",
+          "text or logos",
+          "black frames"
+        ],
+        "prompt_core": "Moonlit Victorian glass conservatory at midnight, enormous tropical plants, condensation on glass, deep indigo and aqua moonlight, silver mist, wet stone reflections, cinematic volumetric light, peaceful dreamlike atmosphere",
+        "negative": "text, watermark, logo, signature, people, faces, hands, harsh light, neon, saturated red, cluttered, blurry, low quality, cartoon"
+      },
+      "audio_concept": "Low glass-warm drone with a slow hum beneath; no rain, the hush of a sealed greenhouse at night.",
+      "risks": [
+        "Glass and reflections are where diffusion models smear; review the stills at full size",
+        "Condensation detail may vanish after the low-VRAM upscale"
+      ]
+    },
+    {
+      "kind": "reference",
+      "niche": "immersive_ambience",
+      "publishing_format": "Long-form ambience, evergreen; 60 s quality preview first",
+      "monetization_hypothesis": "Distinctive dreamlike environments retain sleep/relaxation viewers longer than commodity dark-screen uploads. UNVERIFIED.",
+      "production_complexity": 2,
+      "generation_dependence": 4,
+      "continue_evidence": [
+        "Median view duration > 20 min",
+        "Returning viewers within 14 days",
+        "CTR above channel baseline on the still"
+      ],
+      "kill_evidence": [
+        "Median view duration < 5 min across 3 uploads",
+        "Depicted imagery repeatedly fails review"
+      ],
+      "scores": {
+        "uncertainty_reduction": 4,
+        "generalizability": 4,
+        "repeatability": 4,
+        "monetization_clarity": 3,
+        "policy_risk": 2
+      },
+      "assumptions_requiring_research": [
+        "Whether dreamlike environments out-retain plain nature footage in this niche"
+      ],
+      "audio_source_requirement": "synthesisable_now",
+      "spec_template": "templates/long_slow_motion_ambient.json",
+      "procedural_visuals_acceptable": false,
+      "requires_subject_research": false,
+      "preview_seconds": 60,
+      "video_length_minutes": 120,
+      "target_audience": "Adults who fall asleep or unwind to immersive, cinematic environments; light sleepers who prefer a slow, dim image over a black screen",
+      "id": "ref-enchanted-midnight-forest",
+      "working_title_pattern": "Enchanted Midnight Forest | Deep Sleep Ambience | Moonlit Pines",
+      "tagline": "Moonlight through old pines, drifting mist, and the faint glow of fireflies.",
+      "creative_intent": "Nature-connected and mysterious: a forest floor at midnight where the light is blue-silver and nothing hurries.",
+      "content_format": "3-5 forest stills with slow drift and crossfade, 2h",
+      "visual_concept": "Old-growth forest at midnight, shafts of silver moonlight through mist, indigo shadows, faint bioluminescent glow on moss, stars between the canopy.",
+      "visual_direction": {
+        "atmosphere": "mysterious, calm, nature-connected, ethereal",
+        "palette": [
+          "deep indigo",
+          "sapphire",
+          "violet",
+          "aqua",
+          "silver mist",
+          "moonlight"
+        ],
+        "motifs": [
+          "tall pines and ferns",
+          "moonlight shafts",
+          "ground mist",
+          "fireflies or faint glow",
+          "starlit canopy gaps",
+          "still water"
+        ],
+        "avoid": [
+          "people meditating",
+          "stock wellness cliches",
+          "harsh or saturated colour",
+          "frantic detail",
+          "text or logos",
+          "black frames"
+        ],
+        "prompt_core": "Enchanted old-growth forest at midnight, silver moonlight shafts through drifting mist, indigo and violet shadows, faint glowing particles above moss, still pond reflections, cinematic, peaceful, dreamlike",
+        "negative": "text, watermark, logo, signature, people, faces, hands, harsh light, neon, saturated red, cluttered, blurry, low quality, cartoon"
+      },
+      "audio_concept": "Brown noise shaped like night wind through pines, gentle and constant.",
+      "risks": [
+        "Forest scenes drift toward generic fantasy art; keep the palette cold and restrained",
+        "Very dark compositions risk the QC luminance floor"
+      ]
+    },
+    {
+      "kind": "reference",
+      "niche": "immersive_ambience",
+      "publishing_format": "Long-form ambience, evergreen; 60 s quality preview first",
+      "monetization_hypothesis": "Distinctive dreamlike environments retain sleep/relaxation viewers longer than commodity dark-screen uploads. UNVERIFIED.",
+      "production_complexity": 2,
+      "generation_dependence": 4,
+      "continue_evidence": [
+        "Median view duration > 20 min",
+        "Returning viewers within 14 days",
+        "CTR above channel baseline on the still"
+      ],
+      "kill_evidence": [
+        "Median view duration < 5 min across 3 uploads",
+        "Depicted imagery repeatedly fails review"
+      ],
+      "scores": {
+        "uncertainty_reduction": 4,
+        "generalizability": 4,
+        "repeatability": 4,
+        "monetization_clarity": 3,
+        "policy_risk": 2
+      },
+      "assumptions_requiring_research": [
+        "Whether dreamlike environments out-retain plain nature footage in this niche"
+      ],
+      "audio_source_requirement": "synthesisable_now",
+      "spec_template": "templates/long_slow_motion_ambient.json",
+      "procedural_visuals_acceptable": false,
+      "requires_subject_research": false,
+      "preview_seconds": 60,
+      "video_length_minutes": 120,
+      "target_audience": "Adults who fall asleep or unwind to immersive, cinematic environments; light sleepers who prefer a slow, dim image over a black screen",
+      "id": "ref-rainy-observatory",
+      "working_title_pattern": "Rainy Observatory | Rain on the Dome | Sleep & Study Ambience",
+      "tagline": "An old brass observatory under steady rain, a telescope pointed at clouds.",
+      "creative_intent": "Calm and optimistic: warmth of brass and wood inside, cold blue rain outside, the quiet of instruments at rest.",
+      "content_format": "3-5 observatory interior stills, slow drift, 2h",
+      "visual_concept": "Old observatory interior at night, brass telescope, rain streaking the dome windows, cool sapphire light outside and soft warm lamp glow inside, reflections on polished wood.",
+      "visual_direction": {
+        "atmosphere": "calm, cinematic, restrained warmth against cool rain",
+        "palette": [
+          "sapphire",
+          "indigo",
+          "aqua rain light",
+          "restrained brass warmth",
+          "silver"
+        ],
+        "motifs": [
+          "brass telescope",
+          "rain on curved dome glass",
+          "star charts and instruments",
+          "single warm lamp",
+          "polished wood reflections"
+        ],
+        "avoid": [
+          "people meditating",
+          "stock wellness cliches",
+          "harsh or saturated colour",
+          "frantic detail",
+          "text or logos",
+          "black frames"
+        ],
+        "prompt_core": "Vintage observatory interior at night, brass telescope beneath a rain-streaked glass dome, sapphire and indigo rain light outside, one soft warm lamp inside, reflections on polished wood, cinematic volumetric light, peaceful",
+        "negative": "text, watermark, logo, signature, people, faces, hands, harsh light, neon, saturated red, cluttered, blurry, low quality, cartoon"
+      },
+      "audio_concept": "Steady rain on the copper dome, soft and even, no thunder.",
+      "risks": [
+        "Warm accent must stay restrained or the cold palette breaks",
+        "Interior detail density can look cluttered at 512 px latent"
+      ]
+    },
+    {
+      "kind": "reference",
+      "niche": "immersive_ambience",
+      "publishing_format": "Long-form ambience, evergreen; 60 s quality preview first",
+      "monetization_hypothesis": "Distinctive dreamlike environments retain sleep/relaxation viewers longer than commodity dark-screen uploads. UNVERIFIED.",
+      "production_complexity": 2,
+      "generation_dependence": 4,
+      "continue_evidence": [
+        "Median view duration > 20 min",
+        "Returning viewers within 14 days",
+        "CTR above channel baseline on the still"
+      ],
+      "kill_evidence": [
+        "Median view duration < 5 min across 3 uploads",
+        "Depicted imagery repeatedly fails review"
+      ],
+      "scores": {
+        "uncertainty_reduction": 4,
+        "generalizability": 4,
+        "repeatability": 4,
+        "monetization_clarity": 3,
+        "policy_risk": 2
+      },
+      "assumptions_requiring_research": [
+        "Whether dreamlike environments out-retain plain nature footage in this niche"
+      ],
+      "audio_source_requirement": "synthesisable_now",
+      "spec_template": "templates/long_slow_motion_ambient.json",
+      "procedural_visuals_acceptable": false,
+      "requires_subject_research": false,
+      "preview_seconds": 60,
+      "video_length_minutes": 120,
+      "target_audience": "Adults who fall asleep or unwind to immersive, cinematic environments; light sleepers who prefer a slow, dim image over a black screen",
+      "id": "ref-thunderstorm-library",
+      "working_title_pattern": "Thunderstorm Library | Rain Against Tall Windows | Reading Ambience",
+      "tagline": "A vast private library at night while a storm moves past the windows.",
+      "creative_intent": "Atmospheric and premium: rows of books, tall windows, distant lightning as a slow pulse of violet light.",
+      "content_format": "3-5 library stills with slow drift, occasional soft lightning bloom via crossfade, 2h",
+      "visual_concept": "Grand library at night, tall arched windows streaked with rain, distant lightning tinting the room violet and sapphire, leather chairs, a single reading lamp, rain reflections on the floor.",
+      "visual_direction": {
+        "atmosphere": "atmospheric, safe, cinematic, premium",
+        "palette": [
+          "violet",
+          "sapphire",
+          "indigo",
+          "silver",
+          "restrained amber lamp"
+        ],
+        "motifs": [
+          "tall arched rain-streaked windows",
+          "towering bookshelves",
+          "distant lightning glow",
+          "single reading lamp",
+          "wet reflections"
+        ],
+        "avoid": [
+          "people meditating",
+          "stock wellness cliches",
+          "harsh or saturated colour",
+          "frantic detail",
+          "text or logos",
+          "black frames"
+        ],
+        "prompt_core": "Grand library at night during a thunderstorm, tall arched windows streaked with rain, distant lightning washing the shelves in violet and sapphire, leather reading chair, one soft lamp, reflections on the floor, cinematic, calm",
+        "negative": "text, watermark, logo, signature, people, faces, hands, harsh light, neon, saturated red, cluttered, blurry, low quality, cartoon"
+      },
+      "audio_concept": "Steady rain against tall windows. Distant thunder is not yet synthesisable; rain bed only for now.",
+      "risks": [
+        "Thunder is not synthesised yet, so the audio undersells the title until a licensed layer exists",
+        "Lamp warmth must stay a small accent"
+      ]
+    },
+    {
+      "kind": "reference",
+      "niche": "immersive_ambience",
+      "publishing_format": "Long-form ambience, evergreen; 60 s quality preview first",
+      "monetization_hypothesis": "Distinctive dreamlike environments retain sleep/relaxation viewers longer than commodity dark-screen uploads. UNVERIFIED.",
+      "production_complexity": 2,
+      "generation_dependence": 4,
+      "continue_evidence": [
+        "Median view duration > 20 min",
+        "Returning viewers within 14 days",
+        "CTR above channel baseline on the still"
+      ],
+      "kill_evidence": [
+        "Median view duration < 5 min across 3 uploads",
+        "Depicted imagery repeatedly fails review"
+      ],
+      "scores": {
+        "uncertainty_reduction": 4,
+        "generalizability": 4,
+        "repeatability": 4,
+        "monetization_clarity": 3,
+        "policy_risk": 2
+      },
+      "assumptions_requiring_research": [
+        "Whether dreamlike environments out-retain plain nature footage in this niche"
+      ],
+      "audio_source_requirement": "synthesisable_now",
+      "spec_template": "templates/long_slow_motion_ambient.json",
+      "procedural_visuals_acceptable": false,
+      "requires_subject_research": false,
+      "preview_seconds": 60,
+      "video_length_minutes": 120,
+      "target_audience": "Adults who fall asleep or unwind to immersive, cinematic environments; light sleepers who prefer a slow, dim image over a black screen",
+      "id": "ref-misty-botanical-garden",
+      "working_title_pattern": "Misty Botanical Garden at Dawn | Soft Ambience for Rest",
+      "tagline": "Silver mist over a botanical garden in the last minutes before sunrise.",
+      "creative_intent": "Soothing, soft, nature-connected: pale aqua light, dripping leaves, nothing sharp.",
+      "content_format": "3-5 garden stills, slow drift, 2h",
+      "visual_concept": "Botanical garden in pre-dawn mist, pale aqua and silver light, dripping broad leaves, glass greenhouse silhouettes, still reflecting pools, soft volumetric haze.",
+      "visual_direction": {
+        "atmosphere": "soothing, soft, quiet, pre-dawn",
+        "palette": [
+          "pale aqua",
+          "silver",
+          "soft teal",
+          "mist white",
+          "faint violet"
+        ],
+        "motifs": [
+          "silver mist",
+          "broad dripping leaves",
+          "reflecting pools",
+          "greenhouse silhouettes",
+          "soft haze"
+        ],
+        "avoid": [
+          "people meditating",
+          "stock wellness cliches",
+          "harsh or saturated colour",
+          "frantic detail",
+          "text or logos",
+          "black frames"
+        ],
+        "prompt_core": "Misty botanical garden just before dawn, pale aqua and silver light through soft haze, dripping broad leaves, still reflecting pools, glass greenhouse silhouette, gentle volumetric light, calm and dreamlike",
+        "negative": "text, watermark, logo, signature, people, faces, hands, harsh light, neon, saturated red, cluttered, blurry, low quality, cartoon"
+      },
+      "audio_concept": "Soft pink noise as mist and leaf-drip, gentle and continuous.",
+      "risks": [
+        "Pale palettes can read as washed-out; keep contrast in the foliage",
+        "Risk of generic garden stock look"
+      ]
+    },
+    {
+      "kind": "reference",
+      "niche": "immersive_ambience",
+      "publishing_format": "Long-form ambience, evergreen; 60 s quality preview first",
+      "monetization_hypothesis": "Distinctive dreamlike environments retain sleep/relaxation viewers longer than commodity dark-screen uploads. UNVERIFIED.",
+      "production_complexity": 2,
+      "generation_dependence": 4,
+      "continue_evidence": [
+        "Median view duration > 20 min",
+        "Returning viewers within 14 days",
+        "CTR above channel baseline on the still"
+      ],
+      "kill_evidence": [
+        "Median view duration < 5 min across 3 uploads",
+        "Depicted imagery repeatedly fails review"
+      ],
+      "scores": {
+        "uncertainty_reduction": 4,
+        "generalizability": 4,
+        "repeatability": 4,
+        "monetization_clarity": 3,
+        "policy_risk": 2
+      },
+      "assumptions_requiring_research": [
+        "Whether dreamlike environments out-retain plain nature footage in this niche"
+      ],
+      "audio_source_requirement": "synthesisable_now",
+      "spec_template": "templates/long_slow_motion_ambient.json",
+      "procedural_visuals_acceptable": false,
+      "requires_subject_research": false,
+      "preview_seconds": 60,
+      "video_length_minutes": 120,
+      "target_audience": "Adults who fall asleep or unwind to immersive, cinematic environments; light sleepers who prefer a slow, dim image over a black screen",
+      "id": "ref-celestial-drift",
+      "working_title_pattern": "Celestial Drift | Slow Nebula Ambience for Deep Sleep",
+      "tagline": "A slow drift through indigo nebulae and silver starfields.",
+      "creative_intent": "Ethereal and vast: the viewer floats, nothing arrives, the stars barely move.",
+      "content_format": "3-5 deep-space stills with very slow drift, 2h",
+      "visual_concept": "Deep space nebula in indigo, violet and aqua, silver starfield, soft volumetric gas, faint glass-like particles, no planets or ships.",
+      "visual_direction": {
+        "atmosphere": "ethereal, vast, weightless, serene",
+        "palette": [
+          "deep indigo",
+          "sapphire",
+          "violet",
+          "aqua",
+          "silver mist",
+          "moonlight"
+        ],
+        "motifs": [
+          "indigo and violet nebula",
+          "silver starfield",
+          "soft volumetric gas",
+          "subtle drifting particles"
+        ],
+        "avoid": [
+          "people meditating",
+          "stock wellness cliches",
+          "harsh or saturated colour",
+          "frantic detail",
+          "text or logos",
+          "black frames"
+        ],
+        "prompt_core": "Vast indigo and violet nebula with silver starfields, soft volumetric gas clouds, faint drifting particles, aqua highlights, serene and weightless, cinematic, no planets",
+        "negative": "text, watermark, logo, signature, people, faces, hands, harsh light, neon, saturated red, cluttered, blurry, low quality, cartoon"
+      },
+      "audio_concept": "Deep sub drone with a slow oscillator swell, barely moving.",
+      "risks": [
+        "Space imagery is commoditised; the palette discipline is the differentiator",
+        "Very dark frames risk the QC luminance floor"
+      ]
+    },
+    {
+      "kind": "reference",
+      "niche": "immersive_ambience",
+      "publishing_format": "Long-form ambience, evergreen; 60 s quality preview first",
+      "monetization_hypothesis": "Distinctive dreamlike environments retain sleep/relaxation viewers longer than commodity dark-screen uploads. UNVERIFIED.",
+      "production_complexity": 2,
+      "generation_dependence": 4,
+      "continue_evidence": [
+        "Median view duration > 20 min",
+        "Returning viewers within 14 days",
+        "CTR above channel baseline on the still"
+      ],
+      "kill_evidence": [
+        "Median view duration < 5 min across 3 uploads",
+        "Depicted imagery repeatedly fails review"
+      ],
+      "scores": {
+        "uncertainty_reduction": 4,
+        "generalizability": 4,
+        "repeatability": 4,
+        "monetization_clarity": 3,
+        "policy_risk": 2
+      },
+      "assumptions_requiring_research": [
+        "Whether dreamlike environments out-retain plain nature footage in this niche"
+      ],
+      "audio_source_requirement": "synthesisable_now",
+      "spec_template": "templates/long_slow_motion_ambient.json",
+      "procedural_visuals_acceptable": false,
+      "requires_subject_research": false,
+      "preview_seconds": 60,
+      "video_length_minutes": 120,
+      "target_audience": "Adults who fall asleep or unwind to immersive, cinematic environments; light sleepers who prefer a slow, dim image over a black screen",
+      "id": "ref-bioluminescent-dreamscape",
+      "working_title_pattern": "Bioluminescent Dreamscape | Glowing Water & Night Foliage",
+      "tagline": "A night shoreline where the water glows aqua and the leaves hold starlight.",
+      "creative_intent": "Slightly surreal and soothing: living light in water and foliage, never garish.",
+      "content_format": "3-5 shoreline stills with slow drift, 2h",
+      "visual_concept": "Night shoreline with bioluminescent aqua water, glowing particles in the surf, dark foliage catching soft violet light, stars and a low moon, wet sand reflections.",
+      "visual_direction": {
+        "atmosphere": "surreal, soothing, quietly alive",
+        "palette": [
+          "aqua glow",
+          "deep indigo",
+          "violet",
+          "silver",
+          "moonlight"
+        ],
+        "motifs": [
+          "glowing aqua surf",
+          "drifting light particles",
+          "dark foliage with soft glow",
+          "wet sand reflections",
+          "low moon"
+        ],
+        "avoid": [
+          "people meditating",
+          "stock wellness cliches",
+          "harsh or saturated colour",
+          "frantic detail",
+          "text or logos",
+          "black frames"
+        ],
+        "prompt_core": "Bioluminescent night shoreline, aqua glowing water and drifting light particles, dark foliage touched with violet light, low moon and stars, wet sand reflections, dreamlike, serene, cinematic",
+        "negative": "text, watermark, logo, signature, people, faces, hands, harsh light, neon, saturated red, cluttered, blurry, low quality, cartoon"
+      },
+      "audio_concept": "Velvet-soft brown noise as a distant underwater hush.",
+      "risks": [
+        "Glow effects tip into neon easily; keep saturation restrained",
+        "Ocean textures can look artificial after upscale"
+      ]
+    },
+    {
+      "kind": "reference",
+      "niche": "immersive_ambience",
+      "publishing_format": "Long-form ambience, evergreen; 60 s quality preview first",
+      "monetization_hypothesis": "Distinctive dreamlike environments retain sleep/relaxation viewers longer than commodity dark-screen uploads. UNVERIFIED.",
+      "production_complexity": 2,
+      "generation_dependence": 4,
+      "continue_evidence": [
+        "Median view duration > 20 min",
+        "Returning viewers within 14 days",
+        "CTR above channel baseline on the still"
+      ],
+      "kill_evidence": [
+        "Median view duration < 5 min across 3 uploads",
+        "Depicted imagery repeatedly fails review"
+      ],
+      "scores": {
+        "uncertainty_reduction": 4,
+        "generalizability": 4,
+        "repeatability": 4,
+        "monetization_clarity": 3,
+        "policy_risk": 2
+      },
+      "assumptions_requiring_research": [
+        "Whether dreamlike environments out-retain plain nature footage in this niche"
+      ],
+      "audio_source_requirement": "synthesisable_now",
+      "spec_template": "templates/long_slow_motion_ambient.json",
+      "procedural_visuals_acceptable": false,
+      "requires_subject_research": false,
+      "preview_seconds": 60,
+      "video_length_minutes": 120,
+      "target_audience": "Adults who fall asleep or unwind to immersive, cinematic environments; light sleepers who prefer a slow, dim image over a black screen",
+      "id": "ref-surreal-dream-architecture",
+      "working_title_pattern": "Surreal Dream Architecture | Quiet Halls of Light",
+      "tagline": "Impossible, gentle architecture: endless halls of glass and soft light.",
+      "creative_intent": "Surreal and premium: soft architecture that could not exist, lit like dawn through water.",
+      "content_format": "3-5 architectural stills with slow drift, 2h",
+      "visual_concept": "Surreal dream architecture: soft curving halls of pale stone and glass, water on the floor reflecting indigo and aqua skylight, silver mist, gentle volumetric light, no people.",
+      "visual_direction": {
+        "atmosphere": "surreal, serene, premium, softly architectural",
+        "palette": [
+          "pale stone",
+          "indigo",
+          "aqua",
+          "silver mist",
+          "violet"
+        ],
+        "motifs": [
+          "curving pale halls",
+          "glass and water floors",
+          "indigo skylight",
+          "silver mist",
+          "soft volumetric light"
+        ],
+        "avoid": [
+          "people meditating",
+          "stock wellness cliches",
+          "harsh or saturated colour",
+          "frantic detail",
+          "text or logos",
+          "black frames"
+        ],
+        "prompt_core": "Surreal dream architecture, soft curving halls of pale stone and glass, shallow water on the floor reflecting an indigo and aqua sky, silver mist, gentle volumetric light, serene, cinematic, no people",
+        "negative": "text, watermark, logo, signature, people, faces, hands, harsh light, neon, saturated red, cluttered, blurry, low quality, cartoon"
+      },
+      "audio_concept": "Low drone with a slow harmonic hum, spacious and still.",
+      "risks": [
+        "Architecture prompts can produce impossible geometry that reads as broken rather than dreamlike",
+        "Pale scenes need contrast to avoid a flat look"
+      ]
     }
   ],
   "production_constraints": {

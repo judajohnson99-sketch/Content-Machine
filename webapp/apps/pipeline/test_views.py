@@ -171,3 +171,23 @@ class TestPipelineRunListView:
     def test_unauthenticated_request_is_rejected(self):
         response = APIClient().get("/api/v1/projects/abc/pipeline-runs/")
         assert response.status_code == 403
+
+
+@pytest.mark.django_db
+class TestRecentPipelineRunsView:
+    def test_splits_active_from_recently_finished_newest_first(self, client):
+        from apps.pipeline.models import PipelineRun
+        PipelineRun.objects.create(video_id="a", stage="produce", client_request_id=uuid.uuid4(),
+                                   status=PipelineRun.STATUS_SUCCEEDED)
+        PipelineRun.objects.create(video_id="b", stage="run", client_request_id=uuid.uuid4(),
+                                   status=PipelineRun.STATUS_RUNNING)
+        PipelineRun.objects.create(video_id="c", stage="audio", client_request_id=uuid.uuid4(),
+                                   status=PipelineRun.STATUS_FAILED)
+        response = client.get("/api/v1/pipeline-runs/")
+        assert response.status_code == 200
+        body = response.json()
+        assert [r["video_id"] for r in body["active"]] == ["b"]
+        assert [r["video_id"] for r in body["recent"]] == ["c", "a"]
+
+    def test_unauthenticated_request_is_rejected(self):
+        assert APIClient().get("/api/v1/pipeline-runs/").status_code == 403

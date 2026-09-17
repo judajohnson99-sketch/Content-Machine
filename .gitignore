@@ -57,3 +57,5 @@ frontend/dist/
 *.zip
 archive-*/
 SYNC_TEST.txt
+# Local browser-QA captures (Playwright screenshots)
+qa/

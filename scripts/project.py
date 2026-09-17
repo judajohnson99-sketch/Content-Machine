@@ -38,6 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audio as audio_mod  # noqa: E402
 import creative as creative_mod  # noqa: E402
+import envfile  # noqa: E402
 import generation  # noqa: E402
 import make_visuals  # noqa: E402
 import qc  # noqa: E402
@@ -701,14 +702,22 @@ def run_visuals(video_id, prompt=None, negative=None, count=None, width=None,
         try:
             job = router.generate(request, pdir / "images")
         except generation.GenerationError as e:
+            for attempt in e.attempts:
+                log.info("  - %s: %s - %s", attempt["provider"], attempt["outcome"],
+                         attempt.get("detail", ""))
+            if require_depicted:
+                queued = _defer_to_gpu_worker(request, pdir / "images", video_id,
+                                              label=prompt[:80])
+                if queued:
+                    metadata.setdefault("status", {})["visuals"] = VISUALS_WAITING_FOR_GPU
+                    save_metadata(pdir, metadata)
+                    return _waiting_for_gpu_result([queued], "visuals")
             metadata.setdefault("status", {})["visuals"] = "FAILED"
             save_metadata(pdir, metadata)
             log.error("Visual generation failed: %s", e)
-            for attempt in e.attempts:
-                log.error("  - %s: %s - %s", attempt["provider"], attempt["outcome"],
-                          attempt.get("detail", ""))
             if require_depicted:
-                log.error("Bring ComfyUI online (COMFYUI_URL) or configure an image API.")
+                log.error("Bring ComfyUI online (COMFYUI_URL), enroll a GPU worker "
+                          "(./content-machine worker enroll), or configure an image API.")
             return StageResult(False, 1, "visual generation failed")
 
         provider = job["provider"]
@@ -901,7 +910,7 @@ def run_scenes(video_id, force=False, depicted=False):
         scene_dir = pdir / "images"
         scene_dir.mkdir(parents=True, exist_ok=True)
 
-        generated, reused, failed = 0, 0, []
+        generated, reused, failed, queued = 0, 0, [], []
         providers_used = set()
         any_abstract = False
         for scene in board["scenes"]:
@@ -912,7 +921,17 @@ def run_scenes(video_id, force=False, depicted=False):
             try:
                 job = router.generate(request, scene_dir)
             except generation.GenerationError as e:
-                failed.append((scene["scene_id"], str(e)))
+                remote = None
+                if require_depicted:
+                    remote = _defer_to_gpu_worker(
+                        request, scene_dir, video_id,
+                        label=f"{scene['scene_id']}: {request.prompt[:60]}")
+                if remote:
+                    scene.setdefault("generation", {}).update({
+                        "job_id": remote["job_id"], "remote_state": remote["state"]})
+                    queued.append(remote)
+                else:
+                    failed.append((scene["scene_id"], str(e)))
                 continue
             assets = job.get("assets") or []
             if not assets:
@@ -963,8 +982,8 @@ def run_scenes(video_id, force=False, depicted=False):
                 images_prov["production_grade"] = None
         save_metadata(pdir, metadata)
 
-        log.info("Scenes: %d generated, %d reused, %d failed",
-                 generated, reused, len(failed))
+        log.info("Scenes: %d generated, %d reused, %d queued for the GPU worker, %d failed",
+                 generated, reused, len(queued), len(failed))
         for scene_id, detail in failed:
             log.error("  %s: %s", scene_id, detail)
         if failed:
@@ -972,13 +991,117 @@ def run_scenes(video_id, force=False, depicted=False):
                       "not a failure - it simply has not landed yet.")
             return StageResult(False, 1, "unresolved scenes",
                                 {"generated": generated, "reused": reused,
-                                 "failed": len(failed)})
+                                 "failed": len(failed), "queued": len(queued)})
+        if queued:
+            metadata.setdefault("status", {})["scenes"] = VISUALS_WAITING_FOR_GPU
+            save_metadata(pdir, metadata)
+            return _waiting_for_gpu_result(queued, "scenes",
+                                           {"generated": generated, "reused": reused})
         if any_abstract:
             log.warning("Some scenes came from an abstract-only provider; "
                         "production_grade recorded as false.")
         log.info("Now run: ./content-machine run %s", video_id)
         return StageResult(True, 0, "scenes generated",
                             {"generated": generated, "reused": reused})
+
+
+VISUALS_WAITING_FOR_GPU = "WAITING_FOR_GPU_WORKER"
+WAITING_FOR_GPU_EXIT_CODE = 2   # NEEDS_ATTENTION in the web layer, never FAILED
+
+
+def _defer_to_gpu_worker(request, out_dir, video_id, label=None):
+    """Queue a depicted-imagery request for the remote GPU, or None.
+
+    Only reached once every synchronous provider has declined the request.
+    The remote worker is a queue, not a provider (knowledge: Remote GPU Work
+    Is a Queue Not a Provider): the PC being off is normal, so the job waits
+    there at no cost and the next run of this stage finds the completed job
+    through the ordinary digest seam and reuses it. Nothing is queued when
+    no worker was ever enrolled - then the failure stays a failure.
+    """
+    import worker  # local import: worker imports this module's siblings, not vice versa
+
+    try:
+        if not worker.remote_capable(("comfyui",)):
+            return None
+        job = worker.enqueue(request, out_dir, capabilities=("comfyui",),
+                             project_id=video_id, prompt_label=label)
+    except worker.WorkerError as e:
+        log.warning("could not queue for the GPU worker: %s", e)
+        return None
+    view = worker.job_view(job)
+    log.info("queued for the GPU worker: job %s (%s)", view["job_id"],
+             view.get("wait_reason") or view["state"])
+    return view
+
+
+def _waiting_for_gpu_result(jobs, stage, extra=None):
+    """The StageResult for 'the images are on their way, not here yet'.
+
+    Exit code 2 so the web layer records NEEDS_ATTENTION rather than FAILED:
+    nothing went wrong, and re-running the stage (or Produce) once the jobs
+    land resumes from the completed jobs without regenerating anything.
+    """
+    import worker
+
+    readiness = worker.depicted_readiness()
+    reasons = sorted({j.get("wait_reason") or j["state"] for j in jobs})
+    message = (f"waiting for GPU worker: {len(jobs)} {stage} job(s) queued "
+               f"({', '.join(reasons)}); {readiness['detail']}. Re-run Produce "
+               "once the images land.")
+    log.warning(message)
+    data = {"waiting_for_gpu": True, "remote_jobs": [j["job_id"] for j in jobs],
+            "gpu_state": readiness["state"], "gpu_detail": readiness["detail"]}
+    data.update(extra or {})
+    return StageResult(False, WAITING_FOR_GPU_EXIT_CODE, message, data)
+
+
+def record_visual_grade(video_id, reviewer, production_grade, notes=""):
+    """A human's explicit claim about the project's visuals.
+
+    The ONLY writer of ``provenance.images.production_grade`` outside the
+    machine-established negative in run_visuals/run_scenes and the CLI's
+    explicit flags. ``reviewer`` must be a human identity (the web layer
+    sources it from the session, the CLI from a required flag); an
+    automated caller cannot grant it. ``True`` is a claim, not a proof: the
+    gate still re-inspects the artefacts (a procedural plate stays a
+    blocker whatever this says), so the strongest thing a wrong claim can
+    do is nothing.
+    """
+    if production_grade not in (True, False):
+        raise ReviewDecisionError("production_grade must be true or false")
+    if not reviewer or not reviewer.strip():
+        raise ReviewDecisionError("reviewer is required and must be a human identity")
+    with project_lock(video_id):
+        pdir = project_dir(video_id)
+        meta_path = pdir / "metadata.json"
+        if not meta_path.is_file():
+            raise ReviewDecisionError(f"not a project: {video_id}")
+        metadata = json.loads(meta_path.read_text())
+        images = list_assets(pdir / "images", SUPPORTED_IMAGE_EXTENSIONS)
+        if production_grade and not images:
+            raise ReviewDecisionError(
+                "cannot claim production-grade visuals: the project has no images")
+        prov = metadata.setdefault("provenance", {}).setdefault("images", {})
+        prov["production_grade"] = production_grade
+        prov["production_grade_claim"] = {
+            "utc": utc_now(), "reviewer": reviewer, "notes": notes or "",
+            "asset_count": len(images),
+        }
+        save_metadata(pdir, metadata)
+        return dict(prov["production_grade_claim"], production_grade=production_grade)
+
+
+def cmd_visual_grade(args):
+    try:
+        entry = record_visual_grade(args.video_id, args.reviewer,
+                                    args.grade == "true", notes=args.notes or "")
+    except ReviewDecisionError as e:
+        log.error("%s", e)
+        return 1
+    log.info("provenance.images.production_grade=%s recorded by %s",
+             entry["production_grade"], entry["reviewer"])
+    return 0
 
 
 def cmd_scenes(args):
@@ -1003,6 +1126,14 @@ def cmd_providers(args):
         suffix = f"  [{', '.join(flags)}]" if flags else ""
         print(f"{'OK  ' if entry['healthy'] else 'DOWN'}  "
               f"{entry['provider']:<12} {entry['detail']}{suffix}")
+    search = subject_research.provider_status()
+    if search["available"]:
+        print(f"OK    {'search':<12} SEARCH_PROVIDER={search['configured']}  [subject research]")
+    else:
+        detail = (f"SEARCH_PROVIDER={search['configured']!r} is not a known provider"
+                  if search["configured"] else "SEARCH_PROVIDER is not set")
+        print(f"DOWN  {'search':<12} {detail}  [subject research fails closed; "
+              f"known: {', '.join(search['known'])}]")
     return 0
 
 
@@ -1246,24 +1377,34 @@ def list_projects():
         return []
     summaries = []
     for pdir in sorted(PROJECTS_DIR.iterdir()):
-        meta_path = pdir / "metadata.json"
-        if not pdir.is_dir() or not meta_path.is_file():
-            continue
-        try:
-            metadata = json.loads(meta_path.read_text())
-        except (OSError, ValueError):
-            continue
-        status = metadata.get("status", {})
-        experiment = metadata.get("experiment") or {}
-        summaries.append({
-            "video_id": metadata.get("video_id", pdir.name),
-            "selected_title": metadata.get("selected_title"),
-            "concept_id": experiment.get("concept_id"),
-            "niche": experiment.get("niche"),
-            "overall_status": status.get("overall", "UNKNOWN"),
-            "created_utc": metadata.get("created_utc"),
-        })
+        summary = project_summary(pdir.name)
+        if summary is not None:
+            summaries.append(summary)
     return summaries
+
+
+def project_summary(video_id):
+    """One project's dashboard summary, or None if it is not a readable
+    project. The single shape list_projects() and a freshly created
+    project both report in."""
+    pdir = project_dir(video_id)
+    meta_path = pdir / "metadata.json"
+    if not pdir.is_dir() or not meta_path.is_file():
+        return None
+    try:
+        metadata = json.loads(meta_path.read_text())
+    except (OSError, ValueError):
+        return None
+    status = metadata.get("status", {})
+    experiment = metadata.get("experiment") or {}
+    return {
+        "video_id": metadata.get("video_id", pdir.name),
+        "selected_title": metadata.get("selected_title"),
+        "concept_id": experiment.get("concept_id"),
+        "niche": experiment.get("niche"),
+        "overall_status": status.get("overall", "UNKNOWN"),
+        "created_utc": metadata.get("created_utc"),
+    }
 
 
 # The only project subdirectories any adapter may hand a file out of. Root
@@ -1346,14 +1487,23 @@ def project_assets(video_id):
 
     board = storyboard_mod.load(video_id)
     scene_by_image = {}
+    job_ids = set()
+    images_prov = (metadata.get("provenance") or {}).get("images") or {}
+    if images_prov.get("job_id"):
+        job_ids.add(images_prov["job_id"])
+    job_ids.update(images_prov.get("scene_job_ids") or [])
     if board:
         for scene in board.get("scenes", []):
             if scene.get("image"):
                 scene_by_image[scene["image"]] = scene["scene_id"]
+            if (scene.get("generation") or {}).get("job_id"):
+                job_ids.add(scene["generation"]["job_id"])
+    lineage = _image_lineage(pdir, job_ids)
     images = []
     for p in list_assets(pdir / "images", SUPPORTED_IMAGE_EXTENSIONS):
         entry = _file_entry(pdir, p)
         entry["scene_id"] = scene_by_image.get(entry["path"])
+        entry["generation"] = lineage.get(entry["path"])
         images.append(entry)
 
     audio = None
@@ -1410,17 +1560,66 @@ def project_assets(video_id):
          if p.is_file()),
         key=lambda e: e["modified_utc"], reverse=True)[:10]
 
+    visual_plan = metadata.get("visual_plan") or {}
     return {
         "video_id": video_id,
         "video": video,
         "thumbnails": thumbnails,
         "images": images,
+        "images_provenance": {
+            "provider": images_prov.get("provider"),
+            "model": images_prov.get("model"),
+            "production_grade": images_prov.get("production_grade"),
+            "production_grade_claim": images_prov.get("production_grade_claim"),
+            "notes": images_prov.get("notes"),
+        },
+        "visual_plan": {
+            "prompt": visual_plan.get("prompt"),
+            "negative_prompt": visual_plan.get("negative_prompt"),
+            "style": visual_plan.get("style"),
+        },
         "audio": audio,
         "qc": qc,
         "storyboard": storyboard,
         "package": package,
         "logs": logs,
     }
+
+
+def _image_lineage(pdir, job_ids):
+    """path -> how that image was made, from the generation job store.
+
+    Read-only over jobs/<id>.json: provider, model, prompt, seed, the
+    request's size, and the worker that rendered it when it was remote.
+    A job whose record is gone simply has no lineage; nothing is invented.
+    """
+    lineage = {}
+    for job_id in sorted(job_ids):
+        job = generation.load_job(job_id)
+        if not job:
+            continue
+        request = job.get("request") or {}
+        summary = {
+            "job_id": job_id,
+            "provider": job.get("provider"),
+            "model": job.get("model"),
+            "worker_id": job.get("worker_id"),
+            "produces_depicted": job.get("produces_depicted"),
+            "prompt": request.get("prompt"),
+            "negative_prompt": request.get("negative_prompt"),
+            "seed": request.get("seed"),
+            "width": request.get("width"),
+            "height": request.get("height"),
+            "completed_at": job.get("completed_at"),
+            "notes": job.get("notes"),
+        }
+        for asset in job.get("assets") or []:
+            try:
+                relative = str(Path(asset).resolve().relative_to(pdir.resolve()))
+            except ValueError:
+                continue
+            lineage[relative] = summary
+    return lineage
 
 
 def cmd_status(args):
@@ -1925,6 +2124,10 @@ def save_metadata(pdir, metadata):
 
 
 def main():
+    # The same .env the web/Celery processes load (cmweb/settings/base.py),
+    # so a stage behaves identically whichever entry point started it.
+    # Values already in the shell environment win over the file.
+    envfile.load_env_file()
     parser = argparse.ArgumentParser(
         description="Content Machine project lifecycle.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1993,6 +2196,14 @@ def main():
     p_vis.add_argument("--depicted", action="store_true",
                        help="require depicted imagery even if the concept allows plates")
     p_vis.set_defaults(func=cmd_visuals)
+
+    p_grade = sub.add_parser("visual-grade",
+                             help="record a human's production-grade claim for the visuals")
+    p_grade.add_argument("video_id")
+    p_grade.add_argument("grade", choices=("true", "false"))
+    p_grade.add_argument("--reviewer", required=True, help="a human identity, never a default")
+    p_grade.add_argument("--notes", default="")
+    p_grade.set_defaults(func=cmd_visual_grade)
 
     p_story = sub.add_parser(
         "storyboard", help="derive this project's scene plan from its script and format profile")

@@ -31,5 +31,7 @@ export interface ProjectDetail {
   // computed from (scripts/project.py's gate_digest()) - the Review Center
   // sends it back verbatim as expected_digest; it is never recomputed or
   // guessed client-side (architecture plan §5/§8).
-  status?: { overall?: string; gate_digest?: string | null } | null;
+  // The other keys are per-stage outcomes scripts.project records as
+  // it goes (render, audio, visuals, scenes, storyboard, subject_research…).
+  status?: ({ overall?: string; gate_digest?: string | null } & Record<string, string | null | undefined>) | null;
 }

@@ -39,7 +39,7 @@ export function DeliverablePanel({ videoId, compact = false }: Props) {
 
   return (
     <div className={`${styles.panel} ${compact ? styles.compact : ""}`}>
-      <div>
+      <div className={styles.media}>
         <VideoBlock videoId={videoId} assets={assets} />
       </div>
       <div className={styles.side}>
@@ -52,17 +52,28 @@ export function DeliverablePanel({ videoId, compact = false }: Props) {
 
 function VideoBlock({ videoId, assets }: { videoId: string; assets: ProjectAssets }) {
   const poster = assets.thumbnails[0] ? fileUrl(videoId, assets.thumbnails[0].path) : undefined;
+  const hero = assets.images[0];
   return (
     <div>
       {assets.video ? (
-        <video
-          className={styles.player}
-          controls
-          preload="metadata"
-          poster={poster}
-          src={fileUrl(videoId, assets.video.path)}
-          data-testid="deliverable-video"
-        />
+        <div className={styles.playerFrame}>
+          <video
+            className={styles.player}
+            controls
+            preload="metadata"
+            poster={poster}
+            src={fileUrl(videoId, assets.video.path)}
+            data-testid="deliverable-video"
+          />
+        </div>
+      ) : hero ? (
+        <div className={styles.playerFrame} data-testid="deliverable-missing">
+          <img className={styles.heroImage} src={fileUrl(videoId, hero.path)} alt={hero.path} />
+          <div className={styles.heroCaption}>
+            <span>Latest imagery · {assets.images.length} image{assets.images.length === 1 ? "" : "s"}</span>
+            <span>No render yet — run Assemble &amp; Render (or Produce) to create the deliverable.</span>
+          </div>
+        </div>
       ) : (
         <div className={styles.placeholder} data-testid="deliverable-missing">
           No render yet — run Assemble &amp; Render (or Produce) to create the deliverable.
@@ -70,7 +81,7 @@ function VideoBlock({ videoId, assets }: { videoId: string; assets: ProjectAsset
       )}
       {assets.video && (
         <div className={styles.meta}>
-          <span>{assets.video.path}</span>
+          <span className={styles.mono}>{assets.video.path}</span>
           <span>{formatBytes(assets.video.bytes)}</span>
           <span>rendered {formatDateTime(assets.video.modified_utc)}</span>
         </div>
@@ -86,12 +97,13 @@ function VideoBlock({ videoId, assets }: { videoId: string; assets: ProjectAsset
   );
 }
 
-function QcBlock({ assets, compact }: { assets: ProjectAssets; compact: boolean }) {
-  const [showAll, setShowAll] = useState(!compact);
+function QcBlock({ assets }: { assets: ProjectAssets; compact: boolean }) {
+  // Failures first, everywhere: passing checks are one click away.
+  const [showAll, setShowAll] = useState(false);
   const qc = assets.qc;
   if (!qc) {
     return (
-      <div>
+      <div className={styles.block}>
         <h4 className={styles.sectionTitle}>Quality control</h4>
         <p className={styles.qcRow}>Not run yet.</p>
       </div>
@@ -100,7 +112,7 @@ function QcBlock({ assets, compact }: { assets: ProjectAssets; compact: boolean 
   const failed = qc.checks.filter((c) => !c.passed);
   const visible = showAll ? qc.checks : failed;
   return (
-    <div>
+    <div className={styles.block}>
       <h4 className={styles.sectionTitle}>Quality control</h4>
       <div className={styles.qcRow}>
         <StatusBadge status={qc.status ?? "UNKNOWN"} />
@@ -111,7 +123,7 @@ function QcBlock({ assets, compact }: { assets: ProjectAssets; compact: boolean 
       {visible.length > 0 && (
         <ul className={styles.checkList}>
           {visible.map((c) => (
-            <li key={c.check} className={`${styles.check} ${c.passed ? "" : styles.checkFailed}`}>
+            <li key={c.check} className={`${styles.check} ${c.passed ? styles.checkPassed : styles.checkFailed}`}>
               <span className={styles.checkName}>{c.passed ? "✓" : "✗"} {c.check}</span>
               {c.detail && <span className={styles.checkDetail} title={c.detail}>{c.detail}</span>}
             </li>
@@ -131,7 +143,7 @@ function PackageBlock({ assets }: { assets: ProjectAssets }) {
   const pkg = assets.package;
   if (!pkg) return null;
   return (
-    <div>
+    <div className={styles.block}>
       <h4 className={styles.sectionTitle}>Publication package</h4>
       <div className={styles.qcRow}>
         <StatusBadge status={pkg.status ?? "UNKNOWN"} />

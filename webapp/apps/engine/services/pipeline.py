@@ -59,6 +59,18 @@ def trigger_stage(video_id, stage, client_request_id, params):
     return run, True
 
 
+def recent_runs(limit=12):
+    """Activity across every project: everything in flight plus the most
+    recently finished runs, newest first. A plain read of PipelineRun for
+    the dashboard's "what is running / what just finished" - it derives
+    nothing about what a run's outcome means."""
+    active = list(PipelineRun.objects.filter(
+        status__in=[PipelineRun.STATUS_QUEUED, PipelineRun.STATUS_RUNNING]))
+    finished = list(PipelineRun.objects.exclude(
+        status__in=[PipelineRun.STATUS_QUEUED, PipelineRun.STATUS_RUNNING])[:limit])
+    return {"active": active, "recent": finished}
+
+
 def get_run(video_id, run_id):
     return PipelineRun.objects.filter(video_id=video_id, pk=run_id).first()
 

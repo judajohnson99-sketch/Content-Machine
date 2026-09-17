@@ -1,5 +1,5 @@
 {
-  "_comment": "ComfyUI API-format txt2img graph, tuned for an SD 1.5 checkpoint (e.g. v1-5-pruned-emaonly.safetensors via COMFYUI_MODEL). Placeholders (%prompt% %negative% %width% %height% %seed% %model%) are substituted by scripts/generation.py before submission. Point COMFYUI_WORKFLOW at your own copy to use a different graph without touching code.",
+  "_comment": "Direct-latent ComfyUI API-format txt2img graph: renders exactly %width%x%height%, so it needs a card that fits that latent. The default is comfyui_workflow_lowvram_upscale.json (small latent + in-graph upscale); select this one with COMFYUI_WORKFLOW=config/comfyui_workflow.example.json on a GPU with the VRAM for it. Placeholders (%prompt% %negative% %width% %height% %latent_width% %latent_height% %seed% %model%) are substituted by scripts/generation.py before submission.",
   "3": {
     "class_type": "KSampler",
     "inputs": {

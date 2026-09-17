@@ -1,31 +1,32 @@
 .card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  padding: var(--space-4) var(--space-5);
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: rgba(9, 13, 25, 0.5);
+  border: 1px solid var(--border-subtle);
+  min-width: 0;
 }
 
 .label {
-  font-size: var(--text-xs);
-  font-weight: 600;
+  font-size: var(--text-2xs);
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.1em;
   color: var(--text-tertiary);
 }
 
 .value {
-  font-size: 28px;
-  font-weight: 700;
-  color: var(--text-primary);
+  font-size: var(--text-2xl);
+  font-weight: 650;
   letter-spacing: -0.02em;
-  line-height: 1.2;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
 }
 
 .accent {
-  color: var(--accent);
+  color: var(--accent-hover);
 }
 .success {
   color: var(--success-fg);
