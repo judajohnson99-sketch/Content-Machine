@@ -252,6 +252,109 @@ def qc_video(video_path, expected=None, source_images=None):
     return _finalize(video_path, checks)
 
 
+def _storyboard_report(pdir, checks):
+    """Same report shape as qc_video, keyed on the artefact it describes."""
+    report = _finalize(Path(pdir) / "storyboard.json", checks)
+    report["subject"] = report.pop("video")
+    return report
+
+
+def qc_storyboard(storyboard, pdir, audio_seconds=None):
+    """Pre-render QC for a scene plan.
+
+    Everything here is checkable before a single frame is encoded, which is
+    the point: a 20-minute render that fails on a missing scene asset has
+    wasted 20 minutes to learn something ffprobe could have said in a second.
+
+    Images are inspected with ffprobe rather than trusted by extension, so a
+    truncated download or a .png that is really HTML is caught here.
+    """
+    checks = []
+    scenes = storyboard.get("scenes") or []
+    checks.append(check("storyboard_has_scenes", bool(scenes),
+                        f"{len(scenes)} scene(s)"))
+    if not scenes:
+        return _storyboard_report(pdir, checks)
+
+    missing = [s.get("scene_id") for s in scenes if not s.get("image")]
+    checks.append(check(
+        "scene_assets_present", not missing,
+        "every scene has an image" if not missing
+        else f"no image for: {', '.join(str(m) for m in missing)}"))
+
+    # A scene with no image and no job is simply unplanned; a scene with a
+    # job id and no image is work still in flight on the GPU queue. They are
+    # different situations and a reviewer needs to be able to tell them apart.
+    pending = [s.get("scene_id") for s in scenes
+               if not s.get("image") and (s.get("generation") or {}).get("job_id")]
+    checks.append(check(
+        "generation_jobs_resolved", not pending,
+        "no generation job outstanding" if not pending
+        else f"still awaiting generation: {', '.join(str(p) for p in pending)}"))
+
+    unreadable, wrong_size = [], []
+    expected_w = (storyboard.get("source_generation") or {}).get("width")
+    expected_h = (storyboard.get("source_generation") or {}).get("height")
+    for scene in scenes:
+        image = scene.get("image")
+        if not image:
+            continue
+        path = Path(image)
+        if not path.is_absolute():
+            path = pdir / image
+        dimensions = probe_image(path)
+        if dimensions is None:
+            unreadable.append(f"{scene.get('scene_id')} ({path.name})")
+            continue
+        width, height = dimensions
+        if width <= 0 or height <= 0:
+            unreadable.append(f"{scene.get('scene_id')} ({path.name})")
+        elif expected_w and expected_h and (width, height) != (expected_w, expected_h):
+            wrong_size.append(
+                f"{scene.get('scene_id')} is {width}x{height}, "
+                f"storyboard declares {expected_w}x{expected_h}")
+
+    checks.append(check("scene_images_readable", not unreadable,
+                        "all scene images decode" if not unreadable
+                        else f"unreadable: {', '.join(unreadable)}"))
+    checks.append(check(
+        "scene_image_dimensions", not wrong_size,
+        f"all sources {expected_w}x{expected_h}" if not wrong_size
+        else "; ".join(wrong_size)))
+
+    target = storyboard.get("target") or {}
+    for key in ("width", "height", "fps", "duration_seconds"):
+        value = target.get(key)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+            checks.append(check("target_valid", False,
+                                f"target.{key} is {value!r}"))
+            break
+    else:
+        checks.append(check(
+            "target_valid", True,
+            f"{target['width']}x{target['height']} @ {target['fps']}fps"))
+
+    timeline = storyboard.get("timeline_seconds")
+    requested = target.get("duration_seconds")
+    if isinstance(timeline, (int, float)) and isinstance(requested, (int, float)):
+        drift = abs(float(timeline) - float(requested))
+        checks.append(check(
+            "timeline_matches_target", drift <= DURATION_TOLERANCE_SECONDS,
+            f"timeline {timeline:.2f}s vs target {requested:.2f}s "
+            f"(drift {drift:.2f}s)"))
+
+    # Narration that does not fit the picture is a real editorial problem, so
+    # it is reported rather than fixed by stretching or cutting the audio.
+    if audio_seconds is not None and isinstance(timeline, (int, float)):
+        drift = abs(float(audio_seconds) - float(timeline))
+        checks.append(check(
+            "audio_matches_timeline", drift <= DURATION_TOLERANCE_SECONDS,
+            f"audio {audio_seconds:.2f}s vs timeline {timeline:.2f}s "
+            f"(drift {drift:.2f}s)"))
+
+    return _storyboard_report(pdir, checks)
+
+
 def _finalize(video_path, checks):
     failed = [c for c in checks if not c["passed"]]
     return {

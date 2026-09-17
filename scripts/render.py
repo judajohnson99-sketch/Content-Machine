@@ -6,6 +6,18 @@ specification, and produces a YouTube-ready H.264/AAC MP4 using the
 system ffmpeg binary. See config/video_spec.example.json for the spec
 format and README.md for full usage.
 
+Two shapes of spec render through the same command builder, the same
+ffmpeg invocation and the same output verification:
+
+* **cycling** - a directory of images, one global Ken Burns move and one
+  crossfade duration. The original contract, unchanged.
+* **scenes** - an explicit per-scene plan (``spec["scenes"]``), each scene
+  with its own image, duration, motion and transition. Built by
+  ``storyboard.py``; the filter text comes from ``motion.py``.
+
+A spec that carries ``scenes`` ignores ``images``/``ken_burns``/``crossfade``,
+because the scene list already says what each of those would have decided.
+
 Usage:
     python3 scripts/render.py --spec config/video_spec.example.json
     python3 scripts/render.py --spec config/video_spec.example.json --output output/video/my_video.mp4
@@ -18,6 +30,9 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import motion as motion_mod  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 log = logging.getLogger("render")
@@ -77,6 +92,69 @@ def load_spec(spec_path):
     return raw
 
 
+def _normalize_scenes(raw_scenes, base_dir):
+    """Validate an explicit scene list. Returns ``(scenes | None, errors)``.
+
+    ``None`` means "this spec is not a scene spec" and the cycling path
+    applies; an empty list is an error, because a spec that declares scenes
+    and then has none is a mistake, not a fallback.
+    """
+    if raw_scenes is None:
+        return None, []
+    errors = []
+    if not isinstance(raw_scenes, list):
+        return None, ["'scenes' must be a list"]
+    if not raw_scenes:
+        return None, ["'scenes' is empty; remove the key or add scenes"]
+    if len(raw_scenes) > MAX_IMAGE_SLOTS:
+        errors.append(
+            f"this spec has {len(raw_scenes)} scenes, over the {MAX_IMAGE_SLOTS} "
+            f"limit (each scene is a concurrent ffmpeg input; too many exhaust "
+            f"memory and the render is OOM-killed)")
+
+    scenes = []
+    for i, raw_scene in enumerate(raw_scenes):
+        where = (raw_scene.get("scene_id") if isinstance(raw_scene, dict) else None) or f"scenes[{i}]"
+        if not isinstance(raw_scene, dict):
+            errors.append(f"{where}: must be an object")
+            continue
+
+        duration = raw_scene.get("duration_seconds")
+        if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration <= 0:
+            errors.append(f"{where}: 'duration_seconds' must be > 0, got {duration!r}")
+
+        image_path = raw_scene.get("image_path") or raw_scene.get("image")
+        if not image_path:
+            errors.append(f"{where}: no image")
+            image_path = None
+        else:
+            image_path = resolve_path(str(image_path), base_dir)
+            if not image_path.is_file():
+                errors.append(f"{where}: image does not exist: {image_path}")
+            elif image_path.suffix.lower() not in SUPPORTED_IMAGE_EXTENSIONS:
+                errors.append(
+                    f"{where}: unsupported image type '{image_path.suffix}'; "
+                    f"supported: {', '.join(SUPPORTED_IMAGE_EXTENSIONS)}")
+
+        motion_cfg = raw_scene.get("motion") or {}
+        transition_cfg = raw_scene.get("transition") or {}
+        errors.extend(
+            f"{where}: {problem}" for problem in motion_mod.validate_motion(
+                motion_cfg.get("kind", "static"),
+                fit=motion_cfg.get("fit", "cover"),
+                transition=transition_cfg.get("kind", "crossfade")))
+
+        scenes.append({
+            "scene_id": raw_scene.get("scene_id") or f"s{i + 1:02d}",
+            "duration_seconds": float(duration) if isinstance(duration, (int, float))
+                                and not isinstance(duration, bool) else 0.0,
+            "image_path": image_path,
+            "motion": dict(motion_cfg),
+            "transition": dict(transition_cfg),
+        })
+    return scenes, errors
+
+
 def validate_and_normalize(raw, base_dir):
     """Validate the raw spec dict, resolve paths, and fill in defaults.
 
@@ -112,11 +190,21 @@ def validate_and_normalize(raw, base_dir):
     if isinstance(height, (int, float)) and not isinstance(height, bool) and height > 0 and int(height) % 2 != 0:
         errors.append(f"'height' must be an even number for H.264 output, got {height}")
 
+    # A scene list, when present, replaces images/ken_burns/crossfade: it
+    # already states per scene what each of those decided globally.
+    scenes, scene_errors = _normalize_scenes(raw.get("scenes"), base_dir)
+    errors.extend(scene_errors)
+
     images_cfg = raw.get("images")
     image_paths = []
     seconds_per_image = 4.0
+    if scenes is not None and not isinstance(images_cfg, dict):
+        # Scenes carry their own images; a source_dir is not required.
+        images_cfg = {}
     if not isinstance(images_cfg, dict):
         errors.append("'images' must be an object with at least a 'source_dir' field")
+    elif scenes is not None and not images_cfg.get("source_dir"):
+        pass
     else:
         source_dir_raw = images_cfg.get("source_dir")
         if not source_dir_raw or not isinstance(source_dir_raw, str):
@@ -200,7 +288,8 @@ def validate_and_normalize(raw, base_dir):
 
     # Guard the filter graph's memory footprint before ffmpeg is launched.
     if (
-        not errors
+        scenes is None
+        and not errors
         and isinstance(duration_seconds, (int, float))
         and isinstance(seconds_per_image, (int, float))
         and seconds_per_image > 0
@@ -241,6 +330,9 @@ def validate_and_normalize(raw, base_dir):
         "crossfade_enabled": crossfade_enabled,
         "crossfade_seconds": float(crossfade_seconds),
         "output_path_raw": output_path_raw,
+        "scenes": scenes,
+        "timeline_seconds": (motion_mod.timeline_seconds(scenes)
+                             if scenes else float(duration_seconds)),
     }
 
 
@@ -256,7 +348,62 @@ def cycle_images(image_paths, count):
     return [image_paths[i % len(image_paths)] for i in range(count)]
 
 
+def build_scene_ffmpeg_command(spec, output_path):
+    """One ffmpeg invocation for an explicit scene plan.
+
+    The finished runtime is the *timeline*, not ``duration_seconds``: a
+    crossfade overlaps two scenes, so the video is shorter than the sum of
+    them. Rendering to the timeline and reporting it is what keeps a timing
+    disagreement with the narration visible instead of being concealed by a
+    silent truncation.
+    """
+    W, H, fps = spec["width"], spec["height"], spec["fps"]
+    scenes = spec["scenes"]
+    target = {"width": W, "height": H, "fps": fps}
+
+    input_args = []
+    for scene in scenes:
+        input_args += ["-loop", "1", "-t", f"{scene['duration_seconds']}",
+                       "-i", str(scene["image_path"])]
+    audio_input_index = len(scenes)
+    input_args += ["-stream_loop", "-1", "-i", str(spec["audio_path"])]
+
+    filter_parts = []
+    labels = []
+    for i, scene in enumerate(scenes):
+        label = f"v{i}"
+        filter_parts.append(motion_mod.build_scene_filter(i, label, scene, target))
+        labels.append(label)
+
+    join_parts, final_label, timeline = motion_mod.build_transition_chain(labels, scenes)
+    filter_parts.extend(join_parts)
+
+    log.info("Rendering %d scene(s), %.2fs timeline at %dx%d",
+             len(scenes), timeline, W, H)
+
+    return [
+        "ffmpeg", "-y",
+        *input_args,
+        "-filter_complex", ";".join(filter_parts),
+        "-map", f"[{final_label}]",
+        "-map", f"{audio_input_index}:a",
+        "-t", f"{timeline}",
+        "-r", f"{fps}",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-preset", "medium",
+        "-crf", "20",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-ar", "48000",
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+
+
 def build_ffmpeg_command(spec, output_path):
+    if spec.get("scenes"):
+        return build_scene_ffmpeg_command(spec, output_path)
     W, H, fps = spec["width"], spec["height"], spec["fps"]
     clip_dur = spec["seconds_per_image"]
     xfade_dur = spec["crossfade_seconds"]

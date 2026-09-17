@@ -20,6 +20,9 @@ CLI = ROOT / "content-machine"
 IMAGES = ROOT / "tests" / "fixtures" / "images"
 AUDIO = ROOT / "tests" / "fixtures" / "audio" / "test_tone.wav"
 
+sys.path.insert(0, str(ROOT / "scripts"))
+import project  # noqa: E402 - direct import for the typed domain functions
+
 # Exit codes from scripts/project.py run.
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -608,6 +611,289 @@ class TestProduceCommand(ProduceTestCase):
         proc = self.cm("produce", video_id, "--concept-id", "no-such-concept-xyz")
         self.assertNotEqual(proc.returncode, EXIT_OK)
         self.assertFalse((ROOT / "projects" / video_id).exists())
+
+
+class TestResearchCommand(ProduceTestCase):
+    """TEST_MODE=1 also selects the fixture SearchProvider (see
+    subject_research._select_provider), so this never touches a network."""
+
+    def _cleanup_subject_research(self):
+        (ROOT / "research" / "subjects" / f"{self.video_id}.json").unlink(missing_ok=True)
+
+    def test_no_op_for_a_concept_that_does_not_require_it(self):
+        self.init_project()
+        self.write_metadata({
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                          "generation_cost_usd": 0.0, "generation_seconds": None, "variables": {}},
+        })
+        proc = self.cm("research", self.video_id)
+        self.assertEqual(proc.returncode, EXIT_OK, proc.stderr)
+        self.assertNotIn("subject_research", self.metadata().get("status", {}))
+
+    def test_caches_sourced_facts_for_a_concept_that_requires_it(self):
+        self.addCleanup(self._cleanup_subject_research)
+        self.init_project()
+        self.write_metadata({
+            "experiment": {"concept_id": "story-sleepy-history-adult",
+                          "generation_cost_usd": 0.0, "generation_seconds": None, "variables": {}},
+        })
+        proc = self.cm("research", self.video_id)
+        self.assertEqual(proc.returncode, EXIT_OK, proc.stderr)
+        self.assertEqual(self.metadata()["status"]["subject_research"], "OK")
+        artifact = json.loads(
+            (ROOT / "research" / "subjects" / f"{self.video_id}.json").read_text())
+        self.assertGreaterEqual(len(artifact["facts"]), 2)
+        for fact in artifact["facts"]:
+            self.assertIn("source_url", fact)
+
+    def test_a_second_run_reuses_the_cache_rather_than_researching_again(self):
+        self.addCleanup(self._cleanup_subject_research)
+        self.init_project()
+        self.write_metadata({
+            "experiment": {"concept_id": "story-sleepy-history-adult",
+                          "generation_cost_usd": 0.0, "generation_seconds": None, "variables": {}},
+        })
+        first = self.cm("research", self.video_id)
+        self.assertEqual(first.returncode, EXIT_OK, first.stderr)
+        first_artifact = (ROOT / "research" / "subjects" / f"{self.video_id}.json").read_text()
+
+        second = self.cm("research", self.video_id)
+        self.assertEqual(second.returncode, EXIT_OK, second.stderr)
+        second_artifact = (ROOT / "research" / "subjects" / f"{self.video_id}.json").read_text()
+        self.assertEqual(first_artifact, second_artifact)
+
+
+class TestCreativeRequiresResearchCommand(ProduceTestCase):
+
+    def _cleanup_subject_research(self):
+        (ROOT / "research" / "subjects" / f"{self.video_id}.json").unlink(missing_ok=True)
+
+    def test_creative_refuses_without_cached_research(self):
+        self.init_project()
+        self.write_metadata({
+            "experiment": {"concept_id": "story-sleepy-history-adult",
+                          "generation_cost_usd": 0.0, "generation_seconds": None, "variables": {}},
+        })
+        proc = self.cm("creative", self.video_id)
+        self.assertEqual(proc.returncode, EXIT_ERROR, proc.stdout + proc.stderr)
+
+    def test_creative_succeeds_once_research_is_cached(self):
+        self.addCleanup(self._cleanup_subject_research)
+        self.init_project()
+        self.write_metadata({
+            "experiment": {"concept_id": "story-sleepy-history-adult",
+                          "generation_cost_usd": 0.0, "generation_seconds": None, "variables": {}},
+        })
+        research_proc = self.cm("research", self.video_id)
+        self.assertEqual(research_proc.returncode, EXIT_OK, research_proc.stderr)
+
+        proc = self.cm("creative", self.video_id)
+        self.assertEqual(proc.returncode, EXIT_OK, proc.stderr)
+        self.assertTrue(self.metadata()["script"])
+
+
+class TestStoryboardAndScenesCommands(ProduceTestCase):
+
+    def _cleanup_subject_research(self):
+        (ROOT / "research" / "subjects" / f"{self.video_id}.json").unlink(missing_ok=True)
+
+    def test_storyboard_and_scenes_for_a_concept_with_no_research_requirement(self):
+        """The no-research path must be unaffected: no scene_motifs key, and
+        the existing scenes/reuse-by-digest behaviour still generates images."""
+        self.init_project("--duration", "20")
+        self.write_metadata({
+            "visual_plan": {"prompt": "a dark still", "negative_prompt": "text",
+                           "style": "deep-night"},
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                          "generation_cost_usd": 0.0, "generation_seconds": None, "variables": {}},
+        })
+        proc = self.cm("storyboard", self.video_id, "--scenes", "2")
+        self.assertEqual(proc.returncode, EXIT_OK, proc.stderr)
+        board = json.loads((self.pdir / "storyboard.json").read_text())
+        self.assertEqual(len(board["scenes"]), 2)
+        self.assertNotIn("scene_motifs", board)
+
+        proc = self.cm("scenes", self.video_id)
+        self.assertEqual(proc.returncode, EXIT_OK, proc.stderr)
+        board = json.loads((self.pdir / "storyboard.json").read_text())
+        self.assertTrue(all(s["image"] for s in board["scenes"]))
+
+    def test_storyboard_fails_closed_for_a_research_required_concept_with_no_cache(self):
+        self.init_project("--duration", "20")
+        self.write_metadata({
+            "experiment": {"concept_id": "story-sleepy-history-adult",
+                          "generation_cost_usd": 0.0, "generation_seconds": None, "variables": {}},
+        })
+        proc = self.cm("storyboard", self.video_id, "--scenes", "2")
+        self.assertEqual(proc.returncode, EXIT_ERROR, proc.stdout + proc.stderr)
+
+    def test_storyboard_assigns_a_grounded_motif_per_scene_once_research_is_cached(self):
+        self.addCleanup(self._cleanup_subject_research)
+        self.init_project("--duration", "20")
+        self.write_metadata({
+            "script": "The canal opened in 1869. It has no locks. Ships still use it today.",
+            "visual_plan": {"prompt": "dim archival stills", "negative_prompt": "text",
+                           "style": "deep-night"},
+            "experiment": {"concept_id": "story-sleepy-history-adult",
+                          "generation_cost_usd": 0.0, "generation_seconds": None, "variables": {}},
+        })
+        research_proc = self.cm("research", self.video_id)
+        self.assertEqual(research_proc.returncode, EXIT_OK, research_proc.stderr)
+
+        proc = self.cm("storyboard", self.video_id, "--scenes", "3")
+        self.assertEqual(proc.returncode, EXIT_OK, proc.stdout + proc.stderr)
+        board = json.loads((self.pdir / "storyboard.json").read_text())
+        self.assertEqual(len(board["scene_motifs"]), 3)
+        for scene in board["scenes"]:
+            self.assertEqual(scene["visual_intent"], board["scene_motifs"][scene["scene_id"]])
+
+        # Rebuilding without --force reuses the cached motifs rather than
+        # calling the (batched) motif generator again.
+        second = self.cm("storyboard", self.video_id, "--scenes", "3")
+        self.assertEqual(second.returncode, EXIT_OK, second.stderr)
+        second_board = json.loads((self.pdir / "storyboard.json").read_text())
+        self.assertEqual(second_board["scene_motifs"], board["scene_motifs"])
+
+
+class ListProjectsTest(ProjectTestCase):
+    """Direct unit tests on the typed domain function - no subprocess, no
+    CLI - per the web-architecture plan's shared-domain-boundary design."""
+
+    def test_a_freshly_initialized_project_appears_in_the_list(self):
+        self.init_project()
+        summaries = project.list_projects()
+        ids = [s["video_id"] for s in summaries]
+        self.assertIn(self.video_id, ids)
+
+    def test_summary_reflects_recorded_overall_status(self):
+        self.init_project()
+        self.write_metadata({"status": {"overall": "NEEDS_ATTENTION"}})
+        summary = next(s for s in project.list_projects() if s["video_id"] == self.video_id)
+        self.assertEqual(summary["overall_status"], "NEEDS_ATTENTION")
+
+    def test_a_corrupt_metadata_json_is_skipped_not_raised(self):
+        self.init_project()
+        (self.pdir / "metadata.json").write_text("{not valid json")
+        # Must not raise, and every other project must still be listed.
+        summaries = project.list_projects()
+        self.assertNotIn(self.video_id, [s["video_id"] for s in summaries])
+
+    def test_no_projects_directory_returns_empty_list_not_an_error(self):
+        prev = project.PROJECTS_DIR
+        project.PROJECTS_DIR = prev / "no-such-subdir"
+        try:
+            self.assertEqual(project.list_projects(), [])
+        finally:
+            project.PROJECTS_DIR = prev
+
+
+class StatusReportTest(ProjectTestCase):
+    """Direct unit tests on status_report - the pure function cmd_status
+    is now a thin formatter over (see scripts/project.py)."""
+
+    def test_unknown_project_returns_none(self):
+        self.assertIsNone(project.status_report("pytest-does-not-exist-anywhere"))
+
+    def test_not_yet_rendered_project_reports_not_rendered(self):
+        self.init_project()
+        report = project.status_report(self.video_id)
+        self.assertEqual(report["verdict"], "NOT_RENDERED")
+        self.assertEqual(report["blocking"], [])
+
+    def test_matches_cmd_status_cli_output_after_a_run(self):
+        self.init_project("--title", "Parity Check", "--production-grade-visuals")
+        self.write_metadata({"description": "A description."})
+        self.assertEqual(self.cm("run", self.video_id).returncode, EXIT_OK)
+
+        report = project.status_report(self.video_id)
+        self.assertEqual(report["verdict"], "READY_FOR_REVIEW")
+        self.assertEqual(report["digest_state"], "MATCHES")
+        self.assertFalse(report["stale"])
+
+        cli = self.cm("status", self.video_id)
+        self.assertIn("READY_FOR_REVIEW", cli.stdout)
+        self.assertIn("digest:   matches", cli.stdout)
+
+
+class ProjectLockTest(ProjectTestCase):
+    """The one concurrency primitive shared by every mutating domain
+    function (and, transitively, the CLI and any future web caller)."""
+
+    def test_a_second_acquisition_on_the_same_project_fails_fast(self):
+        self.init_project()
+        with project.project_lock(self.video_id):
+            with self.assertRaises(project.ProjectBusyError):
+                with project.project_lock(self.video_id):
+                    pass  # pragma: no cover - must never be reached
+
+    def test_lock_is_released_on_exit_so_a_later_acquisition_succeeds(self):
+        self.init_project()
+        with project.project_lock(self.video_id):
+            pass
+        with project.project_lock(self.video_id):
+            pass  # must not raise
+
+    def test_different_projects_do_not_contend(self):
+        self.init_project()
+        other_id = f"{self.video_id}-other"
+        self.addCleanup(lambda: shutil.rmtree(
+            ROOT / "projects" / other_id, ignore_errors=True))
+        with project.project_lock(self.video_id):
+            with project.project_lock(other_id):
+                pass  # must not raise
+
+
+class TypedDomainFunctionsTest(ProjectTestCase):
+    """Direct, non-argparse calls into the run_* functions the web layer
+    also calls (architecture plan §1/§17) - convenience checks on top of
+    the subprocess-driven suite above, which already proves every cmd_*
+    shim delegates to these unchanged."""
+
+    def setUp(self):
+        super().setUp()
+        self._prev_test_mode = os.environ.get("TEST_MODE")
+        os.environ["TEST_MODE"] = "1"
+        self.addCleanup(self._restore_test_mode)
+
+    def _restore_test_mode(self):
+        if self._prev_test_mode is None:
+            os.environ.pop("TEST_MODE", None)
+        else:
+            os.environ["TEST_MODE"] = self._prev_test_mode
+
+    def test_run_creative_returns_a_stage_result(self):
+        self.init_project()
+        self.write_metadata({
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                           "generation_cost_usd": 0.0, "generation_seconds": None,
+                           "variables": {}},
+        })
+        result = project.run_creative(self.video_id)
+        self.assertIsInstance(result, project.StageResult)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.data["selected_title"], self.metadata()["selected_title"])
+
+    def test_a_failed_stage_returns_ok_false_with_a_matching_exit_code(self):
+        self.init_project()
+        result = project.run_audio(self.video_id)
+        self.assertIsInstance(result, project.StageResult)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.exit_code, 1)
+
+    def test_cmd_shim_exit_code_matches_the_typed_functions_own(self):
+        self.init_project()
+        self.write_metadata({
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                           "generation_cost_usd": 0.0, "generation_seconds": None,
+                           "variables": {}},
+        })
+        result = project.run_creative(self.video_id, force=True)
+        env = dict(os.environ, TEST_MODE="1")
+        proc = subprocess.run(
+            [str(CLI), "creative", self.video_id, "--force"],
+            capture_output=True, text=True, cwd=str(ROOT), env=env)
+        self.assertEqual(proc.returncode, result.exit_code)
 
 
 if __name__ == "__main__":

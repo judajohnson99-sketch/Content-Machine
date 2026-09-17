@@ -146,6 +146,53 @@ class GenerateBriefTestModeTest(unittest.TestCase):
         brief = creative.generate_brief(concept(audio_source_requirement="tts_required"), 30.0)
         self.assertNotEqual(brief["narration_script"], "")
 
+    def test_requires_subject_research_refuses_without_facts(self):
+        """A concept flagged requires_subject_research must not get a brief -
+        mock or otherwise - without sourced facts, even under TEST_MODE."""
+        with self.assertRaises(creative.CreativeError):
+            creative.generate_brief(concept(requires_subject_research=True), 30.0)
+
+    def test_requires_subject_research_succeeds_once_facts_are_supplied(self):
+        facts = {"provider": "fixture", "facts": [
+            {"statement": "The canal opened in 1869.", "source_url": "https://mock.test/1"},
+        ]}
+        brief = creative.generate_brief(
+            concept(requires_subject_research=True), 30.0, subject_research=facts)
+        self.assertIn("title", brief)
+
+
+class SceneMotifsTestModeTest(unittest.TestCase):
+    """TEST_MODE=1 must never touch the network - same convention as the
+    creative brief above."""
+
+    def setUp(self):
+        self._prev = os.environ.get("TEST_MODE")
+        os.environ["TEST_MODE"] = "1"
+
+    def tearDown(self):
+        if self._prev is None:
+            os.environ.pop("TEST_MODE", None)
+        else:
+            os.environ["TEST_MODE"] = self._prev
+
+    def _facts(self):
+        return {"provider": "fixture", "facts": [
+            {"statement": "The canal opened in 1869.", "source_url": "https://mock.test/1"},
+            {"statement": "It has no locks.", "source_url": "https://mock.test/2"},
+        ]}
+
+    def test_refuses_without_facts(self):
+        with self.assertRaises(creative.CreativeError):
+            creative.generate_scene_motifs(concept(), {}, [{"scene_id": "s01", "section": "hook"}])
+
+    def test_one_motif_per_scene_no_more_no_fewer(self):
+        scenes = [
+            {"scene_id": "s01", "section": "hook", "narration": "A canal in Egypt."},
+            {"scene_id": "s02", "section": "body", "narration": "It opened in 1869."},
+        ]
+        motifs = creative.generate_scene_motifs(concept(), self._facts(), scenes)
+        self.assertEqual(set(motifs), {"s01", "s02"})
+
 
 class SdkPythonTest(unittest.TestCase):
     """Regression: importlib.util.find_spec raises ModuleNotFoundError

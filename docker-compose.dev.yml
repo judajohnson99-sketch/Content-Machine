@@ -1,0 +1,26 @@
+# Dev-only Postgres + Redis for the web control center (architecture plan
+# §15 Phase 2). Nothing in the main pipeline (./content-machine) depends on
+# either service; scripts/ stays standard-library-only. Django/Celery
+# default to SQLite + a local redis-server for local development (see
+# webapp/cmweb/settings/base.py) - this compose file exists for anyone who
+# would rather run Postgres in a container than install it, or to rehearse
+# the prod topology (DB_ENGINE=postgres) before deploying.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: cmweb
+      POSTGRES_USER: cmweb
+      POSTGRES_PASSWORD: cmweb-dev-only
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - cmweb_postgres_dev:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+
+volumes:
+  cmweb_postgres_dev:

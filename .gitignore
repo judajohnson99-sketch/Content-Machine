@@ -37,8 +37,10 @@ jobs/
 .serena/
 .claude/.headroom_wrap_settings.lock
 
-# Generated project/runtime assets
-projects/
+# Generated project/runtime assets (repo-root only - unanchored, this bare
+# name previously also matched and silently hid webapp/apps/projects/, a
+# real Django app).
+/projects/
 output/
 graphify-out/
 
@@ -55,3 +57,10 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Web control center (webapp/ Django, frontend/ React+Vite) - dev artifacts.
+webapp/db.sqlite3
+webapp/staticfiles/
+frontend/node_modules/
+frontend/dist/
+frontend/.env

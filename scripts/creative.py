@@ -149,7 +149,7 @@ Visual direction: {visual_concept}
 Audio direction: {audio_concept}
 Monetization hypothesis: {monetization_hypothesis}
 Target length: {minutes:.0f} minutes
-
+{facts_section}
 Return a JSON object with exactly these keys:
 - "title": a concrete YouTube title under 100 characters, following the working title pattern's spirit
 - "description": a 2-4 sentence YouTube description, plain language, no hashtag spam
@@ -158,6 +158,16 @@ Return a JSON object with exactly these keys:
 - "negative_prompt": what to exclude from the image (e.g. text, watermarks, people, if not wanted)
 
 Do not claim the video is professionally produced or hand-made. Do not invent facts about the audience or channel."""
+
+# Appended into PROMPT_TEMPLATE only for concepts flagged
+# requires_subject_research=true. The facts are the only claims the
+# narration may make about the subject - the model is told so explicitly,
+# because "here are some facts" without that instruction is not a
+# meaningful constraint on an LLM that already thinks it knows the topic.
+SOURCED_FACTS_BLOCK_TEMPLATE = """
+Sourced facts about the subject (from {source_count} source(s) via {provider}). The narration script may state ONLY facts drawn from this list - do not add historical claims, dates, or figures that are not present here:
+{facts_lines}
+"""
 
 
 def _mock_brief(concept):
@@ -261,15 +271,36 @@ def _call_llm(provider, prompt):
     return result.stdout
 
 
-def generate_brief(concept, target_seconds):
+def generate_brief(concept, target_seconds, subject_research=None):
     """Title, script, description and image direction for one concept.
 
     Follows generate.py's own provider pattern (LLM_PROVIDER, TEST_MODE)
     rather than a new one. Raises CreativeError on any failure - a missing
     key or an unparseable reply must not silently produce an empty brief.
+
+    A concept flagged ``requires_subject_research`` must be called with the
+    cached artifact from ``subject_research.research_subject`` - its facts
+    are the only claims the narration may make about the subject. Calling
+    this without it for such a concept is refused rather than left to the
+    model's own (unsourced) knowledge of the topic.
     """
+    if concept.get("requires_subject_research") and not (subject_research or {}).get("facts"):
+        raise CreativeError(
+            f"concept {concept.get('id')!r} requires source-backed subject "
+            "research and none was supplied; run "
+            "`./content-machine research <video-id>` first")
+
     if os.environ.get("TEST_MODE") == "1":
         return _mock_brief(concept)
+
+    facts = (subject_research or {}).get("facts") or []
+    facts_section = ""
+    if facts:
+        facts_lines = "\n".join(
+            f"- {f['statement']} (source: {f['source_url']})" for f in facts)
+        facts_section = SOURCED_FACTS_BLOCK_TEMPLATE.format(
+            source_count=len(facts), provider=subject_research.get("provider", "unknown"),
+            facts_lines=facts_lines)
 
     prompt = PROMPT_TEMPLATE.format(
         content_format=concept.get("content_format", ""),
@@ -280,6 +311,7 @@ def generate_brief(concept, target_seconds):
         audio_concept=concept.get("audio_concept", ""),
         monetization_hypothesis=concept.get("monetization_hypothesis", ""),
         minutes=(target_seconds or 0) / 60.0,
+        facts_section=facts_section,
     )
 
     provider = os.environ.get("LLM_PROVIDER", "anthropic").lower()
@@ -290,6 +322,68 @@ def generate_brief(concept, target_seconds):
     if missing:
         raise CreativeError(f"LLM reply missing key(s) {missing}: {text[:200]!r}")
     return brief
+
+
+# --------------------------------------------------------------------------
+# scene motifs (LLM, batched) - one call per video, never one per scene
+# --------------------------------------------------------------------------
+
+SCENE_MOTIF_PROMPT_TEMPLATE = """You are choosing what each scene of a documentary-style video should visually depict. Reply with ONLY a JSON object, no markdown fences, no commentary.
+
+Sourced facts about the subject (use only these; do not add historical claims not present here):
+{facts_block}
+
+Base visual style: {base_prompt}
+
+For each scene below, choose a short (5-15 word) visual motif describing what its image should depict - concrete, specific to that scene's narration, and consistent only with the sourced facts above.
+
+Scenes:
+{scenes_block}
+
+Return a JSON object mapping each scene_id to its visual motif string, e.g. {{"s01": "...", "s02": "..."}}. Include every scene_id listed above and no others."""
+
+
+def _mock_scene_motifs(scenes):
+    """The TEST_MODE reply: no network, deterministic, one motif per scene."""
+    return {
+        scene["scene_id"]: f"[MOCK motif] {scene.get('narration') or scene.get('section') or scene['scene_id']}"
+        for scene in scenes
+    }
+
+
+def generate_scene_motifs(concept, subject_research, scenes, base_prompt=""):
+    """One batched LLM call assigning a subject-grounded visual motif to
+    every storyboard scene.
+
+    Batched deliberately: one call for the whole video's scene list, never
+    one call per scene - the per-scene cost this project's session-economy
+    rules exist to avoid. Raises CreativeError if ``subject_research`` carries
+    no facts, rather than letting the model draw scene visuals from its own
+    (unsourced) memory of the topic.
+    """
+    facts = (subject_research or {}).get("facts") or []
+    if not facts:
+        raise CreativeError(
+            "generate_scene_motifs requires sourced facts; refusing to "
+            "invent scene visuals from model memory alone")
+
+    if os.environ.get("TEST_MODE") == "1":
+        return _mock_scene_motifs(scenes)
+
+    facts_block = "\n".join(f"- {f['statement']} (source: {f['source_url']})" for f in facts)
+    scenes_block = "\n".join(
+        f"- {s['scene_id']} ({s.get('section', '')}): {s.get('narration') or '(no narration)'}"
+        for s in scenes)
+    prompt = SCENE_MOTIF_PROMPT_TEMPLATE.format(
+        facts_block=facts_block, base_prompt=base_prompt, scenes_block=scenes_block)
+
+    provider = os.environ.get("LLM_PROVIDER", "anthropic").lower()
+    text = _call_llm(provider, prompt)
+    motifs = _extract_json(text)
+    missing = [s["scene_id"] for s in scenes if s["scene_id"] not in motifs]
+    if missing:
+        raise CreativeError(f"LLM reply missing motif(s) for scene(s) {missing}: {text[:200]!r}")
+    return {s["scene_id"]: str(motifs[s["scene_id"]]) for s in scenes}
 
 
 def main():

@@ -243,3 +243,21 @@ generation belongs on the workstation's ComfyUI or an external API.
 The VPS is also the control plane and the source of truth for remote GPU
 work. The GPU machine holds no queue and no state worth backing up, which is
 what makes it replaceable: losing it costs throughput, not data.
+
+## Web control center
+
+`webapp/` (Django + DRF) and `frontend/` (React + TS + Vite) are a visual
+control center over this pipeline, not a second implementation of it.
+`scripts/*.py` is the one shared domain layer — the CLI, DRF views, and
+(from Phase 2 on) Celery tasks all call the same typed functions
+(`list_projects`, `status_report`, `run_*`, `record_review_decision`, …);
+`argparse.Namespace` stays confined to the CLI's own argparse-to-typed shim
+and never crosses into `webapp/`. `apps/engine` is the only Django app that
+imports `scripts.*`; everything else imports `apps.engine.services`.
+`project_lock` (an `fcntl.flock` per `projects/<id>/.lock`) is the one
+concurrency primitive, called from inside the shared domain functions so the
+CLI and the web layer get identical protection. See
+`/root/.claude/plans/effervescent-snuggling-lighthouse.md` for the full
+architecture (shared-domain boundary, Celery/`worker.py` ownership split,
+Postgres data-ownership table, concurrency, and the human-review domain
+operation design).

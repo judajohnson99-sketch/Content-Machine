@@ -748,6 +748,41 @@ QC verdicts, job status and asset counts belong in `metadata.json`.
 Both are gitignored and regenerable. If a graph and its source disagree, the
 source wins — re-run rather than trusting the graph.
 
+## Web control center
+
+`webapp/` (Django + DRF, its own `.venv`) and `frontend/` (React + TS +
+Vite) are a visual control center over this CLI, not a second pipeline.
+`scripts/*.py` stays the one shared domain layer — `apps/engine` is the only
+Django app that imports it, via typed functions (`list_projects`,
+`status_report`, every `run_*` stage function, `project_lock`), never a
+duplicated implementation. `argparse.Namespace` stays confined to the CLI's
+own argparse shim; Django/Celery only ever see typed calls.
+
+Currently: read-only project listing/status, plus stage triggers
+(`research`/`creative`/`storyboard`/`scenes`/`audio`/`visuals`/`run`/`produce`)
+that run the same `run_*` function the CLI does, off the request thread via
+Celery + Redis. `apps/pipeline.PipelineRun` is the one new Postgres table —
+coordination state only (status/exit_code/`client_request_id` dedup), never
+a second authority over `metadata.json`/`gate_blockers()`. Every mutating
+call is serialized per project by `project_lock`, shared with the CLI; a
+concurrent request on a busy project gets `409` fail-fast rather than
+hanging behind an in-progress run. Celery never touches
+`scripts/worker.py`'s remote-GPU job state machine — it only calls
+`generation.Router.generate()`/`worker.enqueue_project(...)` exactly as the
+CLI does, and job progress after that handoff stays `worker.py`'s alone,
+polled separately.
+
+```bash
+cd webapp && .venv/bin/python manage.py runserver 127.0.0.1:8010   # API
+cd webapp && .venv/bin/celery -A cmweb worker --loglevel=info       # background stages
+redis-server                                                        # Celery broker (or docker-compose.dev.yml)
+cd frontend && npm run dev                                          # UI, :5173
+```
+
+Full architecture (shared-domain boundary, Celery/`worker.py` ownership
+split, Postgres data-ownership table, concurrency, human-review domain
+operation): `/root/.claude/plans/effervescent-snuggling-lighthouse.md`.
+
 ## Not built yet
 
 Deliberately unimplemented, in dependency order:
