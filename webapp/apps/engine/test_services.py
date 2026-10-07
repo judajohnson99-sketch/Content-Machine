@@ -9,12 +9,19 @@ from apps.engine.services import projects as projects_service
 
 
 class TestListProjects:
-    def test_delegates_to_the_domain_function_unmodified(self):
-        fake = [{"video_id": "abc"}]
+    def test_delegates_to_the_domain_function_and_hides_archived_projects(self):
+        # Archiving is presentation, so the filter lives in the adapter: the
+        # domain still lists everything.
+        fake = [{"video_id": "abc"}, {"video_id": "old", "archived": True}]
         with patch("scripts.project.list_projects", return_value=fake) as mocked:
             result = projects_service.list_projects()
         mocked.assert_called_once_with()
-        assert result is fake
+        assert result == [{"video_id": "abc"}]
+
+    def test_include_archived_returns_the_domain_list_unmodified(self):
+        fake = [{"video_id": "abc"}, {"video_id": "old", "archived": True}]
+        with patch("scripts.project.list_projects", return_value=fake):
+            assert projects_service.list_projects(include_archived=True) is fake
 
 
 class TestGetStatus:

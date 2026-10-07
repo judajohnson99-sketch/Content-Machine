@@ -1,0 +1,83 @@
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.decision {
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.decisionHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.parameter {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.value {
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-2);
+  background: var(--accent-2-bg);
+  border-radius: var(--radius-sm);
+  padding: 1px 8px;
+}
+
+.rationale {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.evidence {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.source {
+  font-size: var(--text-xs);
+  color: var(--info-fg);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--info-border);
+}
+
+.source:hover {
+  color: var(--text-primary);
+}
+
+.more,
+.nothing,
+.outcome,
+.notApplied {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.nothing,
+.outcome,
+.notApplied {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+}
+
+.outcome {
+  color: var(--text-secondary);
+}

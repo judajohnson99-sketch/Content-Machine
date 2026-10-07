@@ -24,6 +24,8 @@ projects/*/audio/track.wav
 /projects/
 # Generation job state, worker registry and queue.
 jobs/
+# Local source references and rights records, shared across productions.
+/library/
 # Format-intelligence profiles and cached subject research: derived,
 # regenerable from research.py / subject_research.py.
 research/

@@ -128,5 +128,17 @@
     "The description says the audio 'loops without a seam'. It does not loop at all - 1800 s of brown noise is synthesised at full length. Reword to avoid implying a loop.",
     "Confirm the dark plate renders acceptably on OLED and on phone screens.",
     "Confirm 30 min is the right test length before committing to 8 h uploads."
-  ]
+  ],
+  "review_history": [
+    {
+      "utc": "2026-09-17T17:14:18Z",
+      "reviewer": "judajohnson99@gmail.com",
+      "decision": "rejected",
+      "notes": "",
+      "gate_digest": "aeae31703555d6703de80bbf231c4d1a5e9f5670ed4ff490d9bdf3b38e226cfd"
+    }
+  ],
+  "publish": {
+    "approved_by_human": false
+  }
 }

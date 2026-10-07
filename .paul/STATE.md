@@ -6,12 +6,36 @@ about: "content-machine"
 
 # Project State
 
-The single resume file. Update `## Current Position
+The single resume file.
 
-Milestone: Web Control Center visual/UX overhaul + real ComfyUI worker path (plan and per-phase handoffs: ~/.claude/plans/effervescent-snuggling-lighthouse.md). The roadmap milestone v0.1 Closed Loop (.paul/ROADMAP.md, Phase 1 Publish) waits behind it.
-Done: Phase 2/3 control center, produce chain, remote GPU worker v0.1 (WORKER_HANDOFF.md). 2026-09-17: concepts API + New Production; design system and redesign of shell, dashboard, new production, workspace, deliverable/assets, review center (production-grade claim in the UI); visuals/scenes defer to the GPU queue (exit 2, WAITING_FOR_GPU_WORKER); worker readiness states from heartbeat (ComfyUI, GPU, checkpoints); low-VRAM upscale workflow as default; reference concept catalogue (kind=reference, 8 concepts); system/readiness, gpu-jobs, pipeline-runs and visual-grade endpoints; visual QA in the browser.
-Blockers: the real ComfyUI canary needs the PC: pull the updated checkout, start the SSH tunnel and the agent (WORKER_RUNBOOK.md). Canary job ca317f798759a16e (project moonlit-victorian-glasshouse-20260917, 1920x1080 via 680x384 latent) is queued and will render when home-gpu-01 comes online; then "Continue production" in its workspace.
-Next: run the canary on the PC, verify the image in the workspace, continue production to a 60 s preview render, then decide production_grade in the Review Center. Then v0.1 Publish.
+## Current Position
+
+Milestone: the dashboard is the product - a production now starts from a
+plain-language goal and runs to a reviewable 1080p deliverable without the
+CLI. Done: goal -> concept -> project -> research brief derivation
+(`scripts/goal.py`, POST /api/v1/projects/from-goal/); a piecewise renderer
+that removes the 24-scene ceiling, so a 30-minute video is 120 shots with
+real motion and dissolves instead of a slideshow; sourced findings now
+produce production directives (shot length, movement style, dissolve length,
+audio layers) that the storyboard and sound design actually apply, recorded
+with their evidence in `research_influence.json` and shown in the dashboard;
+procedural plates vary per scene prompt and carry real structure; Kdenlive
+export, permanent deletion and "produce at full length" are dashboard
+actions. Validated through the dashboard: a 90-second 1080p Dreamdrip
+excerpt, QC PASS 15/15, 15 shots across 8 motions, four cleared audio
+layers, editable Kdenlive archive.
+
+Blocker (needs the owner): real sourced research cannot run on this host.
+Gemini grounding returns RESOURCE_EXHAUSTED and the Anthropic key has no
+credit balance, so both configured search providers refuse. Every derived
+production therefore carries the new fail-closed gate blocker "research has
+not run". Also outstanding: no depicted-image provider (COMFYUI_URL unset,
+paid providers off), so visuals are abstracts and cannot be production-grade.
+
+Next: top up one search provider and re-run research on
+`dreamdrip-rain-ambient-music-psychedelic-202610030311` to see directives
+drive the build end to end; then owner-media selection from `library/` in
+the dashboard.
 
 ## Standing decisions
 
@@ -38,9 +62,16 @@ and are not restated here.
 
 ## Session Continuity
 
-Last session: 2026-09-17 — UX overhaul + ComfyUI path. All suites green
-(457 Python, 79 pytest, 28 vitest, tsc clean). Dev services for browser QA
-were started in the background (Django :8010, Celery, worker control plane
-:8788); `qa/` holds the screenshots and is gitignored.
-Stopped at: waiting for the PC action for the real canary (see Blockers).
-Next action: the "Next" line above.
+Latest request: make Content Machine a genuinely usable autonomous
+production system operated from the dashboard. Built this session, all
+through `scripts/*.py` as the one domain layer: `scripts/goal.py`,
+`render.render_scenes_piecewise`, `research.production_directives`,
+`storyboard` directive/pacing handling, a prompt-varied procedural plate
+generator, `project.run_editable`, `project.delete_project`,
+`project.set_project_duration`, and the web/UI surface for all of it
+(GoalComposer, ResearchInfluencePanel, DeleteProduction, editable
+downloads, produce-at-full-length). `SEARCH_PROVIDER=anthropic` was added to
+`.env` and a second real search provider (`AnthropicSearchProvider`) written,
+but neither vendor will serve a search on the current credentials. A
+`claude-qa` superuser exists in webapp/db.sqlite3 purely for browser
+validation. No commits.

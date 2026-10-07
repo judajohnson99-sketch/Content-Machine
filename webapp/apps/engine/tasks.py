@@ -13,12 +13,31 @@ belongs exclusively to scripts/worker.py's own state machine - this task
 never touches, polls, or duplicates that job JSON. Celery task state and a
 worker.py job's state are two distinct, never-merged progress signals.
 """
+import logging
+
 from celery import shared_task
 from django.utils import timezone
 
 import scripts.project as project
 
 from apps.pipeline.models import PipelineRun
+
+log = logging.getLogger(__name__)
+
+
+def _fail(run, message):
+    """Land a terminal failure on the run row.
+
+    Shared by the busy-project case and the unexpected-crash case so a row
+    can never be left mid-flight: a RUNNING row with no live task is
+    indistinguishable from real work in every surface that reads it.
+    """
+    run.status = PipelineRun.STATUS_FAILED
+    run.exit_code = 1
+    run.message = message
+    run.log_tail = message
+    run.finished_at = timezone.now()
+    run.save(update_fields=["status", "exit_code", "message", "log_tail", "finished_at"])
 
 STAGE_FUNCS = {
     "research": project.run_research,
@@ -29,6 +48,7 @@ STAGE_FUNCS = {
     "visuals": project.run_visuals,
     "run": lambda video_id, **params: project.run_pipeline(video_id),
     "produce": project.run_produce,
+    "editable": project.run_editable,
 }
 
 
@@ -44,13 +64,15 @@ def run_stage_task(self, pipeline_run_id, stage, video_id, params):
     try:
         result = func(video_id, **params)
     except project.ProjectBusyError as e:
-        run.status = PipelineRun.STATUS_FAILED
-        run.exit_code = 1
-        run.message = str(e)
-        run.log_tail = str(e)
-        run.finished_at = timezone.now()
-        run.save(update_fields=["status", "exit_code", "message", "log_tail", "finished_at"])
+        _fail(run, str(e))
         return
+    except Exception as e:  # noqa: BLE001 - a crashed stage must not strand the row
+        # Without this the row stays RUNNING forever and the UI waits on a
+        # job that is already dead. The run is the only thing the operator
+        # can see, so an unexpected failure has to land on it.
+        log.exception("stage %s crashed for %s", stage, video_id)
+        _fail(run, f"{stage} failed unexpectedly: {e.__class__.__name__}: {e}")
+        raise
 
     if result.exit_code == 0:
         run.status = PipelineRun.STATUS_SUCCEEDED

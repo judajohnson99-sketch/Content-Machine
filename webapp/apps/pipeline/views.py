@@ -74,6 +74,11 @@ class ProduceActionView(StageActionView):
     stage = "produce"
 
 
+class EditableActionView(StageActionView):
+    """Build the editable Kdenlive project and its portable archive."""
+    stage = "editable"
+
+
 class PipelineRunDetailView(APIView):
     """GET /api/v1/projects/{video_id}/pipeline-runs/{run_id}/ - progress poll target."""
 

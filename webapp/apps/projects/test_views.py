@@ -27,6 +27,7 @@ class TestProjectListView:
         fake = [{
             "video_id": "abc", "selected_title": "Title", "concept_id": None,
             "niche": None, "overall_status": "NEEDS_ATTENTION", "created_utc": None,
+            "archived": False, "preview_image": None,
         }]
         with patch("apps.projects.views.projects_service.list_projects", return_value=fake):
             response = client.get("/api/v1/projects/")
@@ -35,6 +36,46 @@ class TestProjectListView:
 
     def test_unauthenticated_request_is_rejected(self):
         response = APIClient().get("/api/v1/projects/")
+        assert response.status_code == 403
+
+    def test_archived_projects_are_hidden_unless_asked_for(self, client):
+        with patch("apps.engine.services.projects.project.list_projects", return_value=[
+            {"video_id": "live", "selected_title": None, "concept_id": None, "niche": None,
+             "overall_status": "DRAFT", "created_utc": None, "archived": False},
+            {"video_id": "old", "selected_title": None, "concept_id": None, "niche": None,
+             "overall_status": "DRAFT", "created_utc": None, "archived": True},
+        ]):
+            default = client.get("/api/v1/projects/").json()
+            everything = client.get("/api/v1/projects/?include_archived=1").json()
+        assert [p["video_id"] for p in default] == ["live"]
+        assert [p["video_id"] for p in everything] == ["live", "old"]
+        assert everything[1]["archived"] is True
+
+
+@pytest.mark.django_db
+class TestProjectArchiveView:
+    def test_archives_with_the_requesting_user_as_actor(self, client, owner):
+        fake = {"video_id": "abc", "selected_title": None, "concept_id": None, "niche": None,
+                "overall_status": "DRAFT", "created_utc": None, "archived": True}
+        with patch("apps.projects.views.projects_service.set_archived", return_value=fake) as call:
+            response = client.post("/api/v1/projects/abc/archive/",
+                                   {"archived": True, "reason": "demo"}, format="json")
+        assert response.status_code == 200
+        assert response.json()["archived"] is True
+        call.assert_called_once_with("abc", True, owner.email or owner.get_username(), reason="demo")
+
+    def test_missing_flag_is_a_400_and_unknown_project_a_404(self, client):
+        import scripts.project as project
+        assert client.post("/api/v1/projects/abc/archive/", {}, format="json").status_code == 400
+        with patch("apps.projects.views.projects_service.set_archived",
+                   side_effect=project.ProjectError("no such project: abc")):
+            response = client.post("/api/v1/projects/abc/archive/", {"archived": False},
+                                   format="json")
+        assert response.status_code == 404
+
+    def test_unauthenticated_post_is_rejected(self):
+        response = APIClient().post("/api/v1/projects/abc/archive/", {"archived": True},
+                                    format="json")
         assert response.status_code == 403
 
 
@@ -199,5 +240,192 @@ class TestProjectGpuJobsView:
         with patch("apps.projects.views.projects_service.get_metadata", return_value={"video_id": "vid"}), \
              patch("apps.projects.views.workers_service.project_jobs", return_value=fake):
             response = client.get("/api/v1/projects/vid/gpu-jobs/")
+        assert response.status_code == 200
+        assert response.json() == fake
+
+
+@pytest.mark.django_db
+class TestProjectResearchBriefView:
+    def _brief(self):
+        return {"video_id": "vid", "niche": "sleep ambience", "creative_intent": "cozy",
+                "likes": [], "dislikes": [], "seed_references": [], "notes": None,
+                "updated_utc": "2026-09-19T00:00:00Z"}
+
+    def test_get_returns_404_for_an_unknown_project(self, client):
+        with patch("apps.projects.views.projects_service.get_metadata", return_value=None):
+            response = client.get("/api/v1/projects/nope/research/brief/")
+        assert response.status_code == 404
+
+    def test_get_returns_404_when_no_brief_exists_yet(self, client):
+        with patch("apps.projects.views.projects_service.get_metadata", return_value={"video_id": "vid"}), \
+             patch("apps.projects.views.research_service.get_brief", return_value=None):
+            response = client.get("/api/v1/projects/vid/research/brief/")
+        assert response.status_code == 404
+
+    def test_get_returns_the_stored_brief(self, client):
+        with patch("apps.projects.views.projects_service.get_metadata", return_value={"video_id": "vid"}), \
+             patch("apps.projects.views.research_service.get_brief", return_value=self._brief()):
+            response = client.get("/api/v1/projects/vid/research/brief/")
+        assert response.status_code == 200
+        assert response.json() == self._brief()
+
+    def test_put_saves_a_valid_brief(self, client):
+        with patch("apps.projects.views.projects_service.get_metadata", return_value={"video_id": "vid"}), \
+             patch("apps.projects.views.research_service.save_brief",
+                   return_value=self._brief()) as save:
+            response = client.put("/api/v1/projects/vid/research/brief/",
+                                  {"niche": "sleep ambience", "creative_intent": "cozy"},
+                                  format="json")
+        assert response.status_code == 200
+        save.assert_called_once()
+        assert save.call_args[0][0] == "vid"
+        assert save.call_args[0][1]["niche"] == "sleep ambience"
+
+    def test_put_missing_niche_is_a_400_before_the_domain_layer(self, client):
+        with patch("apps.projects.views.projects_service.get_metadata", return_value={"video_id": "vid"}), \
+             patch("apps.projects.views.research_service.save_brief") as save:
+            response = client.put("/api/v1/projects/vid/research/brief/", {}, format="json")
+        assert response.status_code == 400
+        save.assert_not_called()
+
+    def test_put_bad_seed_reference_type_is_a_400(self, client):
+        with patch("apps.projects.views.projects_service.get_metadata", return_value={"video_id": "vid"}), \
+             patch("apps.projects.views.research_service.save_brief") as save:
+            response = client.put(
+                "/api/v1/projects/vid/research/brief/",
+                {"niche": "n", "seed_references": [{"type": "podcast", "value": "x"}]},
+                format="json")
+        assert response.status_code == 400
+        save.assert_not_called()
+
+    def test_domain_layer_refusal_is_also_a_400(self, client):
+        import scripts.research as research
+        with patch("apps.projects.views.projects_service.get_metadata", return_value={"video_id": "vid"}), \
+             patch("apps.projects.views.research_service.save_brief",
+                   side_effect=research.ResearchError("no good")):
+            response = client.put("/api/v1/projects/vid/research/brief/",
+                                  {"niche": "n"}, format="json")
+        assert response.status_code == 400
+
+    def test_unauthenticated_request_is_rejected(self):
+        response = APIClient().get("/api/v1/projects/vid/research/brief/")
+        assert response.status_code == 403
+
+
+@pytest.mark.django_db
+class TestProjectResearchFindingsView:
+    def test_returns_404_for_an_unknown_project(self, client):
+        with patch("apps.projects.views.projects_service.get_metadata", return_value=None):
+            response = client.get("/api/v1/projects/nope/research/findings/")
+        assert response.status_code == 404
+
+    def test_returns_404_when_no_findings_exist_yet(self, client):
+        with patch("apps.projects.views.projects_service.get_metadata", return_value={"video_id": "vid"}), \
+             patch("apps.projects.views.research_service.get_findings", return_value=None):
+            response = client.get("/api/v1/projects/vid/research/findings/")
+        assert response.status_code == 404
+
+    def test_returns_the_stored_findings(self, client):
+        fake = {"video_id": "vid", "findings": [
+            {"finding_id": "f1", "kind": "observation", "topic": "pacing",
+             "statement": "x", "source_url": "https://x.test", "source_title": "x",
+             "confidence": "VERIFIED"},
+        ]}
+        with patch("apps.projects.views.projects_service.get_metadata", return_value={"video_id": "vid"}), \
+             patch("apps.projects.views.research_service.get_findings", return_value=fake):
+            response = client.get("/api/v1/projects/vid/research/findings/")
+        assert response.status_code == 200
+        assert response.json() == fake
+
+
+SUMMARY = {
+    "video_id": "vid", "selected_title": "T", "concept_id": "vid", "niche": "n",
+    "overall_status": "DRAFT", "created_utc": None, "archived": False,
+    "preview_image": None,
+}
+
+
+@pytest.mark.django_db
+class TestProductionFromGoalView:
+    """A production from a sentence. The derivation itself (and everything it
+    refuses to claim) is proven in tests/test_longform_production.py; this is
+    the request/response contract only."""
+
+    def test_a_goal_creates_a_production(self, client):
+        derived = {"project": SUMMARY, "plan": {"title_pattern": "T"},
+                   "brief": {"niche": "n"}, "concept_id": "vid"}
+        with patch("apps.projects.views.concepts_service.create_from_goal",
+                   return_value=derived) as create:
+            response = client.post("/api/v1/projects/from-goal/", {
+                "goal": "a 30-minute rainy window study session",
+                "excerpt_seconds": 90,
+            }, format="json")
+        assert response.status_code == 201
+        assert response.json()["project"]["video_id"] == "vid"
+        assert create.call_args.kwargs["excerpt_seconds"] == 90
+
+    def test_a_goal_that_is_not_a_sentence_is_refused(self, client):
+        response = client.post("/api/v1/projects/from-goal/", {"goal": "sleep"},
+                               format="json")
+        assert response.status_code == 400
+
+    def test_a_derivation_failure_is_a_400_not_a_500(self, client):
+        with patch("apps.projects.views.concepts_service.create_from_goal",
+                   side_effect=RuntimeError("the model said no")):
+            response = client.post("/api/v1/projects/from-goal/",
+                                   {"goal": "a long ambient sleep video"},
+                                   format="json")
+        assert response.status_code == 400
+        assert "derivation_failed" in str(response.json())
+
+    def test_unauthenticated_requests_are_rejected(self):
+        response = APIClient().post("/api/v1/projects/from-goal/",
+                                    {"goal": "a long ambient sleep video"},
+                                    format="json")
+        assert response.status_code == 403
+
+
+@pytest.mark.django_db
+class TestProjectDeleteView:
+
+    def test_deletion_requires_the_id_to_be_echoed(self, client):
+        with patch("apps.projects.views.projects_service.delete") as delete:
+            response = client.delete("/api/v1/projects/vid/",
+                                     {"confirm_video_id": "other"}, format="json")
+        assert response.status_code == 400
+        delete.assert_not_called()
+
+    def test_a_confirmed_deletion_names_the_actor(self, client, owner):
+        with patch("apps.projects.views.projects_service.delete",
+                   return_value={"video_id": "vid", "removed": ["projects/vid"],
+                                 "actor": "owner", "reason": "", "deleted_utc": "x"}) as delete:
+            response = client.delete("/api/v1/projects/vid/",
+                                     {"confirm_video_id": "vid", "reason": "residue"},
+                                     format="json")
+        assert response.status_code == 200
+        assert delete.call_args.args[1] == owner.get_username()
+        assert delete.call_args.kwargs["reason"] == "residue"
+
+
+@pytest.mark.django_db
+class TestResearchInfluenceView:
+
+    def test_404_until_research_has_run(self, client):
+        with patch("apps.projects.views.projects_service.get_metadata",
+                   return_value={"video_id": "vid"}), \
+             patch("apps.projects.views.research_service.get_influence", return_value=None):
+            response = client.get("/api/v1/projects/vid/research/influence/")
+        assert response.status_code == 404
+
+    def test_returns_the_decisions_and_what_was_applied(self, client):
+        fake = {"video_id": "vid", "researched": True, "decisions": [
+            {"parameter": "seconds_per_scene", "value": 24.0, "rationale": "r",
+             "evidence_finding_ids": ["f1"], "source_urls": ["https://x.test"],
+             "confidence": "VERIFIED"}],
+            "applied": {"seconds_per_scene": 24.0}, "suggested_not_applied": []}
+        with patch("apps.projects.views.projects_service.get_metadata",
+                   return_value={"video_id": "vid"}), \
+             patch("apps.projects.views.research_service.get_influence", return_value=fake):
+            response = client.get("/api/v1/projects/vid/research/influence/")
         assert response.status_code == 200
         assert response.json() == fake

@@ -10,8 +10,12 @@ import { StageActionButton } from "../../components/StageActionButton";
 import { PipelineStageGraph } from "../../components/PipelineStageGraph";
 import { DeliverablePanel } from "../../components/DeliverablePanel";
 import { AssetsPanel } from "../../components/AssetsPanel";
+import { ResearchPanel } from "../../components/ResearchPanel";
+import { ResearchInfluencePanel } from "../../components/ResearchInfluencePanel";
+import { DeleteProduction } from "../../components/DeleteProduction";
 import { GpuJobsPanel } from "../../components/GpuJobsPanel";
-import { PageHeader } from "../../components/ui/PageHeader";
+import { ProductionHeader } from "../../components/ProductionHeader";
+import { BlockersPanel } from "../../components/BlockersPanel";
 import { Card, CardHeader } from "../../components/ui/Card";
 import { EmptyState, ErrorState, SkeletonRows } from "../../components/ui/States";
 import { CheckCircleIcon, FilmIcon, GpuIcon, ImageIcon } from "../../components/ui/icons";
@@ -124,33 +128,35 @@ export function WorkspacePage() {
   const gpuLanded = waitingForGpu && gpuQuery.data !== undefined && gpuOpen === 0;
   const gpuFailed = (gpuQuery.data ?? []).filter((j) => j.state === "FAILED");
   const currentStage = focus ? STAGE_LABEL[focus.stage] ?? focus.stage : null;
+  const fullLengthSeconds = project?.experiment?.full_length_seconds ?? null;
+  // An excerpt only while it is actually shorter than what it is meant to be:
+  // once it has been produced at full length the flag on disk is stale, and
+  // the length that exists is the one that matters.
+  const isExcerpt =
+    !!fullLengthSeconds &&
+    (project?.duration_seconds ?? 0) > 0 &&
+    (project?.duration_seconds ?? 0) < fullLengthSeconds - 1;
 
   return (
     <div className={styles.page}>
-      <PageHeader
-        backTo={{ to: "/", label: "Dashboard" }}
-        eyebrow={project?.experiment?.niche ? project.experiment.niche.replace(/_/g, " ") : "Production"}
-        title={project ? project.selected_title || project.video_id : videoId}
-        description={
-          <span className={styles.identity}>
-            <code>{videoId}</code>
-            {project?.experiment?.concept_id && <span> · concept <code>{project.experiment.concept_id}</code></span>}
-            {status && (
-              <span className={styles.identityStatus}>
-                <StatusBadge status={status.verdict} />
-                {status.stale && <span className={styles.stale}>stale — recorded as {status.recorded}</span>}
-              </span>
-            )}
-          </span>
-        }
-        actions={
-          status && isReviewable(status.verdict) ? (
-            <Link to={`/review?project=${videoId}`} className={styles.reviewLink}>
-              <CheckCircleIcon width={16} height={16} /> Open in Review Center
-            </Link>
-          ) : undefined
-        }
-      />
+      <div className={styles.topBar}>
+        <Link to="/" className={styles.backLink}>&larr; Dashboard</Link>
+        {status && isReviewable(status.verdict) && (
+          <Link to={`/review?project=${videoId}`} className={styles.reviewLink}>
+            <CheckCircleIcon width={16} height={16} /> Open in Review Center
+          </Link>
+        )}
+      </div>
+
+      {!projectQuery.isError && (
+        <ProductionHeader
+          videoId={videoId}
+          project={project}
+          assets={assets}
+          status={status}
+          runs={runsQuery.data}
+        />
+      )}
 
       {projectQuery.isError && (
         <ErrorState
@@ -214,6 +220,38 @@ export function WorkspacePage() {
               {runsQuery.data && (
                 <PipelineStageGraph videoId={videoId} runs={runsQuery.data} projectBusy={busy} diskStatus={project?.status ?? undefined} />
               )}
+            </Card>
+
+            <Card>
+              <CardHeader
+                eyebrow="Research"
+                title="Research brief & findings"
+                description="What this project should feel like, who else does it well, and what research turned up. Research can be re-run at any time; findings set pacing, movement, dissolves and the sound layers as well as the writing."
+                actions={
+                  <StageActionButton
+                    videoId={videoId}
+                    stage="research"
+                    label="Run research now"
+                    params={{ force: true }}
+                    disabled={busy}
+                    disabledReason="Another operation is already in progress for this project."
+                  />
+                }
+              />
+              <ResearchPanel
+                videoId={videoId}
+                disabled={busy}
+                disabledReason="Another operation is already in progress for this project."
+              />
+            </Card>
+
+            <Card>
+              <CardHeader
+                eyebrow="Research influence"
+                title="What the research changed"
+                description="Every production parameter sourced findings asked for, the sentences and sources behind it, and whether this build actually applied it."
+              />
+              <ResearchInfluencePanel videoId={videoId} />
             </Card>
 
             <Card>
@@ -282,25 +320,22 @@ export function WorkspacePage() {
               </Card>
             )}
 
-            <Card>
+            <Card id="blockers">
               <CardHeader
                 eyebrow="Review gate"
-                title={status ? status.verdict.replace(/_/g, " ").toLowerCase() : "Loading…"}
+                title={
+                  status
+                    ? status.blocking.length > 0
+                      ? `${status.blocking.length} thing${status.blocking.length === 1 ? "" : "s"} to settle`
+                      : "Clear to review"
+                    : "Loading…"
+                }
                 description="Recomputed live from the project's current disk state - never cached."
               />
               {statusQuery.isError && (
                 <ErrorState compact title="Failed to load status" description={(statusQuery.error as Error).message} />
               )}
-              {status && status.blocking.length === 0 && (
-                <p className={styles.clear}>No blockers. {isReviewable(status.verdict) ? "A human decision is the next step." : ""}</p>
-              )}
-              {status && status.blocking.length > 0 && (
-                <ul className={styles.blockers}>
-                  {status.blocking.map((reason) => (
-                    <li key={reason}>{reason}</li>
-                  ))}
-                </ul>
-              )}
+              {status && <BlockersPanel videoId={videoId} blocking={status.blocking} />}
             </Card>
 
             <Card className={styles.produceCard}>
@@ -333,6 +368,56 @@ export function WorkspacePage() {
                   disabledReason="Another operation is already in progress for this project."
                 />
               </div>
+            </Card>
+
+            {fullLengthSeconds && (
+              <Card>
+                <CardHeader
+                  eyebrow="Length"
+                  title={isExcerpt ? "This is an excerpt" : "Full length"}
+                  description={
+                    isExcerpt
+                      ? `What exists is ${Math.round((project?.duration_seconds ?? 0))}s of a production meant to run ${Math.round(fullLengthSeconds / 60)} minutes. Producing at full length re-plans the shots for that runtime and reuses every image already generated.`
+                      : `This production runs ${Math.round(fullLengthSeconds / 60)} minutes.`
+                  }
+                />
+                {isExcerpt && (
+                  <StageActionButton
+                    videoId={videoId}
+                    stage="produce"
+                    label={`Produce at full length (${Math.round(fullLengthSeconds / 60)} min)`}
+                    params={{ duration: fullLengthSeconds }}
+                    disabled={busy}
+                    disabledReason="Another operation is already in progress for this project."
+                  />
+                )}
+              </Card>
+            )}
+
+            {assets?.video && (
+              <Card>
+                <CardHeader
+                  eyebrow="Hand-off"
+                  title="Editable project"
+                  description="Builds a Kdenlive project of this exact edit, with project-local media and a provenance manifest, packaged as one downloadable archive. It does not re-render."
+                />
+                <StageActionButton
+                  videoId={videoId}
+                  stage="editable"
+                  label={assets.editing?.archive ? "Rebuild editable project" : "Build editable project"}
+                  disabled={busy}
+                  disabledReason="Another operation is already in progress for this project."
+                />
+              </Card>
+            )}
+
+            <Card>
+              <CardHeader eyebrow="Danger zone" title="Delete production" />
+              <DeleteProduction
+                videoId={videoId}
+                disabled={busy}
+                disabledReason="Wait for the current operation to finish."
+              />
             </Card>
 
           </aside>

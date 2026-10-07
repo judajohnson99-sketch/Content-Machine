@@ -1,0 +1,42 @@
+{
+  "id": "dreamdrip-rain-ambient-music-psychedelic-202610030311",
+  "niche": "adult_sleep",
+  "kind": "derived",
+  "working_title_pattern": "Dreamdrip Rain & Ambient Music | Psychedelic Sleep Experience | 30 Minutes",
+  "tagline": "Drift into a psychedelic slumber beneath gentle rain and shifting dreamscape tones.",
+  "creative_intent": "It should feel like floating through a warm, kaleidoscopic haze where time dissolves into deep rest.",
+  "target_audience": "Insomniacs and relaxation seekers looking for immersive audiovisual sleep aids at bedtime.",
+  "video_length_minutes": 30.0,
+  "visual_concept": "Deep indigo and violet gradients blending with liquid amber grain fields that drift and morph at an imperceptibly slow pace. Soft blooming light pulses gently across the frame like bioluminescence in dark water. No sharp edges or high-contrast flashes appear throughout the duration.",
+  "audio_concept": "Continuous synthesized rain provides the primary textural foreground, layered over warm, low-frequency ambient chord pads and soft night ambience. Subtle filtered tone sweeps drift occasionally beneath the mix to create a psychedelic sense of space without disturbing sleep.",
+  "content_format": "A continuous thirty-minute sequence of slow-moving psychedelic abstract gradients paired with synthesized rain and ambient pad music.",
+  "narration": "silent",
+  "monetization_hypothesis": "UNVERIFIED - derived from an operator goal, not from measured performance.",
+  "production_complexity": 2,
+  "generation_dependence": 1,
+  "risks": [
+    "Derived from a one-line goal; the audience and format assumptions behind it are untested."
+  ],
+  "scores": {
+    "uncertainty_reduction": 3,
+    "generalizability": 3,
+    "repeatability": 4,
+    "monetization_clarity": 2,
+    "policy_risk": 3
+  },
+  "audio_source_requirement": "synthesisable_now",
+  "spec_template": "templates/long_slow_motion_ambient.json",
+  "procedural_visuals_acceptable": true,
+  "requires_subject_research": false,
+  "continue_evidence": "The finished video holds attention for its full length and the research behind it proved out.",
+  "kill_evidence": "Research contradicts the premise, or the finished video cannot be watched for its stated length.",
+  "assumptions_requiring_research": [
+    "Users want zero narration during sleep content.",
+    "Thirty minutes is the optimal length for a single sleep cycle entry.",
+    "Psychedelic elements must remain exceptionally slow to avoid alertness."
+  ],
+  "derived_from_goal": true,
+  "goal_text": "Create a psychedelic Dreamdrip sleep experience with rain and ambient music",
+  "derived_utc": "2026-10-03T03:11:47Z",
+  "derived_concept_version": 1
+}

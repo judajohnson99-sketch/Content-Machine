@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fileUrl, getAssets } from "../api/assets";
 import { Badge } from "./ui/Badge";
-import { InlineSpinner } from "./ui/States";
+import { ErrorState, InlineSpinner } from "./ui/States";
 import { formatDateTime } from "../lib/format";
 import type { ImageAsset, ProjectAssets } from "../types/assets";
 import styles from "./AssetsPanel.module.css";
@@ -25,7 +25,15 @@ export function AssetsPanel({ videoId }: Props) {
 
   if (query.isLoading) return <InlineSpinner label="Loading assets…" />;
   if (query.isError) {
-    return <p role="alert">Failed to load assets: {(query.error as Error).message}</p>;
+    return (
+      <ErrorState
+        title="Could not load this project's assets"
+        where="GET /api/v1/projects/{id}/assets/"
+        hint="The project directory may have been moved, or the API is down. Reload to retry."
+        detail={(query.error as Error).message}
+        compact
+      />
+    );
   }
   const assets = query.data!;
 

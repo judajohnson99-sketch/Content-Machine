@@ -26,10 +26,13 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tarfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -40,12 +43,18 @@ import audio as audio_mod  # noqa: E402
 import creative as creative_mod  # noqa: E402
 import envfile  # noqa: E402
 import generation  # noqa: E402
+import goal as goal_mod  # noqa: E402
+import kdenlive as kdenlive_mod  # noqa: E402
 import make_visuals  # noqa: E402
+import media as media_mod  # noqa: E402
+import motion as motion_mod  # noqa: E402
 import qc  # noqa: E402
 import render  # noqa: E402
 import research  # noqa: E402
+import sound_design  # noqa: E402
 import storyboard as storyboard_mod  # noqa: E402
 import subject_research  # noqa: E402
+import visual_direction  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 log = logging.getLogger("project")
@@ -60,14 +69,28 @@ SUBDIRS = ("images", "audio", "thumbnail", "output", "logs")
 
 # Thumbnail candidates are pulled from these points through the video.
 THUMBNAIL_POSITIONS = (0.25, 0.5, 0.75)
+# Upper bound on candidates when they are taken per distinct picture, so a
+# fifty-scene board does not launch fifty ffmpeg seeks for a choice a human
+# makes from a handful.
+MAX_THUMBNAIL_CANDIDATES = 6
 
 PLACEHOLDER_TITLE = "UNTITLED — set a title before publishing"
 
 
 class ProjectError(Exception):
-    """Raised with a list of human-readable problems."""
+    """Raised with a list of human-readable problems.
+
+    A single string is accepted as one problem. Joining it character by
+    character - which is what ``"; ".join`` does to a str - produced
+    unreadable API details and defeated the callers that route on the
+    message ("no such project" became "n; o;  ; s; ..." and a 404 turned
+    into a 400).
+    """
 
     def __init__(self, problems):
+        if isinstance(problems, str):
+            problems = [problems]
+        problems = list(problems)
         super().__init__("; ".join(problems))
         self.problems = problems
 
@@ -332,6 +355,445 @@ def cmd_init(args):
 # validate
 # --------------------------------------------------------------------------
 
+def import_catalog_project(video_id, image_ids, audio_id, *, title, description,
+                           catalog=media_mod.DEFAULT_CATALOG, duration=None,
+                           width=1920, height=1080, fps=30, transition_seconds=0.75,
+                           motion="zoom_in", allow_unverified_audio=False):
+    """Bootstrap an existing-media project through the ordinary render/QC gate.
+
+    This is an explicit still-image edit, not a clip editor or semantic planner.
+    Inputs remain external references; the metadata snapshots their identities.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", video_id):
+        raise ProjectError("video_id must contain only letters, digits, underscores and hyphens")
+    if not image_ids or len(image_ids) > render.MAX_IMAGE_SLOTS:
+        raise ProjectError(f"Select between 1 and {render.MAX_IMAGE_SLOTS} images")
+    if not isinstance(fps, int) or isinstance(fps, bool) or fps <= 0:
+        raise ProjectError("fps must be a positive integer")
+    if not isinstance(transition_seconds, (int, float)) or not math.isfinite(transition_seconds) or transition_seconds < 0:
+        raise ProjectError("transition_seconds must be finite and nonnegative")
+    try:
+        visuals = [media_mod.select(i, kind="image", catalog=catalog) for i in image_ids]
+        audio_asset, audio_path = media_mod.select(
+            audio_id, kind="audio", catalog=catalog,
+            require_rights=not allow_unverified_audio)
+    except media_mod.MediaError as exc:
+        raise ProjectError(str(exc)) from exc
+    seconds = audio_duration(audio_path) if duration is None else duration
+    if not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds <= 0:
+        raise ProjectError("duration must be a finite positive number")
+    total_frames = round(seconds * fps)
+    if total_frames / fps > (audio_duration(audio_path) or 0) + 1 / fps:
+        raise ProjectError("Selected audio is shorter than the edit; compose an intentional loop with the audio stage first")
+    overlap = round(transition_seconds * fps) if len(visuals) > 1 else 0
+    base, extra = divmod(total_frames + overlap * (len(visuals) - 1), len(visuals))
+    if base <= 2 * overlap or base < 1:
+        raise ProjectError("Edit is too short for the selected images and transition overlaps")
+    scenes = [{"scene_id": f"s{i + 1:02d}", "image": str(path),
+               "duration_seconds": (base + (i < extra)) / fps,
+               "motion": {"kind": motion, "fit": "cover"},
+               "transition": {"kind": "crossfade" if overlap else "cut",
+                              "duration_seconds": overlap / fps}}
+              for i, (_, path) in enumerate(visuals)]
+    raw = {"width": width, "height": height, "fps": fps,
+           "duration_seconds": total_frames / fps, "scenes": scenes,
+           "audio": {"file": str(audio_path)}}
+    try:
+        render.validate_and_normalize(raw, base_dir=project_dir(video_id))
+    except render.SpecValidationError as exc:
+        raise ProjectError(exc.errors) from exc
+    metadata = build_metadata(video_id, title, "", "", total_frames / fps,
+                              f"{width}x{height}", fps)
+    metadata["description"] = description
+    metadata["ingestion"] = {
+        "catalog": str(Path(catalog).resolve()), "method": "reference",
+        "allow_unverified_rights": bool(allow_unverified_audio),
+        "inputs": [dict(asset, selected_path=str(path))
+                   for asset, path in [*visuals, (audio_asset, audio_path)]],
+    }
+    metadata["provenance"]["images"].update(
+        provider="catalog", notes="Explicit catalog selection; source origin recorded per asset")
+    metadata["provenance"]["audio"].update(
+        provider="catalog", notes="Existing audio; source and rights in ingestion.inputs")
+    metadata["status"]["assets"] = "READY"
+    try:
+        rights = media_mod.rights_record(audio_asset)
+    except media_mod.MediaError:
+        if not allow_unverified_audio:
+            raise
+        source_rights = audio_asset.get("rights") or {}
+        rights = {
+            "source": source_rights.get("source") or audio_asset.get("source") or "unknown",
+            "license": source_rights.get("license") or "unknown",
+            "commercial_use": False,
+            "attribution_required": source_rights.get("attribution_required"),
+            "attribution_text": source_rights.get("attribution_text"),
+            "evidence": source_rights.get("evidence") or "Track-level rights record pending",
+            "status": "UNVERIFIED",
+        }
+    manifest = {"status": "OK", "commercial_use_cleared": rights.get("commercial_use") is True,
+                "layers": [dict(rights, layer_id="existing-audio", provider="file",
+                                asset_id=audio_id, parameters={"path": str(audio_path)})],
+                "attributions_required": [rights["attribution_text"]]
+                if rights.get("attribution_required") else []}
+    with project_lock(video_id):
+        pdir = project_dir(video_id)
+        if (pdir / "metadata.json").exists():
+            raise ProjectError(f"Project already exists: {video_id}; import uses a new project id")
+        for relative, expected in (("video_spec.json", raw),
+                                   ("audio/audio_manifest.json", manifest)):
+            path = pdir / relative
+            if path.exists():
+                try:
+                    matches = json.loads(path.read_text()) == expected
+                except (ValueError, OSError):
+                    matches = False
+                if not matches:
+                    raise ProjectError(f"Refusing to overwrite existing {path}; choose a new project id")
+        for sub in SUBDIRS:
+            (pdir / sub).mkdir(parents=True, exist_ok=True)
+        media_mod.atomic_json(pdir / "video_spec.json", raw)
+        media_mod.atomic_json(pdir / "audio" / "audio_manifest.json", manifest)
+        # Metadata is the commit marker; retry an interrupted import with the same id.
+        media_mod.atomic_json(pdir / "metadata.json", metadata)
+    return StageResult(True, 0, "Catalog assets imported by reference", {
+        "video_id": video_id, "duration_seconds": total_frames / fps,
+        "scene_count": len(scenes), "editable_kdenlive": False,
+        "allow_unverified_audio": bool(allow_unverified_audio),
+    })
+
+
+def _ingestion_problems(metadata):
+    problems = []
+    for asset in (metadata.get("ingestion") or {}).get("inputs", []):
+        try:
+            # Validate the actual selected path, not a different intact alias.
+            media_mod.resolve(dict(asset, locations=[{
+                "host_id": media_mod.host_id(), "path": asset["selected_path"]}]))
+            try:
+                media_mod.rights_record(asset)
+            except media_mod.MediaError:
+                # A private bootstrap edit may be rendered for inspection
+                # while a YouTube Audio Library track is still being matched
+                # to its track-level terms. The manifest remains uncleared,
+                # so the publication gate still fails closed.
+                allow = (metadata.get("ingestion") or {}).get("allow_unverified_rights")
+                if not (allow and asset.get("technical", {}).get("kind") == "audio"
+                        and (asset.get("rights") or {}).get("status") == "UNVERIFIED"):
+                    raise
+        except (media_mod.MediaError, KeyError, TypeError) as exc:
+            problems.append(f"Imported source failed verification: {exc}")
+    return problems
+
+
+def cmd_import_media(args):
+    try:
+        result = import_catalog_project(
+            args.video_id, args.image_id, args.audio_id, title=args.title,
+            description=args.description, catalog=args.catalog, duration=args.duration,
+            width=args.width, height=args.height, fps=args.fps,
+            transition_seconds=args.transition_seconds, motion=args.motion,
+            allow_unverified_audio=args.allow_unverified_audio)
+        print(json.dumps(result.data, indent=2))
+        return result.exit_code
+    except (ProjectError, OSError) as exc:
+        log.error("%s", exc)
+        return 1
+
+
+def storyboard_scene_spec(pdir, raw_spec, board):
+    """``raw_spec`` with the storyboard's scenes folded in, normalised.
+
+    The storyboard is the editorial plan and video_spec.json is the render
+    contract; this is the one place the first becomes the second. Both the
+    renderer and the Kdenlive export need it - the export used to look only
+    at video_spec.json, so every storyboarded project (which is now almost
+    all of them) refused to export an edit it had just rendered.
+    """
+    raw = dict(raw_spec)
+    raw["scenes"] = [
+        {
+            "scene_id": scene["scene_id"],
+            "duration_seconds": scene["duration_seconds"],
+            "image": scene["image"],
+            "motion": scene.get("motion") or {},
+            "transition": scene.get("transition") or {},
+        }
+        for scene in board["scenes"]
+    ]
+    return render.validate_and_normalize(raw, base_dir=pdir)
+
+
+def build_kdenlive_project(video_id, *, render_output=True):
+    """Lower the resolved project edit to an editable Kdenlive project.
+
+    The JSON spec remains the editorial contract. This adapter turns its
+    frame-timed scenes into MLT clips.  It creates a project-local editable
+    media directory with hardlinks where possible, so the project travels as
+    a unit without changing the catalog objects or the owner's originals.
+    Crossfade overlaps become alternating editable video tracks; the audio
+    source stays on a separate editable track.
+    """
+    with project_lock(video_id):
+        try:
+            pdir, spec, raw_spec, metadata = load_project(video_id)
+        except ProjectError:
+            raise
+        if not spec.get("scenes"):
+            board = storyboard_mod.load(video_id)
+            if board and board.get("scenes"):
+                spec = storyboard_scene_spec(pdir, raw_spec, board)
+        scenes = spec.get("scenes") or []
+        if not scenes:
+            raise ProjectError("Kdenlive export requires an explicit scene timeline")
+        starts = motion_mod.scene_start_times(scenes)
+        editable_media = pdir / "output" / "editable-media"
+        editable_media.mkdir(parents=True, exist_ok=True)
+        clips = []
+        source_handoffs = []
+        for scene, start in zip(scenes, starts):
+            frames = max(1, round(float(scene["duration_seconds"]) * spec["fps"]))
+            source = Path(scene["image_path"])
+            local_source, method = ingest(source, editable_media)
+            motion = scene.get("motion") or {}
+            amount = float(motion.get("amount") or 0.0)
+            zoom_in = motion.get("kind") == "zoom_in"
+            clips.append(kdenlive_mod.Clip(
+                path=local_source,
+                start_frame=max(0, round(float(start) * spec["fps"])),
+                duration_frames=frames,
+                label=scene.get("scene_id") or Path(scene["image_path"]).name,
+                track="video",
+                zoom_start=1.0 if zoom_in else 1.0 + amount,
+                zoom_end=1.0 + amount if zoom_in else 1.0,
+            ))
+            source_handoffs.append({"source": str(source), "editable_media": str(local_source),
+                                    "method": method, "sha256": sha256(local_source)})
+        total_frames = max(1, round(float(spec["duration_seconds"]) * spec["fps"]))
+        audio_spec = spec.get("audio") or {}
+        audio_source = Path(spec["audio_path"])
+        local_audio, audio_method = ingest(audio_source, editable_media)
+        audio_clip = kdenlive_mod.Clip(
+            path=local_audio, start_frame=0,
+            duration_frames=total_frames, track="audio", label="Dreamdrip music",
+            gain_db=float(audio_spec.get("gain_db") or 0.0),
+            fade_in_frames=round(float(audio_spec.get("fade_in_seconds") or 0) * spec["fps"]),
+            fade_out_frames=round(float(audio_spec.get("fade_out_seconds") or 0) * spec["fps"]),
+        )
+        source_handoffs.append({"source": str(audio_source), "editable_media": str(local_audio),
+                                "method": audio_method, "sha256": sha256(local_audio)})
+        project_path = pdir / "output" / f"{video_id}.kdenlive"
+        notes = (
+            "Content Machine generated editable timeline. Source paths and "
+            "sha256 hashes are recorded on each producer. Audio rights remain "
+            "subject to the project's provenance gate."
+        )
+        result = kdenlive_mod.build_project(
+            project_path, width=spec["width"], height=spec["height"], fps=spec["fps"],
+            clips=clips, audio_clips=[audio_clip],
+            title=metadata.get("selected_title") or video_id, notes=notes)
+        verification = kdenlive_mod.verify_project(project_path)
+        rendered = None
+        render_qc = None
+        if render_output:
+            rendered = kdenlive_mod.render_project(
+                project_path, pdir / "output" / f"{video_id}-kdenlive.mp4")
+            render_qc = qc.qc_video(
+                Path(rendered["output"]),
+                expected={"width": spec["width"], "height": spec["height"],
+                          "fps": spec["fps"], "duration_seconds": spec["duration_seconds"]},
+                source_images=[clip.path for clip in clips],
+            )
+            (pdir / "output" / "kdenlive_qc_report.json").write_text(
+                json.dumps(render_qc, indent=2) + "\n")
+            if render_qc["status"] != "PASS":
+                raise ProjectError("Kdenlive render did not pass QC: " +
+                                   ", ".join(render_qc["failures"]))
+            metadata.setdefault("status", {})["render"] = "OK"
+            metadata["status"]["qc"] = "PASS"
+        else:
+            existing_render = pdir / "output" / f"{video_id}-kdenlive.mp4"
+            if existing_render.is_file():
+                render_qc = qc.qc_video(
+                    existing_render,
+                    expected={"width": spec["width"], "height": spec["height"],
+                              "fps": spec["fps"], "duration_seconds": spec["duration_seconds"]},
+                    source_images=[clip.path for clip in clips],
+                )
+                if render_qc["status"] != "PASS":
+                    raise ProjectError("existing Kdenlive render did not pass QC: " +
+                                       ", ".join(render_qc["failures"]))
+                metadata.setdefault("status", {})["render"] = "OK"
+                metadata["status"]["qc"] = "PASS"
+        metadata.setdefault("editing", {})["kdenlive"] = {
+            "project": "output/" + project_path.name,
+            "render": "output/" + Path(rendered["output"]).name if rendered else None,
+            "verified": verification,
+            "timeline": result,
+            "backend": "MLT/melt",
+            "source_handoffs": source_handoffs,
+            "source_hashes": {str(clip.path): kdenlive_mod._sha256(clip.path)
+                              for clip in [*clips, audio_clip]},
+            "qc": render_qc,
+            "generated_utc": utc_now(),
+        }
+        save_metadata(pdir, metadata)
+        package = package_kdenlive_project(video_id, project_path, source_handoffs)
+        metadata["editing"]["kdenlive"]["package"] = package
+        metadata.setdefault("status", {})["package"] = "OK"
+        save_metadata(pdir, metadata)
+        return StageResult(True, 0, "Kdenlive project built", {
+            "project": str(project_path), "render": rendered,
+            "verification": verification, "timeline": result, "package": package,
+        })
+
+
+def package_kdenlive_project(video_id, project_path, source_handoffs):
+    """Create a portable editable-project handoff without changing sources.
+
+    The project references ``editable-media`` relatively.  The archive keeps
+    that directory next to the project and contains an integrity/provenance
+    manifest; it deliberately carries the audio's unverified-rights state.
+    """
+    pdir = project_dir(video_id)
+    output = pdir / "output"
+    media_dir = output / "editable-media"
+    if not project_path.is_file() or not media_dir.is_dir():
+        raise ProjectError("Kdenlive package requires project-local editable media")
+    manifest = {
+        "video_id": video_id,
+        "created_utc": utc_now(),
+        "project": project_path.name,
+        "media_directory": media_dir.name,
+        "source_handoffs": source_handoffs,
+        # Read from the audio manifest rather than asserted. Stamping every
+        # archive "UNVERIFIED" was wrong in the direction that matters least
+        # but is still wrong: it taught a reader to ignore the field, which
+        # is exactly what makes a rights warning useless when it is true.
+        "audio_rights": _audio_rights_statement(pdir),
+    }
+    manifest_path = output / f"{video_id}-editable-provenance.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    archive = output / f"{video_id}-editable-kdenlive.tar.gz"
+    temporary = archive.with_suffix(archive.suffix + ".pending")
+    with tarfile.open(temporary, "w:gz") as bundle:
+        bundle.add(project_path, arcname=f"{video_id}/{project_path.name}")
+        bundle.add(media_dir, arcname=f"{video_id}/{media_dir.name}")
+        bundle.add(manifest_path, arcname=f"{video_id}/{manifest_path.name}")
+        bundle.add(pdir / "metadata.json", arcname=f"{video_id}/metadata.json")
+    os.replace(temporary, archive)
+    return {"archive": "output/" + archive.name,
+            "provenance": "output/" + manifest_path.name,
+            "bytes": archive.stat().st_size}
+
+
+def _audio_rights_statement(pdir):
+    """What this project's audio manifest actually says about its rights.
+
+    Fail-closed in the absence of a manifest: no manifest is "nobody
+    established the rights", which is not "the rights are fine".
+    """
+    manifest_path = pdir / "audio" / "audio_manifest.json"
+    if not manifest_path.is_file():
+        return ("UNVERIFIED - no audio manifest; rights were never established, "
+                "so publication remains blocked")
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return "UNVERIFIED - audio manifest could not be read"
+    if manifest.get("commercial_use_cleared") is not True:
+        return ("UNVERIFIED - the audio manifest does not clear commercial "
+                "use; private review only")
+    attributions = manifest.get("attributions_required") or []
+    cleared = "CLEARED for commercial use by this project's audio manifest"
+    if attributions:
+        return cleared + "; attribution required: " + "; ".join(attributions)
+    return cleared + "; no attribution required"
+
+
+def run_editable(video_id, render=False):
+    """Build the editable Kdenlive project (and its portable archive).
+
+    A stage like any other so the web layer triggers it the same way, with
+    the same run record. ``render`` re-renders the timeline through MLT,
+    which is a second full encode - off by default, because the reviewable
+    MP4 the pipeline already produced is the same edit.
+    """
+    try:
+        return build_kdenlive_project(video_id, render_output=render)
+    except (ProjectError, kdenlive_mod.KdenliveError, OSError) as exc:
+        log.error("Kdenlive assembly failed: %s", exc)
+        return StageResult(False, 1, f"editable export failed: {exc}")
+
+
+# Deleting a production removes work that cannot be recovered, so the one
+# implementation behind every adapter refuses the cases where "unwanted" is
+# unlikely to be what was meant, and writes down what it removed.
+DELETION_LEDGER = PROJECTS_DIR / "deleted-projects.log"
+
+
+def delete_project(video_id, actor, reason=""):
+    """Permanently remove a production and the artefacts that only it owns.
+
+    Refuses a published project outright: an upload that exists in the world
+    cannot be made not to have happened by deleting the folder that explains
+    it. Everything else goes - the project directory, its research brief,
+    findings and directives, and the concept derived for it - and a line
+    naming what was removed, by whom and why is appended to the ledger.
+    """
+    pdir = project_dir(video_id)
+    if not pdir.is_dir():
+        raise ProjectError([f"no such project: {video_id}"])
+    if not actor:
+        raise ProjectError(["deletion needs a named actor"])
+    metadata = {}
+    metadata_path = pdir / "metadata.json"
+    if metadata_path.is_file():
+        try:
+            metadata = json.loads(metadata_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            metadata = {}
+    if ((metadata.get("publish") or {}).get("published")
+            or (metadata.get("status") or {}).get("overall") == "PUBLISHED"):
+        raise ProjectError([
+            f"{video_id} has been published; its record is not deletable from "
+            f"here. Unpublish it first if that is really what you mean."])
+
+    removed = [str(pdir.relative_to(ROOT))]
+    concept_id = (metadata.get("experiment") or {}).get("concept_id")
+    extras = [research.brief_path(video_id), research.findings_path(video_id),
+              research.directives_path(video_id),
+              ROOT / "research" / "subjects" / f"{video_id}.json"]
+    if concept_id and goal_mod.load_derived_concept(concept_id) is not None:
+        extras.append(goal_mod.derived_path(concept_id))
+    shutil.rmtree(pdir)
+    for path in extras:
+        if path.is_file():
+            path.unlink()
+            removed.append(str(path.relative_to(ROOT)))
+
+    DELETION_LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    with open(DELETION_LEDGER, "a") as ledger:
+        ledger.write(json.dumps({
+            "utc": utc_now(), "video_id": video_id, "actor": actor,
+            "reason": reason, "removed": removed,
+            "title": metadata.get("selected_title"),
+        }) + "\n")
+    log.info("Deleted %s (%d path(s)) on behalf of %s", video_id, len(removed), actor)
+    return {"video_id": video_id, "removed": removed, "actor": actor,
+            "reason": reason, "deleted_utc": utc_now()}
+
+
+def cmd_kdenlive(args):
+    try:
+        result = build_kdenlive_project(args.video_id, render_output=not args.no_render)
+        print(json.dumps(result.data, indent=2))
+        return result.exit_code
+    except (ProjectError, kdenlive_mod.KdenliveError, OSError) as exc:
+        log.error("Kdenlive assembly failed: %s", exc)
+        return 1
+
+
 def load_project(video_id):
     """Load and validate a project. Returns (pdir, spec, raw_spec, metadata)."""
     pdir = project_dir(video_id)
@@ -363,6 +825,10 @@ def load_project(video_id):
         metadata = json.loads(metadata_path.read_text())
     except json.JSONDecodeError as e:
         raise ProjectError([f"metadata.json is not valid JSON: {e}"])
+
+    problems.extend(_ingestion_problems(metadata))
+    if problems:
+        raise ProjectError(problems)
 
     # Reuse the renderer's own validation so the rules live in exactly one
     # place; paths resolve relative to the project directory.
@@ -437,11 +903,22 @@ def cmd_validate(args):
 # --------------------------------------------------------------------------
 
 def run_research(video_id, concept_id=None, force=False):
-    """Source-backed research for one video's subject, cached once.
+    """Subject research and brief-driven competitor research for one video,
+    each cached once.
 
-    A no-op for concepts that don't need it, so niches with no factual
-    claims to source never pay for this step. Fails closed rather than ever
-    caching facts drawn from model memory instead of a search provider.
+    Two independent artifacts, with different failure contracts:
+
+    - Subject research (facts a narration script may state) is required and
+      fails closed for concepts flagged ``requires_subject_research`` - a
+      no-op otherwise, so niches with no factual claims never pay for it.
+    - Competitor/format research is optional and additive: driven by the
+      project's own research brief (``research.load_brief``), which most
+      projects will not have, and by a configured search provider, which
+      this build may not have either. Neither absence is a stage failure -
+      only a search that was actually attempted and came back too thin to
+      say anything sourced is. ``creative`` picks up whatever exists here
+      through ``research.load_brief``/``load_findings``; it never re-runs
+      this stage itself.
     """
     with project_lock(video_id):
         pdir = project_dir(video_id)
@@ -459,23 +936,94 @@ def run_research(video_id, concept_id=None, force=False):
                 "metadata.experiment.concept_id).")
             return StageResult(False, 1, "no concept linked")
 
-        if not concept.get("requires_subject_research"):
-            log.info("%s does not require subject research; nothing to do", concept_id)
-            return StageResult(True, 0, f"{concept_id} does not require subject research")
+        notes = []
+        subject_artifact = None
+        if concept.get("requires_subject_research"):
+            try:
+                subject_artifact = subject_research.research_subject(
+                    video_id, concept, force=force)
+            except subject_research.SubjectResearchError as e:
+                log.error("Subject research failed closed: %s", e)
+                return StageResult(False, 1, str(e))
+            metadata.setdefault("status", {})["subject_research"] = "OK"
+            log.info("Subject research: %d sourced fact(s) from %d source(s) via %s",
+                     len(subject_artifact["facts"]), len(subject_artifact["sources"]),
+                     subject_artifact["provider"])
+            notes.append(f"{len(subject_artifact['facts'])} sourced fact(s)")
+        else:
+            log.info("%s does not require subject research; nothing to source", concept_id)
 
-        try:
-            artifact = subject_research.research_subject(
-                video_id, concept, force=force)
-        except subject_research.SubjectResearchError as e:
-            log.error("Subject research failed closed: %s", e)
-            return StageResult(False, 1, str(e))
+        findings_artifact = None
+        research_brief = research.load_brief(video_id)
+        if research_brief is not None:
+            explicit = _explicitly_requested_research(research_brief)
+            try:
+                findings_artifact = research.research_project(
+                    video_id, research_brief, force=force)
+                metadata.setdefault("status", {})["competitor_research"] = "OK"
+                log.info("Competitor research: %d finding(s) via %s; topics covered: %s",
+                         len(findings_artifact["findings"]), findings_artifact["provider"],
+                         ", ".join(findings_artifact.get("topics_covered") or []) or "none")
+                for topic in findings_artifact.get("topics_uncovered") or []:
+                    log.warning("No sourced findings for requested topic %r", topic)
+                notes.append(f"{len(findings_artifact['findings'])} research finding(s)")
+                # What the findings change about the build, derived now so
+                # the storyboard and audio stages read a decision rather
+                # than re-interpreting prose. Empty is a valid outcome.
+                spec_raw = json.loads((pdir / "video_spec.json").read_text())
+                directives = research.save_directives(
+                    video_id, research.production_directives(
+                        findings_artifact, brief=research_brief,
+                        target_seconds=spec_raw.get("duration_seconds")))
+                if directives["decisions"]:
+                    log.info("Research changes %d production parameter(s): %s",
+                             len(directives["decisions"]),
+                             ", ".join(f"{d['parameter']}={d['value']}"
+                                       for d in directives["decisions"]))
+                    notes.append(f"{len(directives['decisions'])} production directive(s)")
+                else:
+                    log.info("Findings say nothing that changes a production "
+                             "parameter; stage defaults stand.")
+            except research.ResearchError as e:
+                if explicit:
+                    # The brief named something specific to study. Skipping
+                    # that quietly produces a video that looks researched
+                    # and is not, which is the failure this branch exists
+                    # to make impossible.
+                    metadata.setdefault("status", {})["competitor_research"] = "FAILED"
+                    save_metadata(pdir, metadata)
+                    log.error("Requested research could not be performed: %s", e)
+                    log.error("Named in the brief: %s", "; ".join(explicit))
+                    return StageResult(False, 1, f"requested research failed: {e}")
+                metadata.setdefault("status", {})["competitor_research"] = "SKIPPED"
+                log.warning("Competitor research skipped (not a stage failure): %s", e)
 
-        metadata.setdefault("status", {})["subject_research"] = "OK"
         save_metadata(pdir, metadata)
-        log.info("Subject research: %d sourced fact(s) from %d source(s) via %s",
-                 len(artifact["facts"]), len(artifact["sources"]), artifact["provider"])
+        if not notes:
+            return StageResult(
+                True, 0,
+                f"{concept_id} does not require subject research; no research brief to work from")
         log.info("Now run: ./content-machine creative %s", video_id)
-        return StageResult(True, 0, "subject research complete", {"artifact": artifact})
+        return StageResult(True, 0, "; ".join(notes),
+                           {"artifact": subject_artifact, "findings": findings_artifact})
+
+
+def _explicitly_requested_research(brief):
+    """What this brief asked for by name, if anything.
+
+    A brief carrying only a niche is a hint: research it if a provider
+    exists. A brief that names seed references or specific research topics
+    is an instruction, and an instruction that cannot be carried out is a
+    stage failure, not a warning.
+    """
+    named = []
+    for ref in brief.get("seed_references") or []:
+        value = (ref.get("value") or "").strip()
+        if value:
+            named.append(f"{ref.get('type') or 'seed'} {value}")
+    for topic in brief.get("research_topics") or []:
+        named.append(f"topic {topic}")
+    return named
 
 
 def cmd_research(args):
@@ -523,9 +1071,14 @@ def run_creative(video_id, force=False):
                     concept_id, video_id)
                 return StageResult(False, 1, "subject research required first")
 
+        research_brief = research.load_brief(video_id)
+        findings = research.load_findings(video_id)
+
         target_seconds = spec_raw.get("duration_seconds")
         try:
-            brief = creative_mod.generate_brief(concept, target_seconds, subject_research=subject)
+            brief = creative_mod.generate_brief(
+                concept, target_seconds, subject_research=subject,
+                research_brief=research_brief, findings=findings)
         except creative_mod.CreativeError as e:
             log.error("Creative brief failed: %s", e)
             return StageResult(False, 1, str(e))
@@ -549,22 +1102,113 @@ def run_creative(video_id, force=False):
 
         audio_plan = metadata.setdefault("audio_plan", {})
         if not (audio_plan.get("composition") or {}).get("layers") or force:
-            composition = creative_mod.build_audio_composition(
-                concept, target_seconds, brief["narration_script"])
+            routed = creative_mod.route_audio(
+                concept, target_seconds, brief["narration_script"],
+                mood=brief.get("audio_mood"), findings=findings)
+            composition = routed["composition"]
+            # The decision record is kept whether or not a plan came out of
+            # it: "no music source was available" is exactly the case
+            # somebody later needs to be able to read.
+            audio_plan["direction"] = routed["direction"]
+            direction = routed["direction"]
+            log.info("Audio direction: this concept needs %s - %s",
+                     direction["kind"], direction["kind_reasoning"])
             if composition is None:
                 log.warning(
-                    "No synthesisable audio for requirement '%s' "
-                    "(concept '%s'). Audio composition not written; "
-                    "supply a real track before `audio`/`run`.",
+                    "No audio source available for requirement '%s' "
+                    "(concept '%s'): %s",
                     concept.get("audio_source_requirement"), concept_id,
-                )
+                    direction.get("blocked_reason", "nothing applicable"))
             else:
+                chosen = direction.get("chosen") or {}
+                log.info("Audio source: %s via the %r provider (%s, %s)",
+                         chosen.get("source"), chosen.get("provider"),
+                         chosen.get("rights"), chosen.get("cost"))
+                if chosen.get("production_grade_capable") is False:
+                    log.warning(
+                        "This source cannot be production-grade %s: %s. "
+                        "Review stays blocked until a human listens and "
+                        "records a judgement (`audio-grade`).",
+                        direction["kind"], chosen.get("detail"))
+                design, composition = _design_soundscape(
+                    concept, composition, target_seconds, direction,
+                    mood=brief.get("audio_mood"),
+                    findings=findings, directives=research.load_directives(video_id))
+                if design:
+                    audio_plan["design"] = design
                 audio_plan["composition"] = composition
 
         save_metadata(pdir, metadata)
         log.info("Creative brief written: title=%r", metadata["selected_title"])
         return StageResult(True, 0, "creative brief written",
                             {"selected_title": metadata["selected_title"]})
+
+
+def _sound_research_block(findings, directives):
+    """What sourced research says about this niche's sound, for the design
+    pass. The emphasis line is a directive - layers sources actually named -
+    and is stated as such so the model treats it as evidence, not taste."""
+    lines = []
+    emphasis = ((directives or {}).get("values") or {}).get("audio_emphasis")
+    if emphasis:
+        lines.append(
+            "Sourced research about this niche names these sound layers: "
+            + ", ".join(emphasis)
+            + ". Build around them where the catalogue above allows it.")
+    digest = research.findings_digest(
+        {"findings": [f for f in ((findings or {}).get("findings") or [])
+                      if f.get("topic") == "audio"]}, max_per_topic=6)
+    if digest:
+        lines.append("Sourced observations about audio in this niche:\n" + digest)
+    if not lines:
+        return ""
+    return "\n".join(lines) + "\n"
+
+
+def _design_soundscape(concept, composition, target_seconds, direction, mood=None,
+                       findings=None, directives=None):
+    """Shape a routed composition into a designed soundscape.
+
+    Fail-soft on purpose, and only in one direction: when the design pass
+    cannot run (no LLM configured, the call failed, a reply we could not
+    read) the routed composition is used exactly as routed. That is the
+    behaviour this pipeline had before sound design existed, so the failure
+    mode is "less designed", never "no audio" and never "a layer nobody
+    chose". The reason is recorded either way.
+    """
+    if not composition or not composition.get("layers"):
+        return None, composition
+    chosen = direction.get("chosen") or {}
+    bed_description = (f"{chosen.get('source', 'unknown source')} via the "
+                       f"{chosen.get('provider')!r} provider - "
+                       f"{chosen.get('detail', '')}")
+    try:
+        design = sound_design.design_soundscape(
+            concept, target_seconds, kind=direction.get("kind"), mood=mood,
+            bed_description=bed_description,
+            research_block=_sound_research_block(findings, directives))
+    except Exception as exc:  # noqa: BLE001 - recorded, never fatal
+        log.warning("Sound design pass unavailable (%s); using the routed "
+                    "composition unshaped.", exc)
+        return {"status": "unavailable", "reason": str(exc),
+                "listening_context": sound_design.infer_listening_context(
+                    concept, direction.get("kind"))}, composition
+
+    designed = sound_design.compile_soundscape(design, composition, target_seconds)
+    if designed is None:
+        return design, composition
+    design["status"] = "designed"
+    log.info("Sound design (%s): %s", design.get("listening_context"),
+             design.get("intent") or "no stated intent")
+    for entry in design.get("ambience", []):
+        log.info("  ambience %-16s %+.0f dB  %s", entry["element"],
+                 entry["gain_db"], entry.get("reason", ""))
+    for entry in design.get("detail", []):
+        log.info("  event    %-16s %+.0f dB every %.0fs  %s", entry["element"],
+                 entry["gain_db"], entry["every_seconds"], entry.get("reason", ""))
+    for unmet in design.get("wanted_but_unavailable", []):
+        log.warning("  sound design wanted something this build has not got: %s", unmet)
+    return design, designed
 
 
 def cmd_creative(args):
@@ -617,14 +1261,47 @@ def run_audio(video_id, duration=None):
         spec_path.write_text(json.dumps(spec_raw, indent=2) + "\n")
 
         providers = sorted({layer["provider"] for layer in manifest["layers"]})
+        direction = (metadata.get("audio_plan") or {}).get("direction") or {}
+        chosen = direction.get("chosen") or {}
+        previous = (metadata.get("provenance") or {}).get("audio") or {}
         metadata["status"]["audio"] = "OK"
-        metadata["provenance"]["audio"] = {
+        audio_prov = {
             "provider": "+".join(providers),
             "model": next((l.get("voice") for l in manifest["layers"] if l.get("voice")), None),
             "notes": f"composed locally: {len(manifest['layers'])} layer(s)",
             "commercial_use_cleared": manifest["commercial_use_cleared"],
             "attributions_required": manifest["attributions_required"],
+            "quality": manifest.get("quality"),
+            # What was measured in the finished file and what that means
+            # against this listening context's criteria. Kept in provenance
+            # so the review surface can show a reviewer the numbers behind
+            # a finding instead of only the finding's wording.
+            "measurement": manifest.get("measurement"),
+            "assessment": manifest.get("assessment"),
+            "listening_context": ((manifest.get("assessment") or {})
+                                  .get("criteria", {}).get("listening_context")),
+            # Carried from the routing decision so the gate can ask "could
+            # this source be production-grade at all" without re-deriving
+            # the answer from provider names.
+            "kind": direction.get("kind"),
+            "source": chosen.get("source"),
+            "production_grade_capable": chosen.get("production_grade_capable"),
         }
+        # A human's judgement survives a re-render of the same plan and is
+        # discarded by a different one - the same rule images follow.
+        if previous.get("production_grade") is not None:
+            same_plan = previous.get("plan_digest") == _audio_plan_digest(plan)
+            audio_prov["production_grade"] = (
+                previous["production_grade"] if same_plan else None)
+            if same_plan:
+                for key in ("graded_by", "graded_utc", "grade_notes"):
+                    if previous.get(key) is not None:
+                        audio_prov[key] = previous[key]
+            else:
+                log.info("Audio plan changed since it was graded; the "
+                         "previous production-grade judgement no longer applies.")
+        audio_prov["plan_digest"] = _audio_plan_digest(plan)
+        metadata["provenance"]["audio"] = audio_prov
         save_metadata(pdir, metadata)
 
         log.info("Audio: %s (%.3fs, mean %.1f dB)",
@@ -633,8 +1310,33 @@ def run_audio(video_id, duration=None):
             log.warning("Audio is NOT cleared for commercial use.")
         for attribution in manifest["attributions_required"]:
             log.info("Attribution required: %s", attribution)
+        quality = manifest.get("quality") or {}
+        for warning in quality.get("warnings", []):
+            log.warning("Audio quality: %s", warning)
+        for advisory in quality.get("advisories", []):
+            log.info("Audio advisory: %s", advisory)
+        measured = manifest.get("measurement") or {}
+        if measured.get("integrated_lufs") is not None:
+            log.info("Audio measured: %.1f LUFS, true peak %.1f dBFS, "
+                     "range %.1f LU (%s) - assessment %s",
+                     measured["integrated_lufs"],
+                     measured.get("true_peak_dbfs", float("nan")),
+                     measured.get("loudness_range_lu", float("nan")),
+                     measured.get("measured_window", "full"),
+                     (manifest.get("assessment") or {}).get("verdict", "UNKNOWN"))
         log.info("Now run: ./content-machine run %s", video_id)
         return StageResult(True, 0, "audio composed", {"output_path": str(output_path)})
+
+
+def _audio_plan_digest(plan):
+    """Fingerprint of the audio plan a judgement was made about.
+
+    A human listened to a specific track. Re-rendering the same plan
+    reproduces it; changing the plan does not, and silently keeping the old
+    verdict would be claiming somebody approved audio they never heard.
+    """
+    blob = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(blob).hexdigest()
 
 
 def cmd_audio(args):
@@ -708,10 +1410,13 @@ def run_visuals(video_id, prompt=None, negative=None, count=None, width=None,
             if require_depicted:
                 queued = _defer_to_gpu_worker(request, pdir / "images", video_id,
                                               label=prompt[:80])
-                if queued:
+                blocked = _remote_job_blocked(queued)
+                if queued and not blocked:
                     metadata.setdefault("status", {})["visuals"] = VISUALS_WAITING_FOR_GPU
                     save_metadata(pdir, metadata)
                     return _waiting_for_gpu_result([queued], "visuals")
+                if blocked:
+                    log.error(blocked)
             metadata.setdefault("status", {})["visuals"] = "FAILED"
             save_metadata(pdir, metadata)
             log.error("Visual generation failed: %s", e)
@@ -798,11 +1503,13 @@ def run_storyboard(video_id, niche=None, scene_count=None, source_width=None,
                             "Build one with: ./content-machine research profile "
                             "--niche %s", niche, niche)
 
+        directives = research.load_directives(video_id) or {}
         try:
             board = storyboard_mod.build_storyboard(
                 video_id, metadata, spec_raw, profile=profile,
                 scene_count=scene_count,
-                source_width=source_width, source_height=source_height)
+                source_width=source_width, source_height=source_height,
+                directives=directives.get("values"))
         except storyboard_mod.StoryboardError as e:
             log.error("Storyboard could not be built:")
             for problem in e.problems:
@@ -814,6 +1521,15 @@ def run_storyboard(video_id, niche=None, scene_count=None, source_width=None,
         # rebuild that does not change a scene keeps its GPU work.
         existing = storyboard_mod.load(video_id)
 
+        # Which scenes depict what, and the identity every scene shares.
+        # The gating is unchanged: a concept whose product *is* an abstract
+        # plate (procedural_visuals_acceptable) deliberately holds one
+        # picture, and nothing here second-guesses that. What changed is
+        # what the other two branches produce - a compiled prompt carrying
+        # the video's palette, light, materials, camera and framing, rather
+        # than a free-text base prompt with a fragment stapled on.
+        environments = None
+        motifs = None
         if concept and concept.get("requires_subject_research"):
             subject = subject_research.load_subject_research(video_id)
             if subject is None:
@@ -834,8 +1550,62 @@ def run_storyboard(video_id, niche=None, scene_count=None, source_width=None,
                 except creative_mod.CreativeError as e:
                     log.error("Scene motif generation failed: %s", e)
                     return StageResult(False, 1, "scene motif generation failed")
-            storyboard_mod.apply_scene_motifs(board, motifs)
-            board["scene_motifs"] = motifs
+            # Facts-grounded: what each scene depicts was decided by sourced
+            # research, so those motifs *are* the environments, one per
+            # scene. The direction contributes only the identity around them.
+            environments = [{"slug": scene["scene_id"],
+                             "description": motifs[scene["scene_id"]]}
+                            for scene in board["scenes"]
+                            if motifs.get(scene["scene_id"])]
+        elif concept and not concept.get("procedural_visuals_acceptable", False):
+            # No sourced facts to depict, but the concept still needs real
+            # imagery: reusing one fixed base prompt across every scene is
+            # exactly the generic/repetitive-visuals failure this branch
+            # exists to avoid.
+            pass
+
+        # A direction is compiled whenever this video has more than one shot,
+        # including for procedural plates: the plate generator varies what it
+        # draws per distinct prompt, so one prompt repeated across two hundred
+        # scenes is two hundred copies of the same picture. The single-shot
+        # case - the deliberately held frame - still gets no direction.
+        if concept and (environments is not None
+                        or not concept.get("procedural_visuals_acceptable", False)
+                        or (len(board["scenes"]) > 1 and not holds_one_frame(concept))):
+            direction = _visual_direction(
+                video_id, metadata, concept, board, spec_raw,
+                environments=environments, force=force)
+            if direction and visual_direction.is_usable(direction):
+                style = generation.Router().prompt_style(
+                    generation.GenerationRequest(prompt="", require_depicted=True))
+                prompts, negative, plan = visual_direction.compile_scene_prompts(
+                    direction, board["scenes"], style=style,
+                    base_negative=(metadata.get("visual_plan") or {}).get("negative_prompt"),
+                    max_distinct=distinct_image_budget())
+                by_slug = {env["slug"]: env for env in direction["environments"]}
+                intents = {entry["scene_id"]: by_slug[entry["environment"]]["description"]
+                           for entry in plan}
+                storyboard_mod.apply_scene_prompts(board, prompts, negative, intents)
+                board["visual_direction"] = direction
+                board["shot_plan"] = plan
+                board["prompt_style"] = style
+                board["scene_motifs"] = intents
+                log.info("Visual direction: %d environment(s), %d distinct "
+                         "picture(s) across %d scene(s), %r prompt dialect",
+                         len(direction["environments"]),
+                         visual_direction.distinct_prompt_count(prompts),
+                         len(board["scenes"]), style)
+                if direction.get("slop_removed"):
+                    log.info("  stripped generic prompt vocabulary: %s",
+                             ", ".join(direction["slop_removed"]))
+            elif motifs:
+                # No usable direction, but facts-grounded motifs still beat
+                # one prompt repeated for every scene.
+                storyboard_mod.apply_scene_motifs(board, motifs)
+                board["scene_motifs"] = motifs
+            else:
+                log.warning("No visual direction and no motifs: every scene "
+                            "will reuse this project's base prompt.")
 
         if existing and not force:
             by_digest = {
@@ -857,6 +1627,7 @@ def run_storyboard(video_id, niche=None, scene_count=None, source_width=None,
         metadata["scenes"] = storyboard_mod.scene_summary(board)
         metadata.setdefault("status", {})["storyboard"] = "OK"
         save_metadata(pdir, metadata)
+        write_research_influence(video_id, pdir, directives, board)
 
         log.info("Storyboard: %d scene(s), %.2fs timeline (target %.2fs)",
                  len(board["scenes"]), board["timeline_seconds"],
@@ -868,6 +1639,89 @@ def run_storyboard(video_id, niche=None, scene_count=None, source_width=None,
         log.info("Written: %s", path)
         log.info("Now run: ./content-machine scenes %s", video_id)
         return StageResult(True, 0, "storyboard written", {"path": str(path)})
+
+
+# How many genuinely different pictures one video pays for, however many
+# shots it is cut into. Tunable because the right number depends on what is
+# generating them: a GPU making 200 distinct plates is an afternoon, the
+# procedural generator making 40 is a minute.
+DEFAULT_DISTINCT_IMAGE_BUDGET = 40
+
+
+def distinct_image_budget():
+    raw = os.environ.get("CM_DISTINCT_IMAGE_BUDGET", "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_DISTINCT_IMAGE_BUDGET
+    return max(value, 1)
+
+
+def write_research_influence(video_id, pdir, directives, board=None):
+    """Record what sourced research actually changed about this production.
+
+    Three separate things, deliberately not collapsed: what research
+    *suggested* (every directive, with its evidence), what the build
+    *applied* (which is smaller - a directive can be bounded or overridden),
+    and what it could not reach. The dashboard shows this so "research-driven"
+    is a claim a person can check rather than one the pipeline makes about
+    itself.
+    """
+    applied = dict((board or {}).get("research_applied") or {})
+    record = {
+        "video_id": video_id,
+        "recorded_utc": utc_now(),
+        # Whether research ran at all. "Research found nothing that changes a
+        # parameter" and "research never ran" are different states, and a
+        # reader who cannot tell them apart will believe the first when the
+        # second is true.
+        "researched": research.load_findings(video_id) is not None,
+        "findings_researched_utc": (directives or {}).get("findings_researched_utc"),
+        "decisions": (directives or {}).get("decisions", []),
+        "applied": applied,
+        "suggested_not_applied": sorted(
+            set((directives or {}).get("values", {})) - set(applied)
+            - {"scene_count", "typical_duration_seconds"}),
+        "scene_count": len((board or {}).get("scenes") or []) or None,
+        "timeline_seconds": (board or {}).get("timeline_seconds"),
+    }
+    (pdir / "research_influence.json").write_text(json.dumps(record, indent=2) + "\n")
+    return record
+
+def _visual_direction(video_id, metadata, concept, board, spec_raw,
+                      direction=None, environments=None, force=False):
+    """This project's visual direction document, cached in its metadata.
+
+    One LLM call per video, reused on every later storyboard rebuild unless
+    forced. Fail-soft in one direction only: with no direction the caller
+    still has the old motif path, so the failure mode is "less directed",
+    never "no storyboard" and never an invented environment.
+
+    ``environments`` overrides the document's own settings when the concept
+    is fact-grounded: what those scenes depict was decided by sourced
+    research, and the direction supplies only the identity around them.
+    """
+    visual_plan = metadata.setdefault("visual_plan", {})
+    if direction is None and not force:
+        direction = visual_plan.get("direction")
+    if direction is None:
+        try:
+            direction = creative_mod.generate_visual_direction(
+                concept, len(board["scenes"]),
+                brief={"image_prompt": visual_plan.get("prompt")},
+                research_brief=research.load_brief(video_id),
+                findings=research.load_findings(video_id),
+                target_seconds=spec_raw.get("duration_seconds"))
+        except Exception as e:  # noqa: BLE001 - recorded, never fatal
+            log.warning("Visual direction pass unavailable (%s); falling back "
+                        "to the project's base prompt.", e)
+            return None
+        visual_plan["direction"] = direction
+    if environments:
+        direction = dict(direction, environments=[
+            visual_direction.sanitize_direction({"environments": environments})
+            ["environments"]][0])
+    return direction
 
 
 def cmd_storyboard(args):
@@ -909,15 +1763,27 @@ def run_scenes(video_id, force=False, depicted=False):
         router = generation.Router()
         scene_dir = pdir / "images"
         scene_dir.mkdir(parents=True, exist_ok=True)
+        quality_attempts = _scene_quality_attempts()
 
         generated, reused, failed, queued = 0, 0, [], []
         providers_used = set()
         any_abstract = False
+        # Two scenes deliberately assigned the same environment share a
+        # request digest, so the first render satisfies both. Serving the
+        # second from this map (rather than from the job store a moment
+        # later) keeps the "reused" count honest: it was one generation.
+        generated_by_digest = {}
         for scene in board["scenes"]:
             if scene.get("image") and not force:
                 reused += 1
                 continue
             request = storyboard_mod.scene_request(scene, require_depicted=require_depicted)
+            shared = generated_by_digest.get(scene["generation"]["request_digest"])
+            if shared:
+                scene["image"] = shared["image"]
+                scene["generation"].update(shared["generation"])
+                reused += 1
+                continue
             try:
                 job = router.generate(request, scene_dir)
             except generation.GenerationError as e:
@@ -929,7 +1795,11 @@ def run_scenes(video_id, force=False, depicted=False):
                 if remote:
                     scene.setdefault("generation", {}).update({
                         "job_id": remote["job_id"], "remote_state": remote["state"]})
-                    queued.append(remote)
+                    blocked = _remote_job_blocked(remote)
+                    if blocked:
+                        failed.append((scene["scene_id"], blocked))
+                    else:
+                        queued.append(remote)
                 else:
                     failed.append((scene["scene_id"], str(e)))
                 continue
@@ -938,6 +1808,42 @@ def run_scenes(video_id, force=False, depicted=False):
                 failed.append((scene["scene_id"], "provider returned no assets"))
                 continue
             asset = Path(assets[0])
+
+            # Look at what came back before accepting it. A flat fill or a
+            # black frame is not a picture, and an unattended run that keeps
+            # the first asset regardless is the reason "the pipeline
+            # succeeded" and "the video is watchable" drifted apart. A
+            # re-roll is a new seed, so it is a genuinely different image
+            # rather than the same request repeated.
+            assessment = qc.assess_image(asset)
+            attempt = 1
+            while assessment["verdict"] == "BLOCKED" and attempt < quality_attempts:
+                log.warning("%s attempt %d rejected: %s", scene["scene_id"], attempt,
+                            "; ".join(f["detail"] for f in assessment["findings"]
+                                      if f["severity"] == "block"))
+                request.seed = request.seed + _SCENE_RESEED_STEP * attempt
+                try:
+                    job = router.generate(request, scene_dir)
+                except generation.GenerationError as e:
+                    log.warning("%s re-roll could not be generated: %s",
+                                scene["scene_id"], e)
+                    break
+                retry_assets = job.get("assets") or []
+                if not retry_assets:
+                    break
+                asset = Path(retry_assets[0])
+                assessment = qc.assess_image(asset)
+                attempt += 1
+            assessment["attempts"] = attempt
+            if assessment["verdict"] == "BLOCKED":
+                failed.append((scene["scene_id"],
+                               "; ".join(f["detail"] for f in assessment["findings"]
+                                         if f["severity"] == "block")
+                               + f" (after {attempt} attempt(s))"))
+                continue
+            if attempt > 1:
+                log.info("%s accepted on attempt %d", scene["scene_id"], attempt)
+
             try:
                 relative = asset.relative_to(pdir)
             except ValueError:
@@ -949,11 +1855,28 @@ def run_scenes(video_id, force=False, depicted=False):
                 "provider_job_id": job.get("provider_job_id"),
                 "generated_utc": job.get("completed_at"),
                 "produces_depicted": job.get("produces_depicted", False),
+                "seed": request.seed,
+                "quality": assessment,
             })
+            generated_by_digest[scene["generation"]["request_digest"]] = {
+                "image": scene["image"], "generation": dict(scene["generation"])}
             providers_used.add(job["provider"])
             if not job.get("produces_depicted", False):
                 any_abstract = True
             generated += 1
+
+        # Two scenes that asked for different pictures and got the same
+        # one is a variation failure the reviewer would otherwise only find
+        # by looking. Advisory, not fatal: it is a matter of degree, and
+        # the deliberate-reuse case is excluded by request digest.
+        duplicates = qc.duplicate_scene_findings(board["scenes"], pdir)
+        board["image_quality"] = {
+            "checked_utc": utc_now(),
+            "attempts_allowed": quality_attempts,
+            "duplicate_findings": duplicates,
+        }
+        for finding in duplicates:
+            log.warning("Scene variation: %s", finding["detail"])
 
         storyboard_mod.save(video_id, board)
         metadata["scenes"] = storyboard_mod.scene_summary(board)
@@ -967,6 +1890,11 @@ def run_scenes(video_id, force=False, depicted=False):
             images_prov.update({
                 "provider": ", ".join(sorted(providers_used)),
                 "scene_job_ids": scene_jobs,
+                # The assets the deliverable is built from, named
+                # explicitly so a retry or an abandoned earlier render
+                # sitting in images/ is never mistaken for one of them.
+                "scene_images": sorted(
+                    {s["image"] for s in board["scenes"] if s.get("image")}),
                 "notes": f"{len(scene_jobs)} scene image(s) via "
                          f"{', '.join(sorted(providers_used))}",
                 "source_generation": {
@@ -1030,9 +1958,36 @@ def _defer_to_gpu_worker(request, out_dir, video_id, label=None):
         log.warning("could not queue for the GPU worker: %s", e)
         return None
     view = worker.job_view(job)
-    log.info("queued for the GPU worker: job %s (%s)", view["job_id"],
-             view.get("wait_reason") or view["state"])
+    if view["state"] in worker.REQUEUABLE:
+        log.warning("GPU job %s already exists and is %s - not re-queued: %s",
+                    view["job_id"], view["state"], _remote_job_blocked(view))
+    else:
+        log.info("queued for the GPU worker: job %s (%s)", view["job_id"],
+                 view.get("wait_reason") or view["state"])
     return view
+
+
+def _remote_job_blocked(view):
+    """Why an existing remote job cannot deliver, or None while it still can.
+
+    ``worker.enqueue`` is idempotent on the digest, so a stage that asks
+    again for a render whose job already FAILED (or was CANCELLED) gets that
+    record back. Treating it as "queued" would report a scene as on its way
+    when nothing will ever move it; treating it as a stage failure that
+    names the requeue action keeps the decision to try again explicit - an
+    operator's, in the CLI or the Control Center - rather than a silent
+    retry every time Produce runs.
+    """
+    import worker
+
+    if not view or view["state"] not in worker.REQUEUABLE:
+        return None
+    category = view.get("failure_category")
+    why = view.get("error") or view["state"].lower()
+    tag = f" [{category}]" if category else ""
+    return (f"GPU job {view['job_id']} is {view['state']}{tag}: {why} - "
+            f"requeue it (./content-machine worker requeue {view['job_id']}, "
+            "or Retry in the Control Center) and re-run")
 
 
 def _waiting_for_gpu_result(jobs, stage, extra=None):
@@ -1092,6 +2047,59 @@ def record_visual_grade(video_id, reviewer, production_grade, notes=""):
         return dict(prov["production_grade_claim"], production_grade=production_grade)
 
 
+def record_audio_grade(video_id, reviewer, production_grade, notes=""):
+    """A human's explicit claim about the project's audio.
+
+    The counterpart to ``record_visual_grade``, and the only way a track
+    whose source cannot be production-grade (see ``route_audio``) reaches
+    review. It is deliberately not required for every project: where a
+    synthesised texture *is* the product, the artefact is exactly what was
+    specified and measurable, so demanding a ceremonial claim would teach
+    people to click through one. It is required precisely where a machine
+    cannot answer the question - whether synthesised music is music anyone
+    would want to listen to.
+
+    The claim is bound to the audio plan that was rendered
+    (``plan_digest``), so re-rendering the same plan keeps it and changing
+    the plan drops it: nobody is recorded as having approved audio they
+    never heard.
+    """
+    if production_grade not in (True, False):
+        raise ReviewDecisionError("production_grade must be true or false")
+    if not reviewer or not reviewer.strip():
+        raise ReviewDecisionError("reviewer is required and must be a human identity")
+    with project_lock(video_id):
+        pdir = project_dir(video_id)
+        meta_path = pdir / "metadata.json"
+        if not meta_path.is_file():
+            raise ReviewDecisionError(f"not a project: {video_id}")
+        metadata = json.loads(meta_path.read_text())
+        tracks = list_assets(pdir / "audio", SUPPORTED_AUDIO_EXTENSIONS)
+        if production_grade and not tracks:
+            raise ReviewDecisionError(
+                "cannot claim production-grade audio: the project has no audio track")
+        prov = metadata.setdefault("provenance", {}).setdefault("audio", {})
+        prov["production_grade"] = production_grade
+        prov["graded_by"] = reviewer
+        prov["graded_utc"] = utc_now()
+        prov["grade_notes"] = notes or ""
+        save_metadata(pdir, metadata)
+        return {"production_grade": production_grade, "reviewer": reviewer,
+                "utc": prov["graded_utc"], "notes": prov["grade_notes"]}
+
+
+def cmd_audio_grade(args):
+    try:
+        entry = record_audio_grade(args.video_id, args.reviewer,
+                                   args.grade == "true", notes=args.notes or "")
+    except ReviewDecisionError as e:
+        log.error("%s", e)
+        return 1
+    log.info("provenance.audio.production_grade=%s recorded by %s",
+             entry["production_grade"], entry["reviewer"])
+    return 0
+
+
 def cmd_visual_grade(args):
     try:
         entry = record_visual_grade(args.video_id, args.reviewer,
@@ -1102,6 +2110,26 @@ def cmd_visual_grade(args):
     log.info("provenance.images.production_grade=%s recorded by %s",
              entry["production_grade"], entry["reviewer"])
     return 0
+
+
+# A re-roll must land somewhere genuinely different in the model's latent
+# space, not one seed over, and must stay deterministic so a rerun of the
+# same project reproduces the same images. A large fixed prime step does
+# both.
+_SCENE_RESEED_STEP = 7919
+
+
+def _scene_quality_attempts():
+    """How many times a scene may be generated before giving up on it.
+
+    One by default plus one re-roll: enough to shake off a genuinely bad
+    draw, few enough that a systematically broken prompt fails fast instead
+    of burning GPU time proving the same point ten times.
+    """
+    try:
+        return max(1, int(os.environ.get("SCENE_QUALITY_ATTEMPTS", "2")))
+    except ValueError:
+        return 2
 
 
 def cmd_scenes(args):
@@ -1145,12 +2173,38 @@ def attach_log_file(pdir):
     return log_path, handler
 
 
-def extract_thumbnails(video_path, thumb_dir, duration):
+def thumbnail_timestamps(board, duration):
+    """Where to grab thumbnail candidates from.
+
+    Fixed fractions of the runtime are only a proxy for "a different
+    picture". Now that a deliberately repeated environment is one render
+    reused across several scenes, 0.25/0.5/0.75 can land on the same image
+    three times and hand the reviewer three copies of one thumbnail. Where a
+    storyboard exists, sample the middle of the first scene showing each
+    distinct image instead, so every candidate is a genuinely different
+    frame; fall back to the fractions when there is no storyboard to read.
+    """
+    scenes = (board or {}).get("scenes") or []
+    stamps = []
+    seen = set()
+    for scene, start in zip(scenes, motion_mod.scene_start_times(scenes)):
+        image = scene.get("image")
+        if not image or image in seen:
+            continue
+        seen.add(image)
+        middle = start + float(scene.get("duration_seconds") or 0.0) / 2.0
+        if 0.0 <= middle < duration:
+            stamps.append(round(middle, 3))
+        if len(stamps) >= MAX_THUMBNAIL_CANDIDATES:
+            break
+    return stamps or [max(duration * p, 0.0) for p in THUMBNAIL_POSITIONS]
+
+
+def extract_thumbnails(video_path, thumb_dir, duration, board=None):
     """Pull candidate thumbnails from the finished video (local, no AI)."""
     candidates = []
-    for index, position in enumerate(THUMBNAIL_POSITIONS, start=1):
+    for index, timestamp in enumerate(thumbnail_timestamps(board, duration), start=1):
         out = thumb_dir / f"candidate_{index}.jpg"
-        timestamp = max(duration * position, 0.0)
         result = subprocess.run([
             "ffmpeg", "-y", "-v", "error", "-ss", f"{timestamp:.3f}",
             "-i", str(video_path), "-frames:v", "1",
@@ -1172,14 +2226,62 @@ def _load_concept(concept_id):
 
     Intentionally forgiving: concepts.json is optional context, and a
     project without a linked concept skips the drift check entirely.
+    Concepts derived from an operator goal live in experiments/derived/ and
+    are looked up there first - they are per-production, so they would only
+    pollute the curated catalogue.
     """
-    if not CONCEPTS_PATH.is_file() or not concept_id:
+    if not concept_id:
+        return None
+    derived = goal_mod.load_derived_concept(concept_id)
+    if derived is not None:
+        return derived
+    if not CONCEPTS_PATH.is_file():
         return None
     try:
         data = json.loads(CONCEPTS_PATH.read_text())
     except (json.JSONDecodeError, OSError):
         return None
     return next((c for c in data.get("concepts", []) if c.get("id") == concept_id), None)
+
+
+def scene_referenced_images(pdir):
+    """The image files this project's storyboard actually uses, or ``None``
+    when there is no storyboard to say.
+
+    ``images/`` accumulates more than the deliverable: a failed attempt that
+    still wrote a file, an image from an earlier `visuals` run, a scene
+    regenerated under a new prompt. Those are working residue, not assets
+    anyone chose to publish, and treating them as part of the deliverable
+    both misreports what was made and lets an abandoned placeholder block a
+    project whose real scenes are fine.
+    """
+    board = storyboard_mod.load(pdir.name)
+    if not board or not board.get("scenes"):
+        # A catalog import already carries an explicit edit in the render spec.
+        # The gate must inspect those sources even without a generated storyboard.
+        spec_path = pdir / "video_spec.json"
+        board = json.loads(spec_path.read_text()) if spec_path.is_file() else {}
+        if not board.get("scenes"):
+            return None
+    referenced = []
+    for scene in board["scenes"]:
+        rel = scene.get("image")
+        if not rel:
+            continue
+        path = (pdir / rel) if not Path(rel).is_absolute() else Path(rel)
+        if path.is_file() and path not in referenced:
+            referenced.append(path)
+    return referenced
+
+
+def unreferenced_images(pdir):
+    """Image files on disk that no storyboard scene points at."""
+    referenced = scene_referenced_images(pdir)
+    if referenced is None:
+        return []
+    chosen = {p.resolve() for p in referenced}
+    return sorted(p for p in list_assets(pdir / "images", SUPPORTED_IMAGE_EXTENSIONS)
+                  if p.resolve() not in chosen)
 
 
 def _visual_blockers(pdir, metadata, images_provenance):
@@ -1223,9 +2325,14 @@ def _visual_blockers(pdir, metadata, images_provenance):
     if concept.get("procedural_visuals_acceptable", False):
         return blocking
 
-    # The concept demands depicted imagery. Inspect the assets themselves.
+    # The concept demands depicted imagery. Inspect the assets themselves -
+    # the ones the deliverable is actually built from, not every file that
+    # has ever landed in images/.
     offenders = []
-    for image in sorted(list_assets(pdir / "images", SUPPORTED_IMAGE_EXTENSIONS)):
+    candidates = scene_referenced_images(pdir)
+    if candidates is None:
+        candidates = list_assets(pdir / "images", SUPPORTED_IMAGE_EXTENSIONS)
+    for image in sorted(candidates):
         kind, detail = make_visuals.classify(image)
         if kind in ("procedural", "flat"):
             offenders.append(f"{image.name} ({kind}: {detail})")
@@ -1237,6 +2344,70 @@ def _visual_blockers(pdir, metadata, images_provenance):
     return blocking
 
 
+def _creative_quality_blockers(pdir, storyboard, audio_manifest):
+    """Detected creative-quality defects that must gate review, kept
+    distinguishable from technical validity (``qc_status`` above).
+
+    A technically valid render (correct codec, duration, decodable assets)
+    can still be an obviously unfinished product - one fixed image prompt
+    reused for every scene, or a single flat unfaded audio layer. Neither is
+    a QC/codec failure, so neither belongs in ``qc_status``, but both must
+    still block READY_FOR_REVIEW rather than sit unread in a nested report
+    while an unrelated, easily-missed administrative blocker (no
+    production-grade claim yet) is the only thing standing in the way.
+    Only signals with no plausible legitimate reading are used here (see
+    ``qc.visual_diversity_warnings``'s docstring on trusting a deliberate,
+    reasoned low environment count) - this must not veto a genuinely
+    excellent minimal design, only catch the case nothing designed it at all.
+    """
+    blocking = []
+    if storyboard is None:
+        storyboard_path = pdir / "storyboard.json"
+        if storyboard_path.is_file():
+            storyboard = json.loads(storyboard_path.read_text())
+    if storyboard:
+        scenes = storyboard.get("scenes") or []
+        motifs_recorded = bool(storyboard.get("scene_motifs"))
+        blocking.extend(qc.visual_diversity_warnings(scenes, motifs_recorded))
+
+    if audio_manifest:
+        blocking.extend(audio_manifest.get("quality", {}).get("warnings", []))
+    return blocking
+
+
+def _audio_blockers(pdir, metadata, audio_manifest):
+    """Gate audio that a machine cannot vouch for out of READY_FOR_REVIEW.
+
+    Two questions, and only the second one needs a person:
+
+    1. **Rights** - answerable from the manifest, and already fatal
+       elsewhere in this gate.
+    2. **Is it actually good?** - not answerable here at all. Where the
+       routing chose a source that cannot be production-grade (synthesised
+       music standing in for music), an explicit human judgement is
+       required and its absence blocks, exactly as an absent
+       production-grade claim blocks the visuals. Where the synthesised
+       signal *is* the product - the brown-noise bed a sleep video ships -
+       no such stand-in exists, so nothing is demanded.
+    """
+    audio_prov = (metadata.get("provenance") or {}).get("audio") or {}
+    claimed = audio_prov.get("production_grade")
+    if claimed is False:
+        return [f"audio is not production-grade: "
+                f"{audio_prov.get('grade_notes') or 'a human listened and said so'}"]
+    if claimed is True:
+        return []
+    if audio_prov.get("production_grade_capable") is False:
+        direction = (metadata.get("audio_plan") or {}).get("direction") or {}
+        chosen = direction.get("chosen") or {}
+        return [
+            f"audio is {chosen.get('source', 'a synthesised stand-in')} standing in "
+            f"for {direction.get('kind', 'music')}, which no check here can judge: "
+            "a human has to listen and record the verdict "
+            "(./content-machine audio-grade <id> --reviewer <you> --grade true|false)"]
+    return []
+
+
 def gate_blockers(pdir, metadata, qc_status, qc_failures, has_thumbnail,
                   audio_manifest, storyboard=None, storyboard_report=None):
     """Every rule standing between a rendered project and READY_FOR_REVIEW.
@@ -1245,7 +2416,7 @@ def gate_blockers(pdir, metadata, qc_status, qc_failures, has_thumbnail,
     implementation is the point: a second copy would drift from this one,
     which is precisely the failure this module now guards against.
     """
-    blocking = []
+    blocking = _ingestion_problems(metadata)
     if qc_status != "PASS":
         blocking.append(f"QC failed: {', '.join(qc_failures)}")
     title = metadata.get("selected_title") or ""
@@ -1258,6 +2429,10 @@ def gate_blockers(pdir, metadata, qc_status, qc_failures, has_thumbnail,
 
     images_provenance = metadata.get("provenance", {}).get("images", {})
     blocking.extend(_visual_blockers(pdir, metadata, images_provenance))
+    blocking.extend(_audio_blockers(pdir, metadata, audio_manifest))
+    blocking.extend(_creative_quality_blockers(pdir, storyboard, audio_manifest))
+
+    blocking.extend(_research_blockers(pdir))
 
     # Audio rights gate: an unclearable track must never reach review.
     if audio_manifest and not audio_manifest.get("commercial_use_cleared", False):
@@ -1265,6 +2440,26 @@ def gate_blockers(pdir, metadata, qc_status, qc_failures, has_thumbnail,
                    if not l.get("commercial_use")]
         blocking.append(f"audio not cleared for commercial use: {unclear}")
     return blocking
+
+
+def _research_blockers(pdir):
+    """A production that was meant to be researched and was not.
+
+    Scoped to projects that carry a research brief, which is every
+    production started from a goal. "Nobody could research it" is not "it
+    needed no research": the video can be produced and previewed, but it
+    cannot pass a gate that says this is a researched production until the
+    research actually ran. Running it is always available from the
+    dashboard; this is what makes not running it visible.
+    """
+    video_id = pdir.name
+    if research.load_brief(video_id) is None:
+        return []
+    if research.load_findings(video_id) is not None:
+        return []
+    return ["research has not run for this production (it carries a research "
+            "brief but no findings). Run research, or remove the brief if "
+            "this video is genuinely not researched."]
 
 
 def gate_digest(pdir, metadata, video_path):
@@ -1288,6 +2483,10 @@ def gate_digest(pdir, metadata, video_path):
         "concept_id": concept_id,
         "concept_procedural_ok": (concept or {}).get("procedural_visuals_acceptable"),
         "audio_cleared": audio_manifest.get("commercial_use_cleared"),
+        "provenance_audio": {k: v for k, v in
+                             (metadata.get("provenance", {}).get("audio", {}) or {}).items()
+                             if k in ("production_grade", "production_grade_capable",
+                                      "source", "plan_digest")},
         "spec": json.loads(spec_path.read_text()) if spec_path.is_file() else None,
         "images": sorted(
             (p.name, sha256(p))
@@ -1297,6 +2496,12 @@ def gate_digest(pdir, metadata, video_path):
             for p in list_assets(pdir / "audio", SUPPORTED_AUDIO_EXTENSIONS)),
         "video": sha256(video_path) if video_path.is_file() else None,
     }
+    if metadata.get("ingestion"):
+        inputs["ingestion"] = metadata["ingestion"]
+        inputs["imported_bytes"] = [
+            (asset["selected_path"], sha256(Path(asset["selected_path"]))
+             if Path(asset["selected_path"]).is_file() else None)
+            for asset in metadata["ingestion"].get("inputs", [])]
     blob = json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(blob).hexdigest()
 
@@ -1404,7 +2609,64 @@ def project_summary(video_id):
         "niche": experiment.get("niche"),
         "overall_status": status.get("overall", "UNKNOWN"),
         "created_utc": metadata.get("created_utc"),
+        # Archived projects stay on disk, in every read model and in the
+        # Review Center's history; they only leave the active views. Nothing
+        # here deletes - permanent deletion is the operator's own act.
+        "archived": bool(metadata.get("archived")),
+        # One servable image so a library of productions can be browsed by
+        # eye rather than by id. A thumbnail if the render produced one,
+        # else the first scene image, else nothing - no placeholder is
+        # invented, because "no picture yet" is a true and useful answer.
+        "preview_image": _preview_image(pdir),
     }
+
+
+def _preview_image(pdir):
+    """A project-relative path to the best single still, or None.
+
+    Deliberately prefers the extracted thumbnail: it comes from the finished
+    render, so it shows what the video actually looks like rather than one
+    source asset.
+    """
+    # output/editable-media is where an owner-media assembly stages its
+    # project-local copies, so a catalog-imported production has a picture
+    # too rather than looking empty.
+    for directory in ("thumbnail", "images", "output/editable-media"):
+        found = list_assets(pdir / directory, SUPPORTED_IMAGE_EXTENSIONS)
+        if found:
+            return f"{directory}/{found[0].name}"
+    return None
+
+
+def set_archived(video_id, archived, actor, reason=""):
+    """Mark a project archived (or restore it). Never deletes anything.
+
+    Archiving is how development residue - test projects, abandoned
+    experiments, demos - leaves the active product experience without any
+    file being removed: ``metadata.archived`` records who did it, when and
+    why, and every list that serves an operator's active view filters on
+    it. Restoring is the same act in reverse. Like a review decision it
+    needs a human-attributable actor; a system default is refused.
+    """
+    actor = (actor or "").strip()
+    if not actor:
+        raise ProjectError(["archiving needs a human-attributable actor"])
+    with project_lock(video_id):
+        pdir = project_dir(video_id)
+        meta_path = pdir / "metadata.json"
+        if not meta_path.is_file():
+            raise ProjectError([f"no such project: {video_id}"])
+        metadata = json.loads(meta_path.read_text())
+        if archived:
+            metadata["archived"] = {"at": utc_now(), "by": actor,
+                                    "reason": (reason or "").strip()}
+        else:
+            metadata.pop("archived", None)
+        metadata.setdefault("history", []).append({
+            "utc": utc_now(), "event": "archived" if archived else "restored",
+            "by": actor, "reason": (reason or "").strip()})
+        save_metadata(pdir, metadata)
+    return project_summary(video_id)
 
 
 # The only project subdirectories any adapter may hand a file out of. Root
@@ -1561,6 +2823,25 @@ def project_assets(video_id):
         key=lambda e: e["modified_utc"], reverse=True)[:10]
 
     visual_plan = metadata.get("visual_plan") or {}
+    audio_prov = (metadata.get("provenance") or {}).get("audio") or {}
+    audio_direction = (metadata.get("audio_plan") or {}).get("direction") or {}
+    editing = None
+    kdenlive_record = (metadata.get("editing") or {}).get("kdenlive")
+    if kdenlive_record:
+        project_file = pdir / kdenlive_record.get("project", "")
+        render_file = pdir / kdenlive_record.get("render", "") if kdenlive_record.get("render") else None
+        package_record = kdenlive_record.get("package") or {}
+        archive_file = pdir / package_record["archive"] if package_record.get("archive") else None
+        editing = {
+            "kdenlive": dict(kdenlive_record),
+            "project": _file_entry(pdir, project_file) if project_file.is_file() else None,
+            "render": _file_entry(pdir, render_file) if render_file and render_file.is_file() else None,
+            # The portable handoff: the project, its project-local media and
+            # the provenance manifest in one file. Listed as an asset so the
+            # person reviewing the video can actually take the edit away.
+            "archive": (_file_entry(pdir, archive_file)
+                        if archive_file and archive_file.is_file() else None),
+        }
     return {
         "video_id": video_id,
         "video": video,
@@ -1572,6 +2853,11 @@ def project_assets(video_id):
             "production_grade": images_prov.get("production_grade"),
             "production_grade_claim": images_prov.get("production_grade_claim"),
             "notes": images_prov.get("notes"),
+            # The deliverable set, not everything in images/: a retry that
+            # wrote a file is residue, and a reviewer should see which
+            # pictures the video actually uses.
+            "scene_images": images_prov.get("scene_images") or [],
+            "unreferenced_count": len(unreferenced_images(pdir)),
         },
         "visual_plan": {
             "prompt": visual_plan.get("prompt"),
@@ -1579,9 +2865,28 @@ def project_assets(video_id):
             "style": visual_plan.get("style"),
         },
         "audio": audio,
+        "audio_provenance": {
+            "kind": audio_prov.get("kind"),
+            "source": audio_prov.get("source"),
+            "production_grade_capable": audio_prov.get("production_grade_capable"),
+            "production_grade": audio_prov.get("production_grade"),
+            "graded_by": audio_prov.get("graded_by"),
+            "graded_utc": audio_prov.get("graded_utc"),
+            "grade_notes": audio_prov.get("grade_notes"),
+            "kind_reasoning": audio_direction.get("kind_reasoning"),
+            "chosen_detail": (audio_direction.get("chosen") or {}).get("detail"),
+            "considered": [
+                {"source": c.get("source"), "available": c.get("available"),
+                 "production_grade_capable": c.get("production_grade_capable"),
+                 "rights": c.get("rights"), "cost": c.get("cost"),
+                 "detail": c.get("detail")}
+                for c in audio_direction.get("considered") or []
+            ],
+        },
         "qc": qc,
         "storyboard": storyboard,
         "package": package,
+        "editing": editing,
         "logs": logs,
     }
 
@@ -1712,19 +3017,9 @@ def run_pipeline(video_id):
                               ", ".join(storyboard_report["failures"]))
                     return StageResult(False, 1, "storyboard QC failed", {"failures": storyboard_report["failures"]})
                 metadata["status"]["storyboard_qc"] = storyboard_report["status"]
-                raw_with_scenes = json.loads((pdir / "video_spec.json").read_text())
-                raw_with_scenes["scenes"] = [
-                    {
-                        "scene_id": scene["scene_id"],
-                        "duration_seconds": scene["duration_seconds"],
-                        "image": scene["image"],
-                        "motion": scene.get("motion") or {},
-                        "transition": scene.get("transition") or {},
-                    }
-                    for scene in board["scenes"]
-                ]
                 try:
-                    spec = render.validate_and_normalize(raw_with_scenes, base_dir=pdir)
+                    spec = storyboard_scene_spec(
+                        pdir, json.loads((pdir / "video_spec.json").read_text()), board)
                 except render.SpecValidationError as e:
                     metadata["status"]["render"] = "FAILED"
                     metadata["status"]["overall"] = "FAILED"
@@ -1739,9 +3034,8 @@ def run_pipeline(video_id):
             output_path = pdir / "output" / f"{video_id}.mp4"
             output_path.parent.mkdir(parents=True, exist_ok=True)
             log.info("=== Stage 2/5: render ===")
-            cmd = render.build_ffmpeg_command(spec, output_path)
             try:
-                render.run_ffmpeg(cmd)
+                render.render(spec, output_path)
             except SystemExit:
                 metadata["status"]["render"] = "FAILED"
                 metadata["status"]["overall"] = "FAILED"
@@ -1765,7 +3059,7 @@ def run_pipeline(video_id):
             # two scenes, so a scene render is shorter than the sum of its parts.
             finished_seconds = spec.get("timeline_seconds") or spec["duration_seconds"]
             candidates = extract_thumbnails(
-                output_path, pdir / "thumbnail", finished_seconds)
+                output_path, pdir / "thumbnail", finished_seconds, board=board)
             log.info("Extracted %d thumbnail candidate(s)", len(candidates))
 
             # --- Stage 4: QC ------------------------------------------------------
@@ -1828,12 +3122,22 @@ def run_pipeline(video_id):
                 "thumbnail": {
                     "primary": str(candidates[0].relative_to(ROOT)) if candidates else None,
                     "candidates": [str(c.relative_to(ROOT)) for c in candidates],
+                    # The concept's own thumbnail direction, carried through so
+                    # the person choosing a candidate can see what it was meant
+                    # to say. Nothing here picks for them.
+                    "concept": metadata.get("thumbnail_concept", ""),
                 },
                 "title": title,
                 "description": metadata.get("description", ""),
                 "tags": metadata.get("tags", []),
                 "concept": metadata.get("concept", ""),
                 "audience": metadata.get("audience", ""),
+                "source_assets": (metadata.get("ingestion") or {}).get("inputs", []),
+                "source_attributions_required": sorted({
+                    asset["rights"]["attribution_text"]
+                    for asset in (metadata.get("ingestion") or {}).get("inputs", [])
+                    if (asset.get("rights") or {}).get("attribution_required")
+                    and (asset.get("rights") or {}).get("attribution_text")}),
                 "storyboard": {
                     "scenes": len(board["scenes"]),
                     "timeline_seconds": board["timeline_seconds"],
@@ -1909,20 +3213,80 @@ def cmd_run(args):
     return run_pipeline(args.video_id).exit_code
 
 
+def set_project_duration(video_id, seconds):
+    """Re-target an existing project at a new length. Returns whether it moved.
+
+    The storyboard is dropped when the length changes: it is a plan for a
+    particular runtime, and keeping it would either stretch every shot or
+    leave the video short. The generated images stay - they are reused by
+    request digest, so re-planning costs nothing already paid for.
+    """
+    pdir = project_dir(video_id)
+    spec_path = pdir / "video_spec.json"
+    if not spec_path.is_file():
+        raise ProjectError([f"not a project: {video_id}"])
+    with project_lock(video_id):
+        spec = json.loads(spec_path.read_text())
+        if abs(float(spec.get("duration_seconds") or 0) - float(seconds)) < 0.01:
+            return False
+        spec["duration_seconds"] = float(seconds)
+        spec_path.write_text(json.dumps(spec, indent=2) + "\n")
+        metadata = json.loads((pdir / "metadata.json").read_text())
+        metadata["duration_seconds"] = float(seconds)
+        metadata.setdefault("status", {}).pop("storyboard", None)
+        save_metadata(pdir, metadata)
+        board_path = storyboard_mod.storyboard_path(video_id)
+        if board_path.is_file():
+            board_path.unlink()
+    return True
+
+
 def produce_uses_scenes(video_id, metadata):
     """Whether one-click produce should build a storyboard for this project.
 
-    The auto rule, kept deliberately small and inspectable: a project that
-    already has a storyboard keeps it (so a re-run never silently switches
-    format), and a project with narration gets one (a script is what the
-    storyboard distributes across scenes - that is the whole point of it).
-    Everything else - the long static and slow-drift ambient formats - keeps
-    the image-cycling render, which is the cheap configuration those
-    formats were measured against (see knowledge: Render Throughput).
+    The auto rule, kept deliberately small and inspectable: a storyboard,
+    unless the project is the one shape that genuinely wants a held frame.
+
+    This used to be the other way round - scenes only for narrated projects,
+    image-cycling for everything else - because a scene was a concurrent
+    ffmpeg input and a long video therefore could not have many of them. The
+    piecewise renderer removed that limit, and with it the reason: cycling a
+    handful of plates on a global Ken Burns move is a slideshow, and a
+    half-hour slideshow is not what anyone meant by an ambient video. A
+    storyboard gives every shot its own image, its own move and its own
+    dissolve, which is the difference between an edit and a loop.
+
+    The exception is a concept whose product *is* one held frame - a dark
+    screen behind brown noise. It says so in its own visual direction and in
+    the single-image template it is built from, and nothing here overrides
+    that.
     """
     if storyboard_mod.load(video_id) is not None:
         return True
-    return bool((metadata.get("script") or "").strip())
+    if (metadata.get("script") or "").strip():
+        return True
+    return not holds_one_frame(
+        _load_concept((metadata.get("experiment") or {}).get("concept_id")))
+
+
+# What a deliberately-held frame looks like from the outside: a concept that
+# says in words that nothing moves, or one built from the single-image
+# template. Narrow and inspectable on purpose - inferring it from the niche
+# instead would quietly turn real ambient videos back into slideshows.
+_HELD_FRAME_PHRASES = ("no motion", "dark screen", "static frame",
+                       "unchanging", "single static")
+_HELD_FRAME_TEMPLATE = "long_static_ambient"
+
+
+def holds_one_frame(concept):
+    """Whether this concept's product is one unchanging picture."""
+    if not concept:
+        return False
+    if _HELD_FRAME_TEMPLATE in (concept.get("spec_template") or ""):
+        return True
+    text = " ".join(str(concept.get(k) or "") for k in
+                    ("visual_concept", "content_format")).lower()
+    return any(phrase in text for phrase in _HELD_FRAME_PHRASES)
 
 
 def run_produce(video_id, concept_id=None, duration=None, production_grade_visuals=None,
@@ -1965,8 +3329,19 @@ def run_produce(video_id, concept_id=None, duration=None, production_grade_visua
             return StageResult(False, rc, "scaffold failed")
     else:
         log.info("=== Stage 1/6: concept === reusing existing project %s", video_id)
+        if duration:
+            # Explicitly asked for at a length: this is how an excerpt
+            # becomes the full video. Changing the spec invalidates the
+            # storyboard built for the old length, so it is rebuilt rather
+            # than stretched - a 90-second scene plan is not a 30-minute one
+            # with longer shots.
+            changed = set_project_duration(video_id, float(duration))
+            if changed:
+                log.info("Length set to %.0fs; the scene plan will be rebuilt "
+                         "for it.", float(duration))
 
-    log.info("=== Stage 2/6: research (source-backed; no-op unless the concept requires it) ===")
+    log.info("=== Stage 2/6: research (subject facts if required; brief-driven "
+             "competitor research if a brief exists) ===")
     result = run_research(video_id)
     if not result.ok:
         return result
@@ -2095,6 +3470,17 @@ def record_review_decision(video_id, reviewer, decision, notes="", expected_dige
         return entry
 
 
+def cmd_archive(args):
+    try:
+        summary = set_archived(args.video_id, not args.restore, args.by, reason=args.reason)
+    except ProjectError as e:
+        log.error(str(e))
+        return 1
+    log.info("%s is now %s (nothing was deleted)", summary["video_id"],
+             "archived" if summary["archived"] else "active")
+    return 0
+
+
 def cmd_approve(args):
     try:
         entry = record_review_decision(
@@ -2133,6 +3519,24 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p_import = sub.add_parser("import-media", help="new project from cataloged still images and audio")
+    p_import.add_argument("video_id")
+    p_import.add_argument("--catalog", type=Path, default=media_mod.DEFAULT_CATALOG)
+    p_import.add_argument("--image-id", action="append", required=True, help="repeat in desired sequence order")
+    p_import.add_argument("--audio-id", required=True)
+    p_import.add_argument("--title", required=True)
+    p_import.add_argument("--description", required=True)
+    p_import.add_argument("--duration", type=float)
+    p_import.add_argument("--width", type=int, default=1920)
+    p_import.add_argument("--height", type=int, default=1080)
+    p_import.add_argument("--fps", type=int, default=30)
+    p_import.add_argument("--transition-seconds", type=float, default=0.75)
+    p_import.add_argument("--motion", choices=motion_mod.MOTIONS, default="zoom_in")
+    p_import.add_argument(
+        "--allow-unverified-audio", action="store_true",
+        help="private review bootstrap only; keep the rights gate blocked until the track is verified")
+    p_import.set_defaults(func=cmd_import_media)
 
     p_init = sub.add_parser("init", help="create a project from a folder of images + an audio file")
     p_init.add_argument("video_id")
@@ -2205,6 +3609,15 @@ def main():
     p_grade.add_argument("--notes", default="")
     p_grade.set_defaults(func=cmd_visual_grade)
 
+    p_agrade = sub.add_parser(
+        "audio-grade",
+        help="record a human's production-grade claim for the audio (listen first)")
+    p_agrade.add_argument("video_id")
+    p_agrade.add_argument("grade", choices=("true", "false"))
+    p_agrade.add_argument("--reviewer", required=True, help="a human identity, never a default")
+    p_agrade.add_argument("--notes", default="")
+    p_agrade.set_defaults(func=cmd_audio_grade)
+
     p_story = sub.add_parser(
         "storyboard", help="derive this project's scene plan from its script and format profile")
     p_story.add_argument("video_id")
@@ -2232,6 +3645,14 @@ def main():
     p_run = sub.add_parser("run", help="validate -> render -> thumbnails -> QC -> package")
     p_run.add_argument("video_id")
     p_run.set_defaults(func=cmd_run)
+
+    p_kdenlive = sub.add_parser(
+        "kdenlive", help="build, verify and optionally render an editable Kdenlive project")
+    p_kdenlive.add_argument("video_id")
+    p_kdenlive.add_argument(
+        "--no-render", action="store_true",
+        help="write and verify the editable project without producing a second MP4")
+    p_kdenlive.set_defaults(func=cmd_kdenlive)
 
     p_status = sub.add_parser(
         "status", help="report a project's verdict and whether it still applies")
@@ -2278,6 +3699,16 @@ def main():
         "--expected-digest", dest="expected_digest", required=True,
         help="gate_digest this rejection was based on (see 'status'); a mismatch is refused")
     p_reject.set_defaults(func=cmd_reject)
+
+    p_archive = sub.add_parser(
+        "archive", help="hide a project from active views without deleting anything")
+    p_archive.add_argument("video_id")
+    p_archive.add_argument("--by", required=True,
+                           help="a human-attributable identity - never a service/system default")
+    p_archive.add_argument("--reason", default="")
+    p_archive.add_argument("--restore", action="store_true",
+                           help="put an archived project back in the active views")
+    p_archive.set_defaults(func=cmd_archive)
 
     args = parser.parse_args()
 

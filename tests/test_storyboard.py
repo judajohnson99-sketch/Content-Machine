@@ -105,6 +105,36 @@ class BuildStoryboardTest(unittest.TestCase):
         self.assertNotEqual(digest_a, digest_b)
 
 
+class OneSeedPerPictureTest(unittest.TestCase):
+    """Reuse is keyed on the picture asked for, never on the scene index."""
+
+    def test_scenes_asking_for_the_same_picture_share_a_seed_and_a_digest(self):
+        board = storyboard.build_storyboard("vid-1", metadata(), spec(), scene_count=4)
+        prompts = {s["image_prompt"] for s in board["scenes"]}
+        self.assertEqual(len(prompts), 1, "no category hints: one picture asked for")
+        self.assertEqual(len({s["generation"]["seed"] for s in board["scenes"]}), 1)
+        self.assertEqual(
+            len({s["generation"]["request_digest"] for s in board["scenes"]}), 1)
+
+    def test_the_prompt_carries_no_scene_bookkeeping(self):
+        board = storyboard.build_storyboard("vid-1", metadata(), spec(), scene_count=3)
+        for scene in board["scenes"]:
+            self.assertNotIn("scene ", scene["image_prompt"])
+            self.assertNotIn(scene["section"], scene["image_prompt"])
+
+    def test_distinct_categories_still_get_their_own_seed_and_render(self):
+        profile = {"niche": "test_niche", "observation_count": 2, "confidence": "INFERRED",
+                   "visual_categories": [{"value": "interior"}, {"value": "landscape"}]}
+        board = storyboard.build_storyboard(
+            "vid-1", metadata(), spec(), profile=profile, scene_count=4)
+        seeds = [s["generation"]["seed"] for s in board["scenes"]]
+        digests = [s["generation"]["request_digest"] for s in board["scenes"]]
+        self.assertEqual(len(set(seeds)), 2)
+        self.assertEqual(len(set(digests)), 2)
+        self.assertEqual(seeds[0], seeds[2])
+        self.assertEqual(digests[1], digests[3])
+
+
 class ApplySceneMotifsTest(unittest.TestCase):
 
     def test_motif_replaces_the_generic_category_and_changes_the_digest(self):
@@ -114,6 +144,21 @@ class ApplySceneMotifsTest(unittest.TestCase):
         storyboard.apply_scene_motifs(board, motifs)
         self.assertIn("a specific motif for s01", board["scenes"][0]["image_prompt"])
         self.assertNotEqual(board["scenes"][0]["generation"]["request_digest"], before_digest)
+
+    def test_two_scenes_given_the_same_environment_become_one_render(self):
+        """A deliberately repeated environment is a reuse, not a second
+        near-identical generation."""
+        board = storyboard.build_storyboard("vid-1", metadata(), spec(), scene_count=3)
+        storyboard.apply_scene_motifs(board, {
+            "s01": "the same held living room", "s02": "the same held living room",
+            "s03": "the garden at dusk"})
+        digests = [s["generation"]["request_digest"] for s in board["scenes"]]
+        self.assertEqual(digests[0], digests[1])
+        self.assertNotEqual(digests[0], digests[2])
+        self.assertEqual(board["scenes"][0]["generation"]["seed"],
+                         board["scenes"][1]["generation"]["seed"])
+        self.assertNotEqual(board["scenes"][0]["generation"]["seed"],
+                            board["scenes"][2]["generation"]["seed"])
 
     def test_scenes_missing_from_the_motif_map_are_left_untouched(self):
         board = storyboard.build_storyboard("vid-1", metadata(), spec(), scene_count=2)

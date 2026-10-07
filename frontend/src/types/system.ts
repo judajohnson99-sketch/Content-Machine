@@ -62,12 +62,20 @@ export interface DepictedImagery {
   worker_id: string | null;
 }
 
+export interface NarrationReadiness {
+  available: boolean;
+  engine: string;
+  voice: string | null;
+  detail: string;
+}
+
 export interface HostReadiness {
   depicted_image_providers: string[];
   procedural_images: boolean;
   search_provider: string | null;
   search_available: boolean;
   narration_available: boolean;
+  narration: NarrationReadiness;
   depicted_imagery: DepictedImagery;
   remote_gpu: RemoteGpuReadiness;
 }
@@ -96,6 +104,10 @@ export interface GpuJob {
   lease_expires_in_seconds: number | null;
   assets: string[];
   error: string | null;
+  // "capacity" (the worker's VRAM/memory ceiling) vs "software" (an actual
+  // workflow/checkpoint fault) vs null (not FAILED) - so the dashboard can
+  // tell "this card is too small for this job" from a real bug.
+  failure_category: "capacity" | "software" | null;
   created_at: string | null;
   updated_at: string | null;
   provider_job_id: string | null;

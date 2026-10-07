@@ -927,6 +927,37 @@ Full architecture (shared-domain boundary, Celery/`worker.py` ownership
 split, Postgres data-ownership table, concurrency, human-review domain
 operation): `/root/.claude/plans/effervescent-snuggling-lighthouse.md`.
 
+## Owner media and editable assembly
+
+Existing owner-provided media is a valid production input. The recursive,
+reference-only catalog supports stills, footage and audio; it records technical
+inspection separately from content annotations and rights. It never modifies
+or copies originals. Content hashes connect the same asset across machines.
+
+```bash
+./content-machine media scan /path/to/assets
+./content-machine media list --kind video --query 'forest calm'
+./content-machine media check
+```
+
+The Dreamdrip originals are on the owner's Linux HP under
+`~/Videos/dreamdrip/assets/`, not this VPS. Scan there and transfer its small
+inventory first; stage only selected media for VPS productions. Inventory
+merge preserves remote machine identity and does not pretend remote files are
+available locally.
+
+`import-media` creates a new still-image/audio project from catalog IDs;
+`--allow-unverified-audio` is available only for a private review bootstrap
+and keeps the publication gate blocked. `run` uses the existing render/QC/
+package path. `kdenlive` lowers the resolved scene edit to an editable native
+Kdenlive project, verifies it through MLT, and renders a review MP4. Selected
+source bundles are request-scoped and hash-verified before staging; originals
+remain on the HP.
+
+See [editing and ingestion](docs/editing-and-ingestion.md) for local commands,
+rights fields, the tested bootstrap boundary, Kdenlive/MLT research, the
+recommended worker architecture, and the remaining production acceptance tests.
+
 ## Not built yet
 
 Deliberately unimplemented, in dependency order:

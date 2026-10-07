@@ -7,4 +7,6 @@ urlpatterns = [
          views.ReviewDecisionListCreateView.as_view(), name="review-decision-list"),
     path("<str:video_id>/visual-grade/",
          views.VisualGradeView.as_view(), name="visual-grade"),
+    path("<str:video_id>/audio-grade/",
+         views.AudioGradeView.as_view(), name="audio-grade"),
 ]

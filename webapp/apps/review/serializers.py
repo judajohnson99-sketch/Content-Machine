@@ -30,6 +30,25 @@ class VisualGradeSerializer(serializers.Serializer):
     production_grade = serializers.BooleanField()
 
 
+class AudioGradeRequestSerializer(serializers.Serializer):
+    """POST .../audio-grade/ body: the human's claim about the audio.
+
+    Required boolean for the same reason the visual claim is: whether a
+    synthesised track is music anyone would listen to is not a question any
+    check here can answer, so an empty body must never grant it.
+    """
+    production_grade = serializers.BooleanField()
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class AudioGradeSerializer(serializers.Serializer):
+    """Mirrors the claim record scripts.project.record_audio_grade() writes."""
+    utc = serializers.CharField()
+    reviewer = serializers.CharField()
+    notes = serializers.CharField(allow_blank=True)
+    production_grade = serializers.BooleanField()
+
+
 class ReviewDecisionSerializer(serializers.Serializer):
     """Mirrors the entry shape record_review_decision() appends to
     metadata.json.review_history - a plain Serializer, not a

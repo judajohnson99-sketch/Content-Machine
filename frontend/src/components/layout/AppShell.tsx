@@ -1,14 +1,15 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, matchPath, useLocation } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import styles from "./AppShell.module.css";
 import { getReadiness, listRecentRuns } from "../../api/system";
+import { getIdentity, logout } from "../../api/auth";
 import { listProjects } from "../../api/projects";
 import { gpuStateLabel, statusTone } from "../../lib/statusTokens";
 import { isReviewable } from "../../lib/projectStatus";
 import { Badge } from "../ui/Badge";
 import {
-  ActivityIcon, CheckCircleIcon, CollapseIcon, GpuIcon, GridIcon, PlayIcon, SearchIcon, WaveIcon, XIcon,
+  ActivityIcon, CheckCircleIcon, CollapseIcon, GpuIcon, GridIcon, PlayIcon, SearchIcon, SparkIcon, WaveIcon, XIcon,
 } from "../ui/icons";
 
 interface NavItem {
@@ -48,6 +49,15 @@ export function AppShell({ children }: { children: ReactNode }) {
   const readiness = useQuery({ queryKey: ["readiness"], queryFn: getReadiness, refetchInterval: 30_000 });
   const activity = useQuery({ queryKey: ["recent-runs"], queryFn: listRecentRuns, refetchInterval: 10_000 });
   const projects = useQuery({ queryKey: ["projects"], queryFn: listProjects, refetchInterval: 20_000 });
+  const identity = useQuery({ queryKey: ["identity"], queryFn: getIdentity, retry: false, staleTime: Infinity });
+
+  const queryClient = useQueryClient();
+  const signOut = useMutation({
+    mutationFn: logout,
+    // Clearing the cache is the point: the next render has no identity, so
+    // AuthGate shows the sign-in screen instead of stale project data.
+    onSuccess: () => queryClient.clear(),
+  });
 
   const activeCount = activity.data?.active.length ?? 0;
   const reviewCount = (projects.data ?? []).filter((p) => isReviewable(p.overall_status)).length;
@@ -58,7 +68,14 @@ export function AppShell({ children }: { children: ReactNode }) {
     { to: "/review", label: "Review Center", icon: <CheckCircleIcon />, count: reviewCount },
   ];
 
+  // Not production work: a direct line to the GPU worker for testing a
+  // prompt or a checkpoint. Kept reachable, kept out of the main path.
+  const toolNav: NavItem[] = [
+    { to: "/system/image-lab", label: "Image lab", icon: <SparkIcon /> },
+  ];
+
   const gpu = readiness.data?.depicted_imagery;
+  const narration = readiness.data?.narration;
   const gpuTone = gpu ? statusTone(gpu.state) : "neutral";
 
   return (
@@ -118,6 +135,20 @@ export function AppShell({ children }: { children: ReactNode }) {
               {item.count ? <span className={styles.navCount}>{item.count}</span> : null}
             </NavLink>
           ))}
+
+          <div className={styles.navTools}>
+            {toolNav.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                title={collapsed ? item.label : undefined}
+                className={({ isActive }) => `${styles.navItem} ${styles.navItemTool} ${isActive ? styles.navItemActive : ""}`}
+              >
+                <span className={styles.navIcon}>{item.icon}</span>
+                <span className={styles.navLabel}>{item.label}</span>
+              </NavLink>
+            ))}
+          </div>
         </div>
 
         {currentProject && (
@@ -173,15 +204,36 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </span>
               </span>
             </li>
-            <li className={styles.systemRow}>
-              <span className={`${styles.systemIcon} ${styles.tone_success}`}><WaveIcon width={15} height={15} /></span>
+            {/* Derived, never assumed: this light was a hardcoded green
+                "synth · piper" that stayed green on a host with no voice
+                model and no piper-tts installed. */}
+            <li className={styles.systemRow} title={narration?.detail ?? "Loading readiness…"}>
+              <span className={`${styles.systemIcon} ${styles[`tone_${narration?.available ? "success" : "neutral"}`]}`}>
+                <WaveIcon width={15} height={15} />
+              </span>
               <span className={styles.systemText}>
-                <span className={styles.systemName}>Audio &amp; narration</span>
-                <span className={styles.systemValue}>synth · piper</span>
+                <span className={styles.systemName}>Narration</span>
+                <span className={styles.systemValue}>
+                  {narration ? (narration.available ? narration.engine : "unavailable") : "…"}
+                </span>
               </span>
             </li>
           </ul>
         </section>
+
+        <div className={styles.account}>
+          <span className={styles.accountWho} title={identity.data?.reviewer ?? ""}>
+            {identity.data?.username ?? "…"}
+          </span>
+          <button
+            type="button"
+            className={styles.signOut}
+            onClick={() => signOut.mutate()}
+            disabled={signOut.isPending}
+          >
+            {signOut.isPending ? "Signing out…" : "Sign out"}
+          </button>
+        </div>
       </nav>
 
       <div className={styles.main}>

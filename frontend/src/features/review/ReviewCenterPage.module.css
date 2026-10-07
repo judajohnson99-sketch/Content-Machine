@@ -29,7 +29,7 @@
 }
 
 .rowHead:hover {
-  background: rgba(148, 163, 209, 0.06);
+  background: var(--tint-1);
 }
 
 .chevron {
@@ -39,7 +39,7 @@
   height: 26px;
   border-radius: 8px;
   border: 1px solid var(--border-subtle);
-  background: rgba(9, 13, 25, 0.6);
+  background: var(--glass-3);
   color: var(--text-tertiary);
   flex: none;
 }
@@ -53,7 +53,7 @@
 }
 
 .rowTitle {
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   font-size: var(--text-md);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -83,7 +83,7 @@
 
 .rowLink {
   color: var(--accent-hover);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   text-decoration: none;
   font-size: var(--text-sm);
 }

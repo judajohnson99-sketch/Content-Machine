@@ -34,7 +34,7 @@ claim, because that record has no such field and only a human writes one.
     ./content-machine worker enroll home-gpu-01 --capabilities comfyui,sd15
     ./content-machine worker serve
     ./content-machine worker enqueue <video-id>
-    ./content-machine worker workers | jobs | show <job-id> | cancel <job-id>
+    ./content-machine worker workers | jobs | show <job-id> | cancel <job-id> | requeue <job-id>
     ./content-machine worker agent            # on the PC
 """
 import argparse
@@ -84,10 +84,14 @@ TRANSITIONS = {
     UPLOADING: frozenset({SUCCEEDED, RETRY_WAIT, FAILED, CANCELLED}),
     RETRY_WAIT: frozenset({QUEUED, FAILED, CANCELLED}),
     SUCCEEDED: frozenset(),
-    FAILED: frozenset(),
-    CANCELLED: frozenset(),
+    # An operator may put a FAILED or CANCELLED job back in the queue
+    # (requeue()); nothing a worker reports can. SUCCEEDED is final.
+    FAILED: frozenset({QUEUED}),
+    CANCELLED: frozenset({QUEUED}),
 }
 TERMINAL = frozenset({SUCCEEDED, FAILED, CANCELLED})
+# Terminal states an operator may deliberately resurrect.
+REQUEUABLE = frozenset({FAILED, CANCELLED})
 # States in which a worker holds the job and a lease is running.
 LEASED = frozenset({CLAIMED, SUBMITTED, RUNNING, UPLOADING})
 # What a worker is allowed to report through /progress.
@@ -552,6 +556,13 @@ def job_view(job, workers=None, now=None):
             if lease.get("expires_at_epoch") else None),
         "assets": job.get("assets", []),
         "error": job.get("error"),
+        # 'capacity' (a VRAM/memory ceiling) vs 'software' (an actual
+        # workflow/checkpoint fault) vs None (not FAILED) - derived on every
+        # read from the error text, like worker_state and wait_reason,
+        # rather than stored, so it is never stale relative to the detail
+        # it is explaining.
+        "failure_category": (generation.classify_failure(job.get("error"))
+                             if job["state"] == FAILED else None),
         "created_at": job.get("created_at"),
         "updated_at": job.get("updated_at"),
     }
@@ -892,7 +903,7 @@ def report_failure(job_id, worker_id, lease_id, detail, permanent=False):
 
 
 def cancel(job_id, actor="operator", reason=None):
-    """Withdraw a job. The one transition a human initiates."""
+    """Withdraw a job. One of the two transitions a human initiates."""
     with _queue_lock():
         job = load_job(job_id)
         if job["state"] in TERMINAL:
@@ -900,6 +911,41 @@ def cancel(job_id, actor="operator", reason=None):
                 f"job {job_id} is already {job['state']}", 409)
         job["lease"] = None
         _transition(job, CANCELLED, actor, reason or "cancelled by operator")
+        _save_job(job)
+        shutil.rmtree(uploads_dir() / job_id, ignore_errors=True)
+    return job
+
+
+def requeue(job_id, actor="operator", reason=None):
+    """Put a FAILED or CANCELLED job back in the queue with a fresh budget.
+
+    The other transition a human initiates. A failure that was really a
+    capacity ceiling, a template since fixed, or a cancellation regretted
+    all need the same thing: the identical request (same digest, so the
+    pipeline's reuse seam still finds it) tried again from attempt 0. The
+    audit trail is kept, not reset - the record shows it failed and who
+    decided to try again. Nothing here is reachable by a worker: only the
+    operator CLI and the control-plane's authenticated UI call it.
+    """
+    with _queue_lock():
+        job = load_job(job_id)
+        if job["state"] not in REQUEUABLE:
+            raise WorkerError(
+                f"job {job_id} is {job['state']}; only "
+                f"{', '.join(sorted(REQUEUABLE))} jobs can be requeued", 409)
+        previous = job["state"]
+        job.update({
+            "attempt": 0,
+            "lease": None,
+            "worker_id": None,
+            "not_before_epoch": 0.0,
+            "error": None,
+            "assets": [],
+            "manifest": None,
+        })
+        job.pop("completed_at", None)
+        _transition(job, QUEUED, actor,
+                    reason or f"requeued by operator after {previous}")
         _save_job(job)
         shutil.rmtree(uploads_dir() / job_id, ignore_errors=True)
     return job
@@ -1132,6 +1178,59 @@ def enqueue_project(video_id, prompt=None, count=None, capabilities=None,
                    prompt_label=text[:80])
 
 
+# --- Enqueue from an operator (dashboard or CLI, no project) ---------------
+
+def enqueue_manual(prompt, negative_prompt=None, width=1920, height=1080,
+                   count=1, seed=20260827, model=None, capabilities=None,
+                   max_attempts=None, workflow_path=None, label_prefix=None,
+                   subdir="manual"):
+    """Queue an ad-hoc render requested directly by an operator: the
+    dashboard's Generate page, or a CLI workflow test - never tied to a
+    project.
+
+    ``workflow_path`` lets a caller test a candidate template without
+    touching the deployed default (``COMFYUI_WORKFLOW``); ``subdir`` keeps
+    that output (``workflow_test/``) visibly separate from an ordinary
+    manual generation (``manual/``), and both separate from any project's
+    own ``images/``.
+    """
+    if not prompt or not str(prompt).strip():
+        raise WorkerError("prompt is required")
+    params = {"workflow_path": str(workflow_path)} if workflow_path else {}
+    request = GenerationRequest(
+        prompt=prompt, negative_prompt=negative_prompt, width=width,
+        height=height, count=count, seed=seed, model=model,
+        require_depicted=True, params=params)
+    out_dir = ROOT / "jobs" / subdir / request.digest()
+    label = f"{label_prefix}:{prompt[:80]}" if label_prefix else prompt[:80]
+    return enqueue(request, out_dir, capabilities=capabilities or ("comfyui",),
+                   project_id=None, max_attempts=max_attempts, prompt_label=label)
+
+
+def job_asset_path(job_id, index):
+    """The ``index``-th published asset of a finished job, or ``None``.
+
+    Bounds-checked against the job's own ``assets`` list rather than
+    accepting a filename or path from the caller, so there is no path to
+    traverse - the only thing an index can select is a file this job itself
+    produced and that ``complete()`` already verified onto disk. A
+    malformed or unknown job id is the same "nothing to serve" case as an
+    out-of-range index, not a distinct error - callers get one flat ``None``
+    to turn into a 404.
+    """
+    try:
+        job = load_job(job_id)
+    except WorkerError:
+        return None
+    assets = job.get("assets") or []
+    if index < 0 or index >= len(assets):
+        return None
+    path = Path(assets[index])
+    if not path.is_file():
+        return None
+    return path
+
+
 # --- CLI -------------------------------------------------------------------
 
 def cmd_enroll(args):
@@ -1185,6 +1284,17 @@ def cmd_enqueue(args):
                               count=args.count,
                               capabilities=_caps(args.capabilities),
                               max_attempts=args.max_attempts)
+    elif args.workflow:
+        # A workflow test: routed through enqueue_manual so it lands in
+        # jobs/workflow_test/, not jobs/_test_out or a project's images/.
+        if not args.prompt:
+            raise WorkerError("--workflow needs --prompt too")
+        job = enqueue_manual(
+            args.prompt, negative_prompt=args.negative, width=args.width,
+            height=args.height, count=args.count or 1, seed=args.seed,
+            model=args.model, capabilities=_caps(args.capabilities),
+            max_attempts=args.max_attempts, workflow_path=args.workflow,
+            label_prefix="workflow-test", subdir="workflow_test")
     else:
         if not args.prompt or not args.out:
             raise WorkerError("pass a video-id, or both --prompt and --out")
@@ -1213,9 +1323,10 @@ def cmd_jobs(args):
     workers, now = load_workers(), time.time()
     for job in jobs:
         view = job_view(job, workers, now)
+        tag = f" [{view['failure_category']}]" if view["failure_category"] else ""
         print(f"{view['job_id']:<18} {view['state']:<11} "
               f"attempt {view['attempt']}/{view['max_attempts']}  "
-              f"{view['wait_reason'] or view['worker_id'] or ''}")
+              f"{view['wait_reason'] or view['worker_id'] or ''}{tag}")
         if view["label"]:
             print(f"                   {view['label']}")
     return 0
@@ -1242,6 +1353,23 @@ def cmd_cancel(args):
     job = cancel(args.job_id, reason=args.reason)
     print(f"job {job['job_id']} is now {job['state']}")
     return 0
+
+
+def cmd_requeue(args):
+    job = requeue(args.job_id, reason=args.reason)
+    print(f"job {job['job_id']} is now {job['state']} (attempt 0/{job['max_attempts']})")
+    return 0
+
+
+def cmd_validate_workflow(args):
+    result = generation.validate_workflow(args.path)
+    if result["valid"]:
+        print(f"valid: {args.path} ({result['node_count']} nodes)")
+        return 0
+    print(f"invalid: {args.path}")
+    for e in result["errors"]:
+        print(f"  - {e}")
+    return 1
 
 
 def cmd_reap(args):
@@ -1300,7 +1428,17 @@ def main(argv=None):
     p.add_argument("--model", default=None)
     p.add_argument("--capabilities", default="comfyui")
     p.add_argument("--max-attempts", type=int, default=None)
+    p.add_argument("--workflow", default=None,
+                   help="test this workflow template instead of the deployed "
+                        "default (needs --prompt, not a video-id or --out; "
+                        "output goes to jobs/workflow_test/, never a real "
+                        "project or manual-generation directory)")
     p.set_defaults(func=cmd_enqueue)
+
+    p = sub.add_parser("validate-workflow",
+                       help="lint a workflow template - no network, no GPU")
+    p.add_argument("path")
+    p.set_defaults(func=cmd_validate_workflow)
 
     p = sub.add_parser("jobs", help="list queued work")
     p.add_argument("--state", default=None, help="filter, comma-separated")
@@ -1314,6 +1452,11 @@ def main(argv=None):
     p.add_argument("job_id")
     p.add_argument("--reason", default=None)
     p.set_defaults(func=cmd_cancel)
+
+    p = sub.add_parser("requeue", help="put a FAILED or CANCELLED job back in the queue")
+    p.add_argument("job_id")
+    p.add_argument("--reason", default=None)
+    p.set_defaults(func=cmd_requeue)
 
     p = sub.add_parser("reap", help="expire leases and release retry backoffs")
     p.set_defaults(func=cmd_reap)

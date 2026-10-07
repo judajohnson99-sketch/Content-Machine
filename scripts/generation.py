@@ -41,6 +41,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -80,8 +81,42 @@ DEFAULT_GENERATE_TIMEOUT = 300.0
 # so the digest still describes the asset the pipeline asked for.
 DEFAULT_LATENT_MAX_PIXELS = 512 * 512
 DEFAULT_COMFYUI_WORKFLOW = ROOT / "config" / "comfyui_workflow_lowvram_upscale.json"
+# Chosen automatically instead of DEFAULT_COMFYUI_WORKFLOW when the worker's
+# own reported VRAM is under COMFYUI_UPSCALE_MIN_VRAM_MB: same small latent,
+# but no in-graph upscale/decode-to-target pass, which is what a 3GB-class
+# card was observed to run out of memory on (knowledge: GPU Worker Render
+# Capacity). Never chosen when COMFYUI_WORKFLOW pins a template explicitly.
+DEFAULT_COMFYUI_WORKFLOW_TINY = ROOT / "config" / "comfyui_workflow_lowvram_tiny.json"
+DEFAULT_UPSCALE_MIN_VRAM_MB = 4096
 DEFAULT_COOLDOWN_SECONDS = 300.0
 DEFAULT_ATTEMPTS = 2
+
+# Node types that mean "this graph decodes to a bigger image before saving",
+# so generate() can say honestly whether the asset is at the request's real
+# size or still at native (small) generation resolution awaiting a later
+# upscale pass.
+UPSCALE_NODE_TYPES = frozenset({"ImageScale", "ImageScaleBy", "ImageUpscaleWithModel"})
+
+# Substrings of a ComfyUI/CUDA exception that mean "this card does not have
+# the memory for this graph" rather than a broken workflow or checkpoint.
+# classify_failure() uses this so the dashboard can tell a hardware ceiling
+# from a real software fault without a human reading the raw exception.
+CAPACITY_FAILURE_MARKERS = (
+    "out of memory", "outofmemory", "allocation on device",
+    "cuda error", "insufficient memory",
+)
+
+
+def classify_failure(detail):
+    """'capacity' for a VRAM/memory ceiling, 'software' for everything else,
+    ``None`` when there is no detail to classify (a job that has not failed).
+    """
+    if not detail:
+        return None
+    lowered = str(detail).lower()
+    if any(marker in lowered for marker in CAPACITY_FAILURE_MARKERS):
+        return "capacity"
+    return "software"
 
 # Terminal and non-terminal job states.
 QUEUED, RUNNING, RETRYING, COMPLETED, FAILED = (
@@ -207,6 +242,12 @@ class Provider:
     name = "base"
     produces_depicted = False
     costs_money = False
+    # Which prompt dialect this provider's model was trained on. SD-family
+    # checkpoints want comma-separated tags and carry a real negative
+    # prompt; hosted natural-language models want a sentence and treat a
+    # comma salad as noise. Writing one prompt for both is how a prompt
+    # ends up mediocre for each - see scripts/visual_direction.py.
+    prompt_style = "tag"
 
     def configured(self):
         raise NotImplementedError
@@ -253,8 +294,15 @@ class ProceduralProvider(Provider):
         assets = []
         for i in range(request.count):
             path = out_dir / f"{prefix}_{i + 1:02d}.png"
-            make_visuals.build_still(style, i, path, request.seed,
-                                     width=request.width, height=request.height)
+            # The prompt is what the storyboard varies per shot, so it is
+            # what the plate must vary on: without it every scene in a
+            # video came back as the same wash, which the scene checks
+            # then (correctly) refused as duplicates. It does not make the
+            # plate depict the prompt - these are abstracts - it makes two
+            # differently-intended shots genuinely different pictures.
+            make_visuals.build_plate(style, i, path, request.seed,
+                                     width=request.width, height=request.height,
+                                     prompt=request.prompt or "")
             make_visuals.stamp_provenance(path, style, request.seed, i)
             luma = make_visuals.measure_luma(path)
             if luma is not None and luma < make_visuals.MIN_MEAN_LUMA:
@@ -291,9 +339,16 @@ class ComfyUIProvider(Provider):
 
     def __init__(self, url=None, workflow_path=None):
         self.url = (url if url is not None else _env("COMFYUI_URL") or "").rstrip("/")
-        self.workflow_path = workflow_path or _env(
-            "COMFYUI_WORKFLOW", str(DEFAULT_COMFYUI_WORKFLOW))
+        explicit = workflow_path or _env("COMFYUI_WORKFLOW")
+        # Whether the operator named a template (constructor arg or
+        # COMFYUI_WORKFLOW), as opposed to getting the deployed default -
+        # only the default is ever swapped automatically by VRAM tier, so an
+        # explicit choice always stands.
+        self._workflow_explicit = bool(explicit)
+        self.workflow_path = explicit or str(DEFAULT_COMFYUI_WORKFLOW)
         self._checkpoints = None
+        self._vram_total_cached = False
+        self._vram_total = None
 
     def configured(self):
         return bool(self.url)
@@ -350,6 +405,48 @@ class ComfyUIProvider(Provider):
                 f"(installed: {', '.join(installed[:8]) or 'none'})")
         return chosen
 
+    def vram_total_mb(self, timeout=DEFAULT_HEALTH_TIMEOUT):
+        """Total VRAM this ComfyUI's device reports, or ``None`` when it
+        cannot say (unreachable, or an old ComfyUI without /system_stats).
+
+        Cached per instance like installed_checkpoints: hardware capacity
+        does not change mid-run, and a render must not re-probe every scene.
+        """
+        if self._vram_total_cached:
+            return self._vram_total
+        total = None
+        if self.configured():
+            try:
+                stats = self._get_json("/system_stats", timeout)
+                device = ((stats.get("devices") or [{}])[0]) or {}
+                if device.get("vram_total"):
+                    total = int(device["vram_total"] / (1024 * 1024))
+            except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError,
+                    TypeError, IndexError):
+                total = None
+        self._vram_total = total
+        self._vram_total_cached = True
+        return total
+
+    def _select_workflow_path(self, timeout=DEFAULT_HEALTH_TIMEOUT):
+        """Which template to render with.
+
+        An explicit choice (constructor arg or COMFYUI_WORKFLOW) always
+        stands - a template picked for a reason is not second-guessed.
+        Otherwise the deployed default is the in-graph upscale graph unless
+        this ComfyUI reports less VRAM than COMFYUI_UPSCALE_MIN_VRAM_MB, in
+        which case the tiny (no-upscale) template is used instead. A card
+        that cannot say how much VRAM it has (unreachable, or too old for
+        /system_stats) keeps the deployed default rather than guessing.
+        """
+        if self._workflow_explicit:
+            return self.workflow_path
+        total = self.vram_total_mb(timeout)
+        threshold = _env_float("COMFYUI_UPSCALE_MIN_VRAM_MB", DEFAULT_UPSCALE_MIN_VRAM_MB)
+        if total is not None and total < threshold:
+            return str(DEFAULT_COMFYUI_WORKFLOW_TINY)
+        return self.workflow_path
+
     def probe(self, timeout=DEFAULT_HEALTH_TIMEOUT):
         """What this ComfyUI is: reachability, the GPU it drives, and the
         checkpoints it can load. Never raises; the worker agent reports it
@@ -373,6 +470,10 @@ class ComfyUIProvider(Provider):
             pass
         self._checkpoints = None
         report["checkpoints"] = self.installed_checkpoints(timeout)
+        # Cache directly from the stats already fetched above instead of a
+        # second /system_stats round trip: same fact, one request.
+        self._vram_total = report["vram_total_mb"]
+        self._vram_total_cached = True
         return report
 
     def health(self, timeout=DEFAULT_HEALTH_TIMEOUT):
@@ -391,7 +492,12 @@ class ComfyUIProvider(Provider):
             return False, f"unreachable: {type(e).__name__}: {e}"
 
     def _load_workflow(self, request):
-        path = Path(self.workflow_path)
+        # A request may name its own template (params["workflow_path"]) to
+        # test a candidate graph without touching the deployed default -
+        # every other caller leaves params empty and gets self.workflow_path,
+        # unchanged from before this existed.
+        override = (request.params or {}).get("workflow_path")
+        path = Path(override) if override else Path(self._select_workflow_path())
         if not path.is_file():
             raise GenerationError(f"ComfyUI workflow template not found: {path}")
         raw = path.read_text()
@@ -447,7 +553,18 @@ class ComfyUIProvider(Provider):
         """
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
+        workflow_path = self._select_workflow_path()
+        override = (request.params or {}).get("workflow_path")
+        if override:
+            workflow_path = override
         workflow = self._load_workflow(request)
+        # Self-described from the graph actually submitted, not from which
+        # template file it came from: true for a custom operator template
+        # too, and honest about what this specific render did, since tiering
+        # can pick a different template per request as VRAM is reported.
+        upscaled_in_graph = any(
+            isinstance(node, dict) and node.get("class_type") in UPSCALE_NODE_TYPES
+            for node in workflow.values())
         client_id = f"content-machine-{request.digest()}"
 
         try:
@@ -465,6 +582,15 @@ class ComfyUIProvider(Provider):
         assets = self._download(outputs, out_dir, request)
         if not assets:
             raise GenerationError(f"ComfyUI job {prompt_id} produced no images")
+        if upscaled_in_graph:
+            notes = (f"generated on ComfyUI at {self.url} via "
+                     f"{Path(workflow_path).name}, latent "
+                     f"{latent_width}x{latent_height} -> {request.width}x{request.height}")
+        else:
+            notes = (f"generated on ComfyUI at {self.url} via "
+                     f"{Path(workflow_path).name}, native "
+                     f"{latent_width}x{latent_height} (no in-graph upscale; "
+                     f"{request.width}x{request.height} requested, not yet reached)")
         return {
             "assets": assets,
             "provider_job_id": prompt_id,
@@ -472,9 +598,13 @@ class ComfyUIProvider(Provider):
             # substitution resolves it - so provenance matches what ran.
             "model": self.resolve_model(request),
             "cost_usd": 0.0,
-            "notes": (f"generated on ComfyUI at {self.url} via "
-                      f"{Path(self.workflow_path).name}, latent "
-                      f"{latent_width}x{latent_height} -> {request.width}x{request.height}"),
+            "notes": notes,
+            # False means the asset is at native generation resolution, not
+            # the request's width/height - a later upscale pass (ffmpeg at
+            # render time, or a higher-VRAM provider) still owes the rest.
+            "upscaled_in_graph": upscaled_in_graph,
+            "native_width": latent_width,
+            "native_height": latent_height,
         }
 
     def _await_outputs(self, prompt_id, timeout, progress=None):
@@ -531,6 +661,68 @@ class ComfyUIProvider(Provider):
         return assets
 
 
+# Dummy values for a static check: representative, never sent anywhere. Only
+# stand-ins for the substitution ComfyUIProvider._load_workflow performs, so
+# a template can be linted without a GenerationRequest or any network access.
+_VALIDATE_DUMMY_REQUEST = GenerationRequest(
+    prompt="a small brass key resting on dark green velvet",
+    negative_prompt="blurry, distorted", width=512, height=512, seed=1,
+    model="model.safetensors")
+
+
+def validate_workflow(path):
+    """Static check of a ComfyUI workflow template - no network, no GPU.
+
+    Confirms the template still substitutes and parses (a broken placeholder
+    or stray brace fails here, not on ComfyUI's HTTP 400) and that every
+    ``[node_id, output_index]`` edge points at a node that actually exists
+    in the graph, which a typo'd node id during a manual edit would not.
+    Returns ``{"valid": bool, "errors": [...], "node_count": int}`` and never
+    raises - a validator that can itself crash is not a safe one to run
+    against an untrusted edit.
+    """
+    errors = []
+    path = Path(path)
+    if not path.is_file():
+        return {"valid": False, "errors": [f"not a file: {path}"], "node_count": 0}
+    raw = path.read_text()
+
+    request = _VALIDATE_DUMMY_REQUEST
+    latent_width, latent_height = latent_size(request.width, request.height)
+    substitutions = {
+        "%prompt%": request.prompt, "%negative%": request.negative_prompt,
+        "%width%": str(request.width), "%height%": str(request.height),
+        "%latent_width%": str(latent_width), "%latent_height%": str(latent_height),
+        "%seed%": str(request.seed), "%model%": request.model,
+    }
+    substituted = raw
+    for token, value in substitutions.items():
+        substituted = substituted.replace(token, json.dumps(str(value))[1:-1])
+    leftover = sorted(set(re.findall(r"%[a-z_]+%", substituted)))
+    if leftover:
+        errors.append(f"unsubstituted placeholder(s): {', '.join(leftover)}")
+
+    try:
+        graph = json.loads(substituted)
+    except json.JSONDecodeError as e:
+        errors.append(f"not valid JSON after substitution: {e}")
+        return {"valid": False, "errors": errors, "node_count": 0}
+
+    nodes = {k: v for k, v in graph.items() if not k.startswith("_")}
+    for node_id, node in nodes.items():
+        if not isinstance(node, dict) or "class_type" not in node:
+            errors.append(f"node {node_id!r} has no class_type")
+            continue
+        for input_name, value in (node.get("inputs") or {}).items():
+            if (isinstance(value, list) and len(value) == 2
+                    and isinstance(value[0], str) and isinstance(value[1], int)):
+                if value[0] not in nodes:
+                    errors.append(
+                        f"node {node_id!r} input {input_name!r} references "
+                        f"unknown node {value[0]!r}")
+    return {"valid": not errors, "errors": errors, "node_count": len(nodes)}
+
+
 class ApiProvider(Provider):
     """Generic external HTTP image API. Off unless explicitly configured.
 
@@ -543,6 +735,7 @@ class ApiProvider(Provider):
     name = "api"
     produces_depicted = True
     costs_money = True
+    prompt_style = "natural"
 
     def __init__(self, url=None, api_key=None, model=None):
         self.url = url if url is not None else _env("IMAGE_API_URL")
@@ -673,6 +866,7 @@ class GeminiProvider(Provider):
     name = "gemini"
     produces_depicted = True
     costs_money = True
+    prompt_style = "natural"
 
     def __init__(self, api_key=None, model=None, enabled=None, base_url=None,
                  image_size=None):
@@ -954,6 +1148,19 @@ class Router:
                 continue
             chosen.append(provider)
         return chosen
+
+    def prompt_style(self, request=None):
+        """The prompt dialect the provider most likely to serve this wants.
+
+        Deliberately config-only - no health probe. Prompt compilation
+        happens while planning a storyboard, possibly with the GPU box off,
+        and a plan must not change shape because a machine was asleep when
+        it was written.
+        """
+        for provider in self.candidates(request):
+            if provider.configured():
+                return getattr(provider, "prompt_style", "tag")
+        return "tag"
 
     def status(self, request=None):
         """Health of every provider. Read-only; safe to call anytime."""

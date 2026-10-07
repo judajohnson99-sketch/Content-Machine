@@ -14,6 +14,7 @@ import { PageHeader } from "../../components/ui/PageHeader";
 import { ErrorState, SkeletonRows } from "../../components/ui/States";
 import { GpuIcon, SearchIcon, SparkIcon, WaveIcon } from "../../components/ui/icons";
 import { conceptKind, type ConceptCatalog, type ConceptKind, type ConceptSummary, type Readiness } from "../../types/concepts";
+import { GoalComposer } from "./GoalComposer";
 import styles from "./NewProjectPage.module.css";
 
 const READINESS_TONE: Record<Readiness, Tone> = {
@@ -134,9 +135,13 @@ export function NewProjectPage() {
       <PageHeader
         backTo={{ to: "/", label: "Dashboard" }}
         eyebrow="New production"
-        title="Choose a creative direction"
-        description="Pick a direction, set the essentials, and create the production. Everything runs through the same stages the CLI uses; progress lands in the Workspace."
+        title="Start a production"
+        description="Describe what you want and the studio works out the rest - concept, research brief, imagery, sound and edit. A saved direction from the catalogue below is the other way in."
       />
+
+      <GoalComposer />
+
+      <h2 className={styles.catalogueHeading}>Or start from a saved direction</h2>
 
       {catalog.isLoading && <SkeletonRows count={6} />}
       {catalog.isError && (

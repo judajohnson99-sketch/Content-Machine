@@ -8,6 +8,10 @@ export interface ProjectSummary {
   niche: string | null;
   overall_status: string;
   created_utc: string | null;
+  archived?: boolean;
+  /** A project-relative still (thumbnail, scene image or staged media), or
+   *  null when the production has produced no picture yet. */
+  preview_image?: string | null;
 }
 
 export interface StatusReport {
@@ -26,7 +30,16 @@ export interface StatusReport {
 export interface ProjectDetail {
   video_id: string;
   selected_title: string | null;
-  experiment?: { concept_id?: string | null; niche?: string | null } | null;
+  duration_seconds?: number | null;
+  experiment?: {
+    concept_id?: string | null;
+    niche?: string | null;
+    // Set on productions derived from a goal: what the operator asked for,
+    // and whether what exists right now is only an excerpt of it.
+    goal_text?: string | null;
+    full_length_seconds?: number | null;
+    is_excerpt?: boolean | null;
+  } | null;
   // gate_digest is the last-recorded fingerprint of what a verdict was
   // computed from (scripts/project.py's gate_digest()) - the Review Center
   // sends it back verbatim as expected_digest; it is never recomputed or

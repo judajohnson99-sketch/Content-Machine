@@ -62,6 +62,19 @@ class TestRunStageTask:
         assert run.status == PipelineRun.STATUS_FAILED
         assert "abc" in run.message
 
+    def test_an_unexpected_crash_marks_the_run_failed_instead_of_stranding_it(self):
+        """A stage that raises something other than ProjectBusyError used to
+        leave the row at RUNNING forever, so the UI waited on a dead job."""
+        run = self._run()
+        fake = MagicMock(side_effect=RuntimeError("ffmpeg vanished"))
+        with patch.dict(STAGE_FUNCS, {"creative": fake}):
+            with pytest.raises(RuntimeError):
+                run_stage_task(run.id, "creative", "abc", {})
+        run.refresh_from_db()
+        assert run.status == PipelineRun.STATUS_FAILED
+        assert run.finished_at is not None
+        assert "ffmpeg vanished" in run.message
+
     def test_the_run_stage_is_never_merged_with_worker_py_job_state(self):
         """Ownership boundary (architecture plan §2): this dispatcher must
         never import or touch scripts.worker - that state machine is

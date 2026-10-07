@@ -62,17 +62,28 @@ DEFAULT_SOURCE_HEIGHT = 512
 
 # Fallbacks when no format profile exists for the niche.
 DEFAULT_SECONDS_PER_SCENE = 6.0
+# How a shot length is guessed from the video's length when nothing else
+# says. Six seconds is right for a ten-minute explainer and plainly wrong
+# for a two-hour sleep video: a long piece asks the viewer to settle, and a
+# cut every six seconds is the opposite of that. Roughly one shot per two
+# minutes of runtime, bounded at both ends, which lands on 6s for a short
+# excerpt, 15s for half an hour and 30s for two hours. A research directive
+# overrides this the moment sourced findings say what the niche actually does.
+SECONDS_PER_SCENE_BOUNDS = (6.0, 30.0)
+SCENE_LENGTH_PER_RUNTIME = 1 / 120.0
 MIN_SCENE_SECONDS = 2.0
 DEFAULT_TRANSITION_SECONDS = 0.75
 
-# Each ffmpeg scene input is decoded concurrently, so scene count is bounded
-# by memory exactly as image slots are in render.py. Import the limit rather
-# than restating it.
+# Scene count is no longer bounded by memory: above render.MAX_IMAGE_SLOTS
+# the renderer switches to its piecewise path, which holds two inputs open at
+# a time however long the video is. The ceiling imported here is render.py's
+# sanity limit, not a memory one - a thirty-minute video is meant to be two
+# hundred distinct shots, not twenty-four five-minute stills.
 try:
     import render as render_mod
-    MAX_SCENES = render_mod.MAX_IMAGE_SLOTS
+    MAX_SCENES = render_mod.MAX_SCENES_PIECEWISE
 except Exception:  # pragma: no cover - render.py is always importable in-tree
-    MAX_SCENES = 24
+    MAX_SCENES = 1200
 
 # Motion is assigned from a fixed cycle, offset by a stable hash of the video
 # id. Deterministic per project, but two projects do not open with the same
@@ -85,6 +96,16 @@ MOTION_CYCLE = (
 # Sections a storyboard lays out, in order, with the share of runtime each
 # takes. Derived from the format profile when one is available.
 DEFAULT_SECTIONS = (("hook", 0.12), ("body", 0.76), ("outro", 0.12))
+
+# Movement styles a research directive can ask for. "still" is not "no
+# motion at all": a frame that never moves for half an hour reads as a frozen
+# player, so even the stillest style keeps an almost imperceptible push.
+MOTION_STYLE_CYCLES = {
+    "still": ("static", "zoom_in", "static", "zoom_out"),
+    "drifting": ("zoom_in", "zoom_out", "pan_zoom", "zoom_in", "pan_zoom", "zoom_out"),
+    "travelling": ("pan_right", "zoom_in", "pan_left", "pan_up", "pan_zoom",
+                   "zoom_out", "pan_down", "pan_right"),
+}
 
 
 class StoryboardError(Exception):
@@ -152,6 +173,13 @@ def split_script(script, scene_count):
     return out
 
 
+def default_seconds_per_scene(target_seconds):
+    """How long to hold a shot in a video of this length, absent any
+    research or format profile saying otherwise."""
+    low, high = SECONDS_PER_SCENE_BOUNDS
+    return max(low, min(high, float(target_seconds) * SCENE_LENGTH_PER_RUNTIME))
+
+
 def _sections_for(scene_count, profile):
     """Assign each scene index a structural section name."""
     sections = DEFAULT_SECTIONS
@@ -174,21 +202,60 @@ def _scene_prompt(base_prompt, visual_categories, index, section):
     The base prompt is the project's own (from its concept and creative
     brief). Categories only add a structural hint - "interior", "landscape" -
     which is a format fact, not anyone's creative expression.
+
+    Nothing the generator cannot draw goes in: the scene's index and
+    section are bookkeeping and live in the scene's own fields. Appending
+    ", scene 7, body" described no picture, and since it made every prompt
+    unique it also forced a separate render for two scenes meant to show
+    the same thing (see ``_seed_for_prompt``).
     """
     parts = [base_prompt.strip()] if base_prompt else []
     if visual_categories:
         parts.append(visual_categories[index % len(visual_categories)])
-    parts.append(f"scene {index + 1}, {section}")
     return ", ".join(p for p in parts if p)
+
+
+def _seed_for_prompt(prompt, base_seed, assigned):
+    """One seed per distinct picture, not per scene.
+
+    A seed is what makes two renders of the same words different images.
+    Varying it by scene index meant a storyboard that deliberately showed
+    one environment across ten scenes still paid for ten near-identical
+    generations. Keyed on the prompt instead, scenes that ask for the same
+    picture share a request digest (and therefore one asset), while each
+    genuinely distinct prompt still gets its own seed and its own image.
+    """
+    if prompt not in assigned:
+        assigned[prompt] = base_seed + len(assigned)
+    return assigned[prompt]
 
 
 # --------------------------------------------------------------------------
 # build
 # --------------------------------------------------------------------------
 
+def motion_cycle_for(style):
+    """The order moves are assigned in, for a named movement style.
+
+    A style is a research directive ("sources describe held, motionless
+    frames"), not a preference: it decides whether this video breathes, drifts
+    across its images, or holds them still. Unknown or absent -> the default
+    mixed cycle, which is what every project got before directives existed.
+    """
+    return MOTION_STYLE_CYCLES.get(style or "", MOTION_CYCLE)
+
+
 def build_storyboard(video_id, metadata, spec, profile=None, scene_count=None,
-                     source_width=None, source_height=None):
-    """Derive a complete storyboard. Pure function of its arguments."""
+                     source_width=None, source_height=None, directives=None):
+    """Derive a complete storyboard. Pure function of its arguments.
+
+    ``directives`` is ``research.production_directives()["values"]``: the
+    shot length, movement style and dissolve length sourced research asked
+    for. Each one is applied only if it is present, so a project with no
+    research renders exactly as it did before, and each applied value is
+    recorded in ``storyboard["research_applied"]`` so the reason a video is
+    paced the way it is stays inspectable.
+    """
     target_seconds = float(spec.get("duration_seconds") or 0)
     if target_seconds <= 0:
         raise StoryboardError("video_spec.duration_seconds must be > 0")
@@ -196,10 +263,15 @@ def build_storyboard(video_id, metadata, spec, profile=None, scene_count=None,
     width = int(spec.get("width") or 1920)
     height = int(spec.get("height") or 1080)
     fps = spec.get("fps") or 30
+    directives = directives or {}
+    applied = {}
 
-    seconds_per_scene = DEFAULT_SECONDS_PER_SCENE
+    seconds_per_scene = default_seconds_per_scene(target_seconds)
     if profile and profile.get("seconds_per_shot_median"):
         seconds_per_scene = float(profile["seconds_per_shot_median"])
+    if directives.get("seconds_per_scene"):
+        seconds_per_scene = float(directives["seconds_per_scene"])
+        applied["seconds_per_scene"] = seconds_per_scene
     seconds_per_scene = max(seconds_per_scene, MIN_SCENE_SECONDS)
 
     if scene_count is None:
@@ -209,6 +281,16 @@ def build_storyboard(video_id, metadata, spec, profile=None, scene_count=None,
     transition_seconds = min(
         DEFAULT_TRANSITION_SECONDS,
         max(target_seconds / scene_count * 0.2, 0.0))
+    if directives.get("transition_seconds"):
+        # Still bounded by the scene it leaves: a dissolve cannot be longer
+        # than the shot it dissolves out of, whatever research says.
+        transition_seconds = min(float(directives["transition_seconds"]),
+                                 max(target_seconds / scene_count * 0.4, 0.0))
+        applied["transition_seconds"] = round(transition_seconds, 3)
+
+    motion_cycle = motion_cycle_for(directives.get("motion_style"))
+    if directives.get("motion_style") in MOTION_STYLE_CYCLES:
+        applied["motion_style"] = directives["motion_style"]
 
     # Solve scene duration so the finished timeline - which is shorter than
     # the sum of the scenes by one overlap per cut - lands on the target.
@@ -230,12 +312,13 @@ def build_storyboard(video_id, metadata, spec, profile=None, scene_count=None,
     categories = [entry["value"] for entry in (profile or {}).get("visual_categories", [])]
     narration = split_script(metadata.get("script"), scene_count)
     sections = _sections_for(scene_count, profile)
-    offset = _stable_offset(video_id, len(MOTION_CYCLE))
+    offset = _stable_offset(video_id, len(motion_cycle))
 
     src_w = int(source_width or DEFAULT_SOURCE_WIDTH)
     src_h = int(source_height or DEFAULT_SOURCE_HEIGHT)
 
     scenes = []
+    seeds_by_prompt = {}
     for i in range(scene_count):
         section = sections[i]
         prompt = _scene_prompt(base_prompt, categories, i, section)
@@ -256,13 +339,13 @@ def build_storyboard(video_id, metadata, spec, profile=None, scene_count=None,
                 "provider": None,
                 "width": src_w,
                 "height": src_h,
-                "seed": seed + i,
+                "seed": _seed_for_prompt(prompt, seed, seeds_by_prompt),
                 "model": model,
                 "style": style,
                 "request_digest": None,
             },
             "motion": {
-                "kind": MOTION_CYCLE[(i + offset) % len(MOTION_CYCLE)],
+                "kind": motion_cycle[(i + offset) % len(motion_cycle)],
                 "fit": "cover",
                 "amount": None,
             },
@@ -311,6 +394,9 @@ def build_storyboard(video_id, metadata, spec, profile=None, scene_count=None,
                             "confidence": profile["confidence"],
                             "observation_count": profile["observation_count"]}
                            if profile else None),
+        # What sourced research changed about this plan, and nothing else:
+        # an empty mapping means the defaults stood, not that research ran.
+        "research_applied": applied,
         "scenes": scenes,
         "timeline_seconds": motion_mod.timeline_seconds(scenes),
     }
@@ -338,6 +424,42 @@ def scene_request(scene, require_depicted=False):
     )
 
 
+def apply_scene_prompts(storyboard, prompts, negative_prompt=None,
+                        intents=None):
+    """Replace each scene's prompt with a fully compiled one.
+
+    The difference from ``apply_scene_motifs`` is what the string means.
+    A motif is a fragment appended to the project's base prompt; a compiled
+    prompt (``visual_direction.compile_scene_prompts``) already contains the
+    environment *and* the identity facets in the order a generator weights
+    them, so prefixing the old free-text base prompt would only put the
+    slop back in front of it.
+
+    Seeds and request digests are recomputed here for the same reason they
+    are there: identity is the prompt, so two scenes asking for the same
+    picture must share a seed and a digest and therefore one render.
+    """
+    scenes = storyboard.get("scenes", [])
+    base_seed = min((s["generation"].get("seed", 0) for s in scenes
+                     if s.get("generation")), default=0)
+    seeds_by_prompt = {}
+    for scene in scenes:
+        prompt = prompts.get(scene["scene_id"])
+        if not prompt:
+            continue
+        scene["image_prompt"] = prompt
+        if intents and intents.get(scene["scene_id"]):
+            # What this scene depicts, in words a person reads - the prompt
+            # itself is the compiled form and is not a summary of anything.
+            scene["visual_intent"] = intents[scene["scene_id"]]
+        if negative_prompt is not None:
+            scene["negative_prompt"] = negative_prompt
+        scene["generation"]["seed"] = _seed_for_prompt(
+            prompt, base_seed, seeds_by_prompt)
+        scene["generation"]["request_digest"] = scene_request(scene).digest()
+    return storyboard
+
+
 def apply_scene_motifs(storyboard, motifs):
     """Rebuild each scene's prompt around its subject-grounded motif.
 
@@ -347,17 +469,31 @@ def apply_scene_motifs(storyboard, motifs):
     with something specific to that scene's own narration, and recomputes
     the scene's request digest - reuse-by-digest must key on the prompt that
     will actually be generated, not the one it replaced.
+
+    The prompt carries only what a generator should draw. Scene bookkeeping
+    (index, section) stays in the scene's own fields: appending ", scene 7,
+    body" told the model nothing about the picture, and - because it made
+    every prompt unique - it also forced a separate generation for two
+    scenes that were deliberately assigned the *same* environment. With the
+    tag gone, those two scenes share a request digest and therefore one
+    generated asset, which is the intended behaviour: a repeated
+    environment is a reuse, not a second render.
     """
     base_prompt = (storyboard.get("visual_plan_prompt") or "").strip()
-    for scene in storyboard.get("scenes", []):
+    scenes = storyboard.get("scenes", [])
+    base_seed = min((s["generation"].get("seed", 0) for s in scenes
+                     if s.get("generation")), default=0)
+    seeds_by_prompt = {}
+    for scene in scenes:
         motif = motifs.get(scene["scene_id"])
         if not motif:
             continue
         scene["visual_intent"] = motif
         parts = [base_prompt] if base_prompt else []
         parts.append(motif)
-        parts.append(f"scene {scene['index'] + 1}, {scene['section']}")
         scene["image_prompt"] = ", ".join(p for p in parts if p)
+        scene["generation"]["seed"] = _seed_for_prompt(
+            scene["image_prompt"], base_seed, seeds_by_prompt)
         scene["generation"]["request_digest"] = scene_request(scene).digest()
     return storyboard
 

@@ -28,7 +28,8 @@ export async function apiGet<T>(path: string): Promise<T> {
 // response bodies themselves.
 // DRF's SessionAuthentication enforces Django's CSRF check on unsafe
 // methods; the token travels as a plain (non-HttpOnly) cookie set when the
-// user authenticates via /admin/login/, so we just relay it as a header.
+// user authenticates (via the app's own sign-in page, POST
+// /api/v1/auth/session/), so we just relay it as a header.
 function csrfToken(): string {
   const match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
   return match ? decodeURIComponent(match[1]) : "";
@@ -37,6 +38,43 @@ function csrfToken(): string {
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken() },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const responseBody = await response.json().catch(() => ({}));
+    throw new ApiError(
+      response.status,
+      responseBody.detail ?? summarizeFieldErrors(responseBody) ?? response.statusText,
+    );
+  }
+  return response.json() as Promise<T>;
+}
+
+export async function apiPut<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken() },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const responseBody = await response.json().catch(() => ({}));
+    throw new ApiError(
+      response.status,
+      responseBody.detail ?? summarizeFieldErrors(responseBody) ?? response.statusText,
+    );
+  }
+  return response.json() as Promise<T>;
+}
+
+// DELETE carries a body here: destroying a production requires echoing its
+// id back (apps/projects/serializers.py ProjectDeleteSerializer), so the
+// request needs one even though DELETE often does not.
+export async function apiDelete<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "DELETE",
     credentials: "include",
     headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken() },
     body: JSON.stringify(body),

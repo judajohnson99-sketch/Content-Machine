@@ -14,7 +14,10 @@ Styles are tuned to stay above the QC blackdetect luminance floor
 """
 import argparse
 import binascii
+import colorsys
+import hashlib
 import logging
+import random
 import shutil
 import struct
 import subprocess
@@ -46,40 +49,204 @@ STYLES = {
 MIN_MEAN_LUMA = 34.0
 
 
-def build_still(style, index, out_path, seed, width=WIDTH, height=HEIGHT):
-    """One plate: radial gradient, vignette, and a little noise to stop banding.
+# How a plate's own variation is derived. A storyboard asks for one picture
+# per shot and expects them to differ; the old generator varied only the
+# gradient's centre, so fifteen different prompts came back as fifteen copies
+# of the same wash - which the scene checks correctly refused as duplicates.
+# What varies now is the thing that actually makes two abstracts look unlike
+# each other: hue, the number and placement of light sources, and the shape
+# of the cloud field laid over them.
+_HUE_FAMILIES = {
+    # style -> (base hue degrees, how far a plate may wander from it)
+    "deep-night": (232, 70),
+    "storm-slate": (210, 40),
+    "warm-ember": (26, 36),
+    "muted-forest": (150, 44),
+    "dust-archive": (36, 30),
+}
+# Lightness bands, 0-1. The floor keeps every plate clear of QC's black
+# detection; the ceiling keeps a sleep plate from glowing like a monitor.
+_CORE_LIGHTNESS = (0.26, 0.46)
+_FIELD_LIGHTNESS = (0.09, 0.18)
+
+
+def _plate_rng(style, index, seed, prompt=""):
+    """A deterministic stream per (prompt, style, seed, index).
+
+    Keyed on the prompt because that is what the storyboard varies: two
+    scenes that asked for the same picture must get the same plate (the
+    request digest already shares one render between them), and two scenes
+    that asked for different pictures must not.
+    """
+    key = f"{prompt}\x00{style}\x00{seed}\x00{index}".encode("utf-8")
+    return random.Random(int(hashlib.sha256(key).hexdigest()[:16], 16))
+
+
+def _hsl_hex(hue, saturation, lightness):
+    """``0xRRGGBB`` for an HSL triple. Small enough not to want a library."""
+    red, green, blue = colorsys.hls_to_rgb((hue % 360) / 360.0, lightness, saturation)
+    return "0x{:02x}{:02x}{:02x}".format(
+        int(red * 255), int(green * 255), int(blue * 255))
+
+
+def plate_palette(style, index, seed, prompt="", lift=1.0):
+    """Three colours for one plate: two lights and the field they sit in.
+
+    Returned rather than drawn so a caller (and a test) can see what a
+    prompt resolved to without rendering anything.
+
+    ``lift`` raises every lightness together. It is the retry knob for a
+    plate that came out with too little structure in it, and it works where
+    raising contrast does not: this generator's modulation is multiplicative,
+    so a frame with a mean luma of 36 simply has less room to vary than one
+    at 60. (Contrast is the wrong knob and was actively harmful - ffmpeg's
+    eq pivots around mid-grey, so pushing contrast on a dark plate clips it
+    into black and *lowers* its standard deviation.)
+    """
+    rng = _plate_rng(style, index, seed, prompt)
+    base, spread = _HUE_FAMILIES.get(style, _HUE_FAMILIES["deep-night"])
+    hue = base + rng.uniform(-spread, spread)
+    # The second light sits away from the first, which is what stops the
+    # frame reading as one flat wash in one colour.
+    partner = hue + rng.choice((-1, 1)) * rng.uniform(28, 74)
+    def lightness(low_high):
+        return min(rng.uniform(*low_high) * lift, 0.72)
+
+    return {
+        "core": _hsl_hex(hue, rng.uniform(0.30, 0.55), lightness(_CORE_LIGHTNESS)),
+        "accent": _hsl_hex(partner, rng.uniform(0.28, 0.52), lightness(_CORE_LIGHTNESS)),
+        "field": _hsl_hex(hue + rng.uniform(-18, 18), rng.uniform(0.18, 0.38),
+                          lightness(_FIELD_LIGHTNESS)),
+        "rng": rng,
+    }
+
+
+def build_still(style, index, out_path, seed, width=WIDTH, height=HEIGHT,
+                prompt="", lift=1.0):
+    """One plate: two coloured lights in a field, under a soft cloud texture.
+
+    Still an abstract - no object is depicted and nothing here may be
+    described as a photograph - but an abstract with structure: the blurred
+    noise field laid over the gradients gives the frame real tonal variation,
+    which is both what makes it watchable under slow motion and what keeps it
+    clear of the "flat fill" check that rejects a plate with nothing in it.
 
     ``width``/``height`` default to the output resolution for the plain
     `visuals` path; a storyboard scene asks for its own (smaller) source
     size, and the plate must actually be that size or storyboard QC's
     dimension check - which exists to catch exactly that mismatch - fails.
     """
-    inner, outer = STYLES[style][0], STYLES[style][1]
     width, height = int(width), int(height)
-    # Vary a sequence by moving the gradient's centre, NOT by rotating the
-    # frame: rotating a 16:9 plate leaves black corners (and near 90 degrees,
-    # black most of the frame), which trips QC's blackdetect.
-    offsets = ((0.50, 0.50), (0.38, 0.44), (0.62, 0.56),
-               (0.44, 0.62), (0.58, 0.40), (0.50, 0.58))
-    fx, fy = offsets[index % len(offsets)]
-    source = (f"gradients=s={width}x{height}:c0={inner}:c1={outer}"
-              f":type=radial:x0={int(width * fx)}:y0={int(height * fy)}"
-              f":nb_colors=2:seed={seed + index}:d=1")
-    # Slight blur smooths gradient steps; noise adds dither so large flat
-    # areas do not band under h264. A gentle vignette shapes the edges
-    # without dragging the frame under the black threshold.
-    chain = (f"gblur=sigma=18,"
-             f"vignette=PI/9,"
-             f"noise=alls=6:allf=t+u,"
-             f"format=yuv420p")
-    result = subprocess.run([
-        "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", source,
-        "-vf", chain, "-frames:v", "1", str(out_path),
-    ], capture_output=True, text=True)
+    palette = plate_palette(style, index, seed, prompt, lift=lift)
+    rng = palette["rng"]
+
+    # Two light centres, kept away from the exact middle and from each other
+    # so the composition has a direction rather than a bullseye.
+    x0, y0 = rng.uniform(0.18, 0.5), rng.uniform(0.2, 0.62)
+    x1, y1 = rng.uniform(0.5, 0.86), rng.uniform(0.3, 0.84)
+    noise_seed = rng.randrange(1, 1 << 24)
+    # How many large shapes the frame is made of, and how fine the detail
+    # inside them is. Varying the coarse grid per plate is most of why two
+    # plates do not read as the same picture with the hue changed.
+    coarse_w = rng.randint(9, 18)
+    coarse_h = max(int(round(coarse_w * height / width)), 4)
+    fine_w = coarse_w * rng.randint(4, 7)
+    fine_h = max(int(round(fine_w * height / width)), 3)
+
+    sources = [
+        f"gradients=s={width}x{height}:c0={palette['core']}:c1={palette['field']}"
+        f":type=radial:x0={int(width * x0)}:y0={int(height * y0)}"
+        f":nb_colors=2:seed={noise_seed}:d=1",
+        f"gradients=s={width}x{height}:c0={palette['accent']}:c1=0x000000"
+        f":type=radial:x0={int(width * x1)}:y0={int(height * y1)}"
+        f":nb_colors=2:seed={noise_seed + 1}:d=1",
+        # The cloud fields. Generated *small* and scaled up rather than
+        # generated large and blurred down: blurring white noise at output
+        # size destroys almost all of its amplitude, which is how an earlier
+        # version of this produced flat grey washes that the structure check
+        # correctly rejected. Scaling a tiny noise field up keeps the full
+        # contrast and turns each pixel into a large soft shape.
+        f"nullsrc=s={coarse_w}x{coarse_h}:d=1",
+        f"nullsrc=s={fine_w}x{fine_h}:d=1",
+    ]
+    filter_complex = (
+        f"[1:v]gblur=sigma={max(width // 16, 18)}[accent];"
+        f"[0:v][accent]blend=all_mode=screen:all_opacity={rng.uniform(0.6, 0.95):.2f}[lit];"
+        f"[2:v]format=gray,noise=alls=100:allf=t+u:all_seed={noise_seed},"
+        f"scale={width}:{height}:flags=bicubic,gblur=sigma={max(width / (coarse_w * 4.0), 2):.1f}[coarse];"
+        f"[3:v]format=gray,noise=alls=100:allf=t+u:all_seed={noise_seed + 7},"
+        f"scale={width}:{height}:flags=bicubic,gblur=sigma={max(width / (fine_w * 3.0), 1):.1f}[fine];"
+        f"[coarse][fine]blend=all_mode=overlay:all_opacity={rng.uniform(0.35, 0.6):.2f}[cloud];"
+        f"[lit][cloud]blend=all_mode=softlight:all_opacity={rng.uniform(0.92, 1.0):.2f}[tex];"
+        f"[tex]gblur=sigma={rng.uniform(1.0, 3.0):.1f},"
+        f"eq=contrast={rng.uniform(1.15, 1.35):.2f}:"
+        f"brightness={rng.uniform(0.02, 0.10):.3f}:saturation={rng.uniform(1.0, 1.4):.2f},"
+        f"vignette=PI/{rng.uniform(8, 12):.1f},"
+        f"noise=alls=4:allf=t+u,format=yuv420p[out]"
+    )
+    cmd = ["ffmpeg", "-y", "-v", "error"]
+    for source in sources:
+        cmd += ["-f", "lavfi", "-i", source]
+    cmd += ["-filter_complex", filter_complex, "-map", "[out]",
+            "-frames:v", "1", str(out_path)]
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         log.error("ffmpeg failed generating %s:\n%s", out_path.name,
                   result.stderr.strip()[-800:])
         raise SystemExit(1)
+
+
+# Luma standard deviation a finished plate must carry. Deliberately above
+# qc.MIN_LUMA_STDDEV: a plate that only just clears the check that rejects
+# blank frames is still a blank frame to a viewer, and the margin is what
+# stops a dark palette producing one.
+MIN_PLATE_STDDEV = 7.5
+# How much the palette is lifted on each retry, and how many times. Kept
+# small and few: the point is to rescue a plate that came out too dark to
+# carry any structure, not to turn a night scene into a day one.
+_STRUCTURE_LIFTS = (1.0, 1.25, 1.5, 1.8)
+
+
+def measure_luma_stddev(path, width=160, height=90):
+    """Standard deviation of luma over a downsample, 0-255, or None.
+
+    The same measurement qc.assess_image makes, computed here so the
+    generator can check its own work before handing a plate on. Reading raw
+    gray bytes out of ffmpeg keeps the stdlib-only rule intact.
+    """
+    result = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path),
+         "-vf", f"scale={width}:{height},format=gray", "-frames:v", "1",
+         "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+        capture_output=True)
+    data = result.stdout
+    if result.returncode != 0 or not data:
+        return None
+    mean = sum(data) / len(data)
+    variance = sum((v - mean) ** 2 for v in data) / len(data)
+    return variance ** 0.5
+
+
+def build_plate(style, index, out_path, seed, width=WIDTH, height=HEIGHT, prompt=""):
+    """Draw a plate and keep drawing until it has structure in it.
+
+    The generator checking its own output is the difference between a
+    pipeline that emits blank frames and one that does not. It is bounded
+    and deterministic: the same inputs always produce the same plate, and
+    the escalation stops after the fixed list of lifts whether or not it
+    succeeded - at which point the scene stage's own check is still there to
+    refuse what this could not fix, rather than something here pretending.
+    """
+    stddev = None
+    for lift in _STRUCTURE_LIFTS:
+        build_still(style, index, out_path, seed, width=width, height=height,
+                    prompt=prompt, lift=lift)
+        stddev = measure_luma_stddev(out_path)
+        if stddev is None or stddev >= MIN_PLATE_STDDEV:
+            return stddev
+        log.debug("%s: luma sd %.1f under %.1f; redrawing with %.2fx contrast",
+                  out_path.name, stddev, MIN_PLATE_STDDEV, lift)
+    return stddev
 
 
 def measure_luma(path):

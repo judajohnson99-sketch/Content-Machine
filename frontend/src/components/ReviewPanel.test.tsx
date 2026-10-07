@@ -130,6 +130,84 @@ describe("ReviewPanel", () => {
     await waitFor(() => expect(grade).toHaveBeenCalledWith("abc", true, ""));
   });
 
+  // A synthesised music bed is where the CLI-only audio verdict used to hide:
+  // the gate demands it, so the reviewer has to be able to give it here.
+  function audioAssets(prov: Record<string, unknown>) {
+    return {
+      video_id: "abc", video: null, thumbnails: [], images: [], qc: null,
+      storyboard: null, package: null, logs: [],
+      audio: {
+        path: "audio/mix.wav", bytes: 100, modified_utc: "2026-09-19T00:00:00Z",
+        seconds: 600, mean_volume_db: -20, layers: [], commercial_use_cleared: true,
+        attributions_required: [],
+      },
+      audio_provenance: {
+        kind: "music", source: "music", production_grade_capable: false,
+        production_grade: null, graded_by: null, graded_utc: null, grade_notes: null,
+        kind_reasoning: "the concept asks for music", chosen_detail: "generative ambient",
+        considered: [
+          { source: "library", available: false, production_grade_capable: true,
+            rights: "declared per track", cost: "free", detail: "no rights-declared track matched" },
+          { source: "music", available: true, production_grade_capable: false,
+            rights: "generated", cost: "free", detail: "generative ambient" },
+        ],
+        ...prov,
+      },
+    };
+  }
+
+  it("asks for an audio verdict only after the reviewer confirms they listened", async () => {
+    vi.spyOn(projectsApi, "getProject").mockResolvedValue(project());
+    vi.spyOn(projectsApi, "getProjectStatus").mockResolvedValue(
+      status({ verdict: "NEEDS_ATTENTION", blocking: ["audio has no human grade"] }),
+    );
+    vi.spyOn(reviewApi, "listReviewDecisions").mockResolvedValue([]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.spyOn(assetsApi, "getAssets").mockResolvedValue(audioAssets({}) as any);
+    const grade = vi.spyOn(reviewApi, "recordAudioGrade").mockResolvedValue({
+      utc: "2026-09-19T00:00:00Z", reviewer: "owner@example.com", notes: "", production_grade: true,
+    });
+
+    renderWithClient(<ReviewPanel videoId="abc" />);
+    const mark = await screen.findByRole("button", { name: "Audio is publishable" });
+    expect(mark).toBeDisabled();
+    await userEvent.click(screen.getByLabelText(/listened to this track/));
+    expect(mark).toBeEnabled();
+    await userEvent.click(mark);
+    await waitFor(() => expect(grade).toHaveBeenCalledWith("abc", true, ""));
+  });
+
+  it("records a rejection without the listened-to confirmation", async () => {
+    vi.spyOn(projectsApi, "getProject").mockResolvedValue(project());
+    vi.spyOn(projectsApi, "getProjectStatus").mockResolvedValue(status());
+    vi.spyOn(reviewApi, "listReviewDecisions").mockResolvedValue([]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.spyOn(assetsApi, "getAssets").mockResolvedValue(audioAssets({}) as any);
+    const grade = vi.spyOn(reviewApi, "recordAudioGrade").mockResolvedValue({
+      utc: "2026-09-19T00:00:00Z", reviewer: "owner@example.com", notes: "", production_grade: false,
+    });
+
+    renderWithClient(<ReviewPanel videoId="abc" />);
+    await userEvent.click(await screen.findByRole("button", { name: "Audio is not publishable" }));
+    await waitFor(() => expect(grade).toHaveBeenCalledWith("abc", false, ""));
+  });
+
+  it("asks for no audio verdict when the source itself is the deliverable", async () => {
+    vi.spyOn(projectsApi, "getProject").mockResolvedValue(project());
+    vi.spyOn(projectsApi, "getProjectStatus").mockResolvedValue(status());
+    vi.spyOn(reviewApi, "listReviewDecisions").mockResolvedValue([]);
+    vi.spyOn(assetsApi, "getAssets").mockResolvedValue(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      audioAssets({ kind: "texture", source: "noise", production_grade_capable: true }) as any,
+    );
+    const grade = vi.spyOn(reviewApi, "recordAudioGrade");
+
+    renderWithClient(<ReviewPanel videoId="abc" />);
+    await waitFor(() => expect(screen.getByText("no verdict required")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Audio is publishable" })).toBeNull();
+    expect(grade).not.toHaveBeenCalled();
+  });
+
   it("renders decision history newest first", async () => {
     vi.spyOn(projectsApi, "getProject").mockResolvedValue(project());
     vi.spyOn(projectsApi, "getProjectStatus").mockResolvedValue(status());

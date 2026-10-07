@@ -10,7 +10,8 @@ export type StageName =
   | "audio"
   | "visuals"
   | "run"
-  | "produce";
+  | "produce"
+  | "editable";
 
 export type RunStatus =
   | "QUEUED"
@@ -76,7 +77,9 @@ export interface StageParams {
     concept_id?: string | null;
     duration?: number | null;
     production_grade_visuals?: boolean | null;
+    scenes?: boolean | null;
   };
+  editable: { render?: boolean };
 }
 
 export interface StageDescriptor {
@@ -90,7 +93,7 @@ export interface StageDescriptor {
 // docstring in scripts/project.py) rather than a step in the sequence, so
 // it is surfaced separately by the Workspace page, not as a ninth node.
 export const PIPELINE_STAGES: StageDescriptor[] = [
-  { stage: "research", label: "Research", description: "Source-backed subject research (skipped when the concept doesn't need it)." },
+  { stage: "research", label: "Research", description: "Source-backed subject research if the concept needs it, plus brief-driven competitor research if a research brief exists." },
   { stage: "creative", label: "Creative Brief", description: "Title, script, description and audio plan." },
   { stage: "storyboard", label: "Storyboard", description: "Scene plan derived from the script and format profile." },
   { stage: "scenes", label: "Scene Images", description: "One generated image per storyboard scene." },

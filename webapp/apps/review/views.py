@@ -17,6 +17,7 @@ from apps.engine.exceptions import ProjectNotFound, translate
 from apps.engine.services import review as review_service
 
 from .serializers import (
+    AudioGradeRequestSerializer, AudioGradeSerializer,
     ReviewDecisionRequestSerializer, ReviewDecisionSerializer,
     VisualGradeRequestSerializer, VisualGradeSerializer,
 )
@@ -69,3 +70,28 @@ class VisualGradeView(APIView):
         except project.ProjectError as e:
             translate(e)
         return Response(VisualGradeSerializer(entry).data, status=status.HTTP_201_CREATED)
+
+
+class AudioGradeView(APIView):
+    """POST /api/v1/projects/{video_id}/audio-grade/ - the human's verdict
+    on the project's audio.
+
+    Exists so this decision is not CLI-only: the gate holds a synthesised
+    music track until a person has listened, and the person doing the
+    review is in the browser. Same rules as the visual claim - reviewer
+    from request.user, scripts.project.record_audio_grade() the sole
+    writer.
+    """
+
+    def post(self, request, video_id):
+        serializer = AudioGradeRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        reviewer = request.user.email or request.user.get_username()
+        try:
+            entry = review_service.record_audio_grade(
+                video_id, reviewer,
+                serializer.validated_data["production_grade"],
+                serializer.validated_data["notes"])
+        except project.ProjectError as e:
+            translate(e)
+        return Response(AudioGradeSerializer(entry).data, status=status.HTTP_201_CREATED)

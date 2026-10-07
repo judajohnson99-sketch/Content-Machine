@@ -30,7 +30,7 @@
 }
 
 .count {
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   color: var(--text-secondary);
   text-transform: none;
   letter-spacing: 0;
@@ -60,7 +60,7 @@
   margin-bottom: var(--space-3);
   padding: 8px 12px;
   border-left: 2px solid var(--accent-2);
-  background: rgba(9, 13, 25, 0.4);
+  background: var(--glass-1);
   border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
   line-height: 1.5;
 }
@@ -96,7 +96,7 @@
   padding: var(--space-3);
   border-radius: var(--radius-md);
   border: 1px solid var(--accent-border);
-  background: rgba(9, 13, 25, 0.5);
+  background: var(--glass-2);
 }
 
 .tileOpen .tileCaption {
@@ -116,7 +116,7 @@
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   overflow: hidden;
-  background: #03050c;
+  background: var(--bg-well);
   cursor: pointer;
   aspect-ratio: 16 / 10;
   transition: border-color var(--dur-1) var(--ease), transform var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease);
@@ -151,9 +151,9 @@
   font-weight: 700;
   padding: 2px 7px;
   border-radius: var(--radius-full);
-  background: rgba(3, 5, 12, 0.75);
+  background: var(--glass-well);
   color: var(--silver);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--hairline-light);
   backdrop-filter: blur(6px);
   white-space: nowrap;
   overflow: hidden;
@@ -195,7 +195,7 @@
 
 .lineage dt {
   color: var(--text-tertiary);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-size: var(--text-2xs);
@@ -213,7 +213,7 @@
   padding: var(--space-3);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
-  background: rgba(9, 13, 25, 0.5);
+  background: var(--glass-2);
 }
 
 .audio {
@@ -282,7 +282,7 @@
 }
 
 .logLink:hover {
-  background: rgba(148, 163, 209, 0.08);
+  background: var(--tint-2);
   color: var(--text-primary);
 }
 

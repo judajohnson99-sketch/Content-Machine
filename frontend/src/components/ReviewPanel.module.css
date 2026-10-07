@@ -147,7 +147,7 @@
   padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
-  background: rgba(9, 13, 25, 0.5);
+  background: var(--glass-2);
 }
 
 .gradeHead {

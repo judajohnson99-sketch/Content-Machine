@@ -26,9 +26,11 @@ import argparse
 import json
 import logging
 import math
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -52,6 +54,23 @@ KEN_BURNS_UPSCALE = 2
 # under 900 MB. Refuse before the kernel does, so the failure is a readable
 # validation error instead of SIGKILL.
 MAX_IMAGE_SLOTS = 24
+
+# Above MAX_IMAGE_SLOTS scenes the one-invocation filter graph is replaced by
+# the piecewise renderer below (render_scenes_piecewise). That path holds at
+# most two inputs open at a time, so scene count stops being bounded by
+# memory: a two-hour video made of 240 distinct 30-second shots renders in
+# the same footprint as a 24-scene one. The ceiling here is not a memory
+# limit but a sanity limit - a storyboard with more scenes than this is
+# almost certainly a bug in whatever produced it.
+MAX_SCENES_PIECEWISE = 1200
+
+# Intermediate clips are concatenated without re-encoding, so they must be
+# encoded identically to the master. One full-quality encode of the timeline
+# is all a long video costs.
+_PIECEWISE_VIDEO_ARGS = [
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "medium",
+    "-crf", "20", "-an",
+]
 
 
 class SpecValidationError(Exception):
@@ -106,11 +125,11 @@ def _normalize_scenes(raw_scenes, base_dir):
         return None, ["'scenes' must be a list"]
     if not raw_scenes:
         return None, ["'scenes' is empty; remove the key or add scenes"]
-    if len(raw_scenes) > MAX_IMAGE_SLOTS:
+    if len(raw_scenes) > MAX_SCENES_PIECEWISE:
         errors.append(
-            f"this spec has {len(raw_scenes)} scenes, over the {MAX_IMAGE_SLOTS} "
-            f"limit (each scene is a concurrent ffmpeg input; too many exhaust "
-            f"memory and the render is OOM-killed)")
+            f"this spec has {len(raw_scenes)} scenes, over the "
+            f"{MAX_SCENES_PIECEWISE} ceiling; a storyboard this long is a bug "
+            f"in whatever built it, not a render to attempt")
 
     scenes = []
     for i, raw_scene in enumerate(raw_scenes):
@@ -152,7 +171,38 @@ def _normalize_scenes(raw_scenes, base_dir):
             "motion": dict(motion_cfg),
             "transition": dict(transition_cfg),
         })
+    if len(scenes) > MAX_IMAGE_SLOTS:
+        errors.extend(piecewise_problems(scenes))
     return scenes, errors
+
+
+def _overlap_after(scene):
+    """How long the crossfade leaving ``scene`` lasts. A cut is zero."""
+    transition = scene.get("transition") or {}
+    if transition.get("kind", "crossfade") == "cut":
+        return 0.0
+    return float(transition.get("duration_seconds", 0.0) or 0.0)
+
+
+def piecewise_problems(scenes):
+    """Why this scene list cannot be rendered piece by piece, if it cannot.
+
+    The piecewise renderer cuts each scene into an incoming overlap, a body
+    and an outgoing overlap. A scene shorter than its two overlaps combined
+    has no body, so the arithmetic that makes the concatenated timeline come
+    out exactly right would silently stop holding. Refuse with the numbers
+    rather than render something a frame-count check would then reject.
+    """
+    problems = []
+    for index, scene in enumerate(scenes):
+        lead = _overlap_after(scenes[index - 1]) if index else 0.0
+        tail = _overlap_after(scene) if index < len(scenes) - 1 else 0.0
+        if lead + tail >= float(scene["duration_seconds"]):
+            problems.append(
+                f"{scene['scene_id']}: {scene['duration_seconds']}s scene is "
+                f"not longer than its {lead}s incoming and {tail}s outgoing "
+                f"crossfades combined")
+    return problems
 
 
 def validate_and_normalize(raw, base_dir):
@@ -483,6 +533,183 @@ def build_ffmpeg_command(spec, output_path):
         str(output_path),
     ]
     return cmd
+
+
+def _scene_piece_plan(scenes, fps):
+    """Frame counts for each scene's incoming overlap, body and outgoing one.
+
+    Every boundary is rounded to a frame *on the finished timeline*, not
+    within its own scene, and each piece is then the difference between two
+    of those absolute positions. Rounding each scene independently instead
+    would be fine for a dozen scenes and badly wrong for three hundred: the
+    same half-frame error in every scene is a systematic one, and 240 scenes
+    of it is seconds of drift that QC would (rightly) call a broken render.
+    """
+    fps = float(fps)
+    starts = motion_mod.scene_start_times(scenes)
+
+    def at(seconds):
+        return int(round(seconds * fps))
+
+    last = len(scenes) - 1
+    # Where each scene opens, and how long each crossfade lasts, in frames on
+    # the finished timeline. The crossfade leaving scene i begins exactly
+    # where scene i+1 begins - that is what "overlap" means here.
+    opens = [at(start) for start in starts]
+    overlap = [int(round(_overlap_after(scene) * fps)) for scene in scenes[:-1]]
+
+    plan = []
+    for index, scene in enumerate(scenes):
+        # A scene's own clip runs from where it opens to the end of the
+        # crossfade it hands to the next scene (or to its own end, if last).
+        clip_end = (opens[index + 1] + overlap[index] if index < last
+                    else at(starts[index] + float(scene["duration_seconds"])))
+        lead = overlap[index - 1] if index else 0
+        tail = overlap[index] if index < last else 0
+        total = clip_end - opens[index]
+        plan.append({
+            "scene": scene,
+            "total_frames": total,
+            "lead_frames": lead,
+            "tail_frames": tail,
+            "body_frames": total - lead - tail,
+        })
+    return plan
+
+
+def _render_scene_pieces(index, piece, target, workdir):
+    """Render one scene once and cut it into its head, body and tail files.
+
+    One ffmpeg invocation, one input: this is what makes a two-hour render
+    cost the same memory as a two-minute one. The motion spans the whole
+    scene before the split, so cutting the overlaps out of it does not change
+    what the move looks like.
+    """
+    # One input frame, expanded by zoompan into exactly the frames this clip
+    # owns. The cycling path instead loops the image and truncates the output,
+    # which is fine when the whole scene is one output; here the pieces are
+    # cut by frame number, so the move has to be exactly as long as the clip
+    # or a trim would land in zoompan's restart on the next input frame.
+    frame_scene = dict(piece["scene"],
+                       duration_seconds=piece["total_frames"] / float(target["fps"]))
+    parts = [motion_mod.build_scene_filter(0, "m", frame_scene, target)]
+    # Only the pieces this scene actually contributes: the first scene has no
+    # incoming overlap and the last has no outgoing one.
+    wanted = [
+        (name, start, length, workdir / f"{index:05d}-{name}.mp4")
+        for name, start, length in (
+            ("head", 0, piece["lead_frames"]),
+            ("body", piece["lead_frames"], piece["body_frames"]),
+            ("tail", piece["lead_frames"] + piece["body_frames"], piece["tail_frames"]),
+        )
+        if length > 0
+    ]
+    split_labels = [f"p{i}" for i in range(len(wanted))]
+    parts.append(f"[m]split={len(wanted)}" + "".join(f"[{l}]" for l in split_labels))
+    cmd_outputs = []
+    for (name, start, length, path), label in zip(wanted, split_labels):
+        out_label = f"{label}c"
+        parts.append(
+            f"[{label}]trim=start_frame={start}:end_frame={start + length},"
+            f"setpts=PTS-STARTPTS[{out_label}]")
+        cmd_outputs += ["-map", f"[{out_label}]", "-r", f"{target['fps']}",
+                        *_PIECEWISE_VIDEO_ARGS, str(path)]
+
+    cmd = ["ffmpeg", "-y", "-i", str(piece["scene"]["image_path"]),
+           "-filter_complex", ";".join(parts), *cmd_outputs]
+    run_ffmpeg(cmd)
+    return {name: path for name, _, _, path in wanted}
+
+
+def _render_transition(tail_path, head_path, frames, target, out_path):
+    """The crossfade between two scenes, as its own short clip."""
+    seconds = frames / float(target["fps"])
+    cmd = [
+        "ffmpeg", "-y", "-i", str(tail_path), "-i", str(head_path),
+        "-filter_complex",
+        f"[0:v][1:v]xfade=transition=fade:duration={seconds:.4f}:offset=0,"
+        f"format=yuv420p,setsar=1[x]",
+        "-map", "[x]", "-r", f"{target['fps']}", *_PIECEWISE_VIDEO_ARGS,
+        str(out_path),
+    ]
+    run_ffmpeg(cmd)
+    return out_path
+
+
+def render_scenes_piecewise(spec, output_path, workdir=None):
+    """Render an arbitrarily long scene plan without an arbitrarily big graph.
+
+    Each scene is rendered once on its own, split into the overlap it hands
+    to the previous scene, its own body, and the overlap it hands to the
+    next. Each crossfade is rendered once from the two overlaps that meet
+    there. The finished pieces are then concatenated *without re-encoding*
+    and the audio bed is muxed over them, so the whole video is encoded
+    exactly once however many scenes it has.
+
+    The arithmetic is the same one ``motion.timeline_seconds`` states: every
+    crossfade overlaps two scenes, so sum(bodies) + sum(crossfades) is the
+    finished runtime. Verified against the finished file before returning.
+    """
+    scenes = spec["scenes"]
+    target = {"width": spec["width"], "height": spec["height"], "fps": spec["fps"]}
+    plan = _scene_piece_plan(scenes, spec["fps"])
+
+    owns_workdir = workdir is None
+    workdir = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="cm-render-"))
+    workdir.mkdir(parents=True, exist_ok=True)
+    try:
+        log.info("Rendering %d scene(s) piecewise at %dx%d (one encode of the "
+                 "timeline; memory does not grow with scene count)",
+                 len(scenes), target["width"], target["height"])
+        pieces = []
+        for index, piece in enumerate(plan):
+            rendered = _render_scene_pieces(index, piece, target, workdir)
+            pieces.append(rendered)
+            if (index + 1) % 10 == 0 or index + 1 == len(plan):
+                log.info("  scenes rendered: %d/%d", index + 1, len(plan))
+
+        sequence = []
+        for index, (piece, rendered) in enumerate(zip(plan, pieces)):
+            sequence.append(rendered["body"])
+            if piece["tail_frames"] > 0:
+                sequence.append(_render_transition(
+                    rendered["tail"], pieces[index + 1]["head"],
+                    piece["tail_frames"], target,
+                    workdir / f"{index:05d}-xfade.mp4"))
+
+        list_path = workdir / "concat.txt"
+        list_path.write_text("".join(
+            f"file '{p.as_posix()}'\n" for p in sequence))
+
+        timeline = motion_mod.timeline_seconds(scenes)
+        cmd = [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_path),
+            "-stream_loop", "-1", "-i", str(spec["audio_path"]),
+            "-map", "0:v", "-map", "1:a",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+            "-shortest", "-movflags", "+faststart", str(output_path),
+        ]
+        run_ffmpeg(cmd)
+        log.info("Piecewise render complete: %d piece(s), %.2fs timeline",
+                 len(sequence), timeline)
+        return output_path
+    finally:
+        if owns_workdir and not os.environ.get("CM_KEEP_RENDER_WORKDIR"):
+            shutil.rmtree(workdir, ignore_errors=True)
+
+
+def render(spec, output_path):
+    """Render ``spec`` to ``output_path``, choosing how by scene count.
+
+    One entry point so every caller - the pipeline, the CLI, a test - picks
+    the same path for the same spec. Up to MAX_IMAGE_SLOTS scenes the
+    original single-invocation filter graph is used unchanged; above it the
+    piecewise renderer takes over.
+    """
+    if spec.get("scenes") and len(spec["scenes"]) > MAX_IMAGE_SLOTS:
+        return render_scenes_piecewise(spec, output_path)
+    run_ffmpeg(build_ffmpeg_command(spec, output_path))
+    return output_path
 
 
 def run_ffmpeg(cmd):

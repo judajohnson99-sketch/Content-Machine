@@ -1,0 +1,42 @@
+{
+  "_comment": "Tiny-VRAM ComfyUI API-format txt2img graph: no in-graph upscale. Renders a %latent_width%x%latent_height% latent (bounded by COMFYUI_LATENT_MAX_PIXELS) and saves it at that native size - it does not also decode into an upscale pass, which is what a 3GB-class card (the GPU Worker Render Capacity constraint) was observed to run out of VRAM on. scripts/generation.py selects this template automatically instead of comfyui_workflow_lowvram_upscale.json when the worker's own /system_stats reports total VRAM under COMFYUI_UPSCALE_MIN_VRAM_MB, unless COMFYUI_WORKFLOW pins a template explicitly. The requested %width%/%height% are not reached here; upscaling this asset to the pipeline's target size is deferred to a later step (ffmpeg at render time, or a higher-VRAM provider), never claimed as already done.",
+  "3": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": %seed%,
+      "steps": 24,
+      "cfg": 6.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 1.0,
+      "model": ["4", 0],
+      "positive": ["6", 0],
+      "negative": ["7", 0],
+      "latent_image": ["5", 0]
+    }
+  },
+  "4": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {"ckpt_name": "%model%"}
+  },
+  "5": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {"width": %latent_width%, "height": %latent_height%, "batch_size": 1}
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {"text": "%prompt%", "clip": ["4", 1]}
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {"text": "%negative%", "clip": ["4", 1]}
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {"samples": ["3", 0], "vae": ["4", 2]}
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {"filename_prefix": "content-machine", "images": ["8", 0]}
+  }
+}

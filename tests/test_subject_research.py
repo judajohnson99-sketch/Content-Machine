@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -137,6 +138,64 @@ class ResearchSubjectTest(unittest.TestCase):
 
     def test_load_returns_none_when_nothing_cached(self):
         self.assertIsNone(subject_research.load_subject_research("no-such-video"))
+
+
+class GeminiSearchProviderTest(unittest.TestCase):
+    """Parsing of grounding metadata only - the network step is replaced."""
+
+    PAYLOAD = json.dumps({
+        "chunks": [
+            {"uri": "https://example.test/a", "title": "example.test"},
+            {"uri": "https://example.test/b", "title": "example.test"},
+            {"uri": None, "title": "no-uri"},
+        ],
+        "supports": [
+            {"text": "Sleep ambience videos commonly run for eight to ten hours.", "chunks": [0]},
+            {"text": "Many channels favour a single slow-moving still image.", "chunks": [2, 1]},
+            {"text": "", "chunks": [0]},
+            {"text": "Dangling reference.", "chunks": [7]},
+            {"text": "Sleep ambience videos commonly run for eight to ten hours.", "chunks": [0]},
+        ],
+    })
+
+    def _provider(self, payload=None):
+        provider = subject_research.GeminiSearchProvider()
+        provider._run = lambda query: self.PAYLOAD if payload is None else payload
+        return provider
+
+    def test_each_result_is_one_sentence_attributed_to_one_url(self):
+        with unittest.mock.patch.dict("os.environ", {"GEMINI_API_KEY": "k"}):
+            results = self._provider().search("sleep ambience formats")
+        self.assertEqual([r["url"] for r in results],
+                         ["https://example.test/a", "https://example.test/b"])
+        self.assertTrue(all(r["snippet"] and r["title"] for r in results))
+        self.assertEqual(results[1]["snippet"],
+                         "Many channels favour a single slow-moving still image.")
+
+    def test_max_results_and_empty_grounding(self):
+        with unittest.mock.patch.dict("os.environ", {"GEMINI_API_KEY": "k"}):
+            self.assertEqual(len(self._provider().search("q", max_results=1)), 1)
+            self.assertEqual(self._provider('{"chunks": [], "supports": []}').search("q"), [])
+
+    def test_unconfigured_or_malformed_is_a_search_error_not_results(self):
+        with unittest.mock.patch.dict("os.environ", {"GEMINI_API_KEY": ""}):
+            with self.assertRaises(subject_research.SearchError):
+                self._provider().search("q")
+        with unittest.mock.patch.dict("os.environ", {"GEMINI_API_KEY": "k"}):
+            with self.assertRaises(subject_research.SearchError):
+                self._provider("not json").search("q")
+
+    def test_gemini_is_known_but_never_selected_by_default(self):
+        with unittest.mock.patch.dict("os.environ", {"GEMINI_API_KEY": "k"}, clear=False):
+            os_env = __import__("os").environ
+            os_env.pop("SEARCH_PROVIDER", None); os_env.pop("TEST_MODE", None)
+            status = subject_research.provider_status()
+        self.assertIn("gemini", status["known"])
+        self.assertFalse(status["available"])
+        with unittest.mock.patch.dict("os.environ", {"GEMINI_API_KEY": "k", "SEARCH_PROVIDER": "gemini"}):
+            selected = subject_research._select_provider()
+            self.assertIsInstance(selected, subject_research.GeminiSearchProvider)
+            self.assertTrue(selected.configured())
 
 
 class FixtureSearchProviderTest(unittest.TestCase):

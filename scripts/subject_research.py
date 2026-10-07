@@ -136,15 +136,207 @@ class FixtureSearchProvider(SearchProvider):
         return canned[:max_results]
 
 
+_GEMINI_SEARCH_SNIPPET = """
+import json, os, sys
+from dotenv import load_dotenv
+load_dotenv()
+from google import genai
+from google.genai import types
+client = genai.Client()
+query = sys.stdin.read().strip()
+response = client.models.generate_content(
+    model=os.environ.get("RESEARCH_MODEL", os.environ.get("CREATIVE_MODEL", "gemini-3.5-flash-lite")),
+    contents=(
+        "Search the web for: " + query + "\\n"
+        "Summarise what the top sources say as short factual sentences. "
+        "Every sentence must be grounded in a search result."),
+    config=types.GenerateContentConfig(
+        tools=[types.Tool(google_search=types.GoogleSearch())], temperature=0.0),
+)
+out = {"chunks": [], "supports": []}
+candidate = (response.candidates or [None])[0]
+meta = getattr(candidate, "grounding_metadata", None) if candidate else None
+for chunk in (getattr(meta, "grounding_chunks", None) or []):
+    web = getattr(chunk, "web", None)
+    out["chunks"].append({"uri": getattr(web, "uri", None), "title": getattr(web, "title", None)})
+for support in (getattr(meta, "grounding_supports", None) or []):
+    segment = getattr(support, "segment", None)
+    out["supports"].append({"text": getattr(segment, "text", None),
+                            "chunks": list(getattr(support, "grounding_chunk_indices", None) or [])})
+sys.stdout.write(json.dumps(out))
+"""
+
+
+class GeminiSearchProvider(SearchProvider):
+    """Web search through Gemini's Google Search grounding.
+
+    Each result is one *grounding support*: a sentence the model wrote that
+    Google's grounding metadata attributes to a specific retrieved page.
+    The page's URI and title are the source; the supported sentence is the
+    snippet. Nothing un-attributed is returned, so an observation built
+    from this provider is still traceable to one URL, exactly as the
+    fixture's are. Uses the same GEMINI_API_KEY and the same
+    subprocess-into-the-SDK pattern as ``creative``; a grounded request is
+    a paid call, so this provider only runs when ``SEARCH_PROVIDER=gemini``
+    is set - never by default.
+    """
+
+    name = "gemini"
+
+    def configured(self):
+        return bool(_env("GEMINI_API_KEY"))
+
+    def _run(self, query):
+        """The one network-touching step, isolated so tests replace it."""
+        import subprocess
+        import creative  # local: creative already knows where the SDK lives
+        python = creative._sdk_python("gemini")
+        if not python:
+            raise SearchError("no Python interpreter has the google-genai SDK installed")
+        try:
+            result = subprocess.run(
+                [python, "-c", _GEMINI_SEARCH_SNIPPET], input=query,
+                capture_output=True, text=True, cwd=str(ROOT), timeout=120)
+        except subprocess.TimeoutExpired as e:
+            raise SearchError("gemini grounded search timed out") from e
+        if result.returncode != 0:
+            lines = [l for l in result.stderr.strip().splitlines() if l.strip()]
+            raise SearchError(f"gemini grounded search failed: "
+                              f"{lines[-1][-300:] if lines else result.returncode}")
+        return result.stdout
+
+    def search(self, query, max_results=DEFAULT_MAX_RESULTS):
+        if not self.configured():
+            raise SearchError("gemini search provider is not configured (GEMINI_API_KEY unset)")
+        try:
+            payload = json.loads(self._run(query) or "{}")
+        except ValueError as e:
+            raise SearchError(f"gemini grounded search returned malformed JSON: {e}") from e
+        chunks = payload.get("chunks") or []
+        results, seen = [], set()
+        for support in payload.get("supports") or []:
+            text = (support.get("text") or "").strip()
+            if not text:
+                continue
+            for index in support.get("chunks") or []:
+                if not isinstance(index, int) or index < 0 or index >= len(chunks):
+                    continue
+                chunk = chunks[index]
+                url = (chunk.get("uri") or "").strip()
+                if not url or (url, text) in seen:
+                    continue
+                seen.add((url, text))
+                results.append({"title": (chunk.get("title") or "").strip(),
+                                "url": url, "snippet": text})
+                break   # one source per supported sentence keeps provenance one-to-one
+            if len(results) >= max_results:
+                break
+        return results
+
+
+_ANTHROPIC_SEARCH_SNIPPET = """
+import json, os, sys
+from dotenv import load_dotenv
+load_dotenv()
+from anthropic import Anthropic
+client = Anthropic()
+query = sys.stdin.read().strip()
+message = client.messages.create(
+    model=os.environ.get("RESEARCH_MODEL", "claude-sonnet-4-5"),
+    max_tokens=2048,
+    tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 4}],
+    messages=[{"role": "user", "content": (
+        "Search the web for: " + query + "\\n"
+        "Then write short factual sentences summarising what the sources say. "
+        "Every sentence must be supported by a search result you actually "
+        "retrieved. Do not add anything you did not find.")}],
+)
+out = []
+for block in message.content:
+    if getattr(block, "type", None) != "text":
+        continue
+    for citation in (getattr(block, "citations", None) or []):
+        url = getattr(citation, "url", None)
+        if not url:
+            continue
+        out.append({"title": getattr(citation, "title", None) or "",
+                    "url": url,
+                    "snippet": getattr(citation, "cited_text", None) or block.text})
+sys.stdout.write(json.dumps(out))
+"""
+
+
+class AnthropicSearchProvider(SearchProvider):
+    """Web search through Claude's server-side ``web_search`` tool.
+
+    Each result is one *citation*: a passage the model retrieved, with the
+    page it came from. Same contract as the Gemini provider - nothing
+    un-attributed is returned, so an observation built from this is
+    traceable to one URL - and the same opt-in rule: a search is a paid
+    call, so this provider only runs when ``SEARCH_PROVIDER=anthropic`` is
+    set. It exists alongside the Gemini one because a single vendor's
+    grounding quota must not be the only thing standing between this build
+    and sourced research.
+    """
+
+    name = "anthropic"
+
+    def configured(self):
+        return bool(_env("ANTHROPIC_API_KEY"))
+
+    def _run(self, query):
+        """The one network-touching step, isolated so tests replace it."""
+        import subprocess
+        import creative
+
+        python = creative._sdk_python("anthropic")
+        if not python:
+            raise SearchError("no Python interpreter has the anthropic SDK installed")
+        try:
+            result = subprocess.run(
+                [python, "-c", _ANTHROPIC_SEARCH_SNIPPET], input=query,
+                capture_output=True, text=True, cwd=str(ROOT), timeout=180)
+        except subprocess.TimeoutExpired as e:
+            raise SearchError("anthropic web search timed out") from e
+        if result.returncode != 0:
+            lines = [l for l in result.stderr.strip().splitlines() if l.strip()]
+            raise SearchError(f"anthropic web search failed: "
+                              f"{lines[-1][-300:] if lines else result.returncode}")
+        return result.stdout
+
+    def search(self, query, max_results=DEFAULT_MAX_RESULTS):
+        if not self.configured():
+            raise SearchError(
+                "anthropic search provider is not configured (ANTHROPIC_API_KEY unset)")
+        try:
+            payload = json.loads(self._run(query) or "[]")
+        except ValueError as e:
+            raise SearchError(f"anthropic web search returned malformed JSON: {e}") from e
+        results, seen = [], set()
+        for item in payload if isinstance(payload, list) else []:
+            url = (item.get("url") or "").strip()
+            snippet = " ".join((item.get("snippet") or "").split())
+            if not url or not snippet or (url, snippet) in seen:
+                continue
+            seen.add((url, snippet))
+            results.append({"title": (item.get("title") or "").strip(),
+                            "url": url, "snippet": snippet})
+            if len(results) >= max_results:
+                break
+        return results
+
+
 def build_search_providers():
     """Every search provider this build knows how to construct.
 
-    No production web-search vendor is wired in yet - deliberately. Adding
-    one is a new ``SearchProvider`` subclass registered here; no caller
-    changes. Until then, ``SEARCH_PROVIDER`` pointing at anything but
-    ``fixture`` resolves to nothing, and subject research fails closed.
+    Adding one is a new ``SearchProvider`` subclass registered here; no
+    caller changes. ``SEARCH_PROVIDER`` pointing at an unknown name resolves
+    to nothing, and subject research fails closed. Nothing is selected by
+    default: the only provider that costs money (``gemini``) is opt-in.
     """
-    return {"fixture": FixtureSearchProvider()}
+    return {"fixture": FixtureSearchProvider(),
+            "gemini": GeminiSearchProvider(),
+            "anthropic": AnthropicSearchProvider()}
 
 
 def _select_provider(providers=None):

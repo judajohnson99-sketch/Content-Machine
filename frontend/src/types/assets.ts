@@ -41,6 +41,34 @@ export interface ImagesProvenance {
     asset_count: number;
   } | null;
   notes: string | null;
+  // The pictures the storyboard actually uses, and how many files in
+  // images/ no scene points at (retries, earlier runs).
+  scene_images?: string[];
+  unreferenced_count?: number;
+}
+
+// Where this project's audio came from and whether that source could be
+// production-grade at all - mirrors scripts/project.py::project_assets.
+export interface AudioSourceOption {
+  source: string;
+  available: boolean | null;
+  production_grade_capable: boolean | null;
+  rights: string | null;
+  cost: string | null;
+  detail: string | null;
+}
+
+export interface AudioProvenance {
+  kind: string | null;
+  source: string | null;
+  production_grade_capable: boolean | null;
+  production_grade: boolean | null;
+  graded_by: string | null;
+  graded_utc: string | null;
+  grade_notes: string | null;
+  kind_reasoning: string | null;
+  chosen_detail: string | null;
+  considered: AudioSourceOption[];
 }
 
 export interface VisualPlan {
@@ -101,6 +129,15 @@ export interface PackageSummary {
   path: string;
 }
 
+// The editable hand-off: a Kdenlive project, the media it references and a
+// portable archive of both. Mirrors project_assets()["editing"].
+export interface EditingAssets {
+  kdenlive: Record<string, unknown>;
+  project: AssetFile | null;
+  render: AssetFile | null;
+  archive: AssetFile | null;
+}
+
 export interface ProjectAssets {
   video_id: string;
   video: AssetFile | null;
@@ -109,8 +146,10 @@ export interface ProjectAssets {
   images_provenance?: ImagesProvenance | null;
   visual_plan?: VisualPlan | null;
   audio: AudioAsset | null;
+  audio_provenance?: AudioProvenance | null;
   qc: QcSummary | null;
   storyboard: StoryboardSummary | null;
   package: PackageSummary | null;
+  editing?: EditingAssets | null;
   logs: AssetFile[];
 }

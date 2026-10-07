@@ -29,6 +29,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import audio as audio_mod  # noqa: E402
+import research as research_mod  # noqa: E402
+import visual_direction as vd  # noqa: E402
+
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 log = logging.getLogger("creative")
 
@@ -68,47 +73,305 @@ _PARTIAL_LAYER = {"provider": "rain", "params": {"intensity": "steady"}}
 # invented capability the knowledge/doctrine layer forbids.
 _BLOCKED_REQUIREMENTS = {"music_generation_or_licensed", "music_generation_plus_mixing"}
 
+# A mood word (from the creative brief's audio_mood, or failing that the
+# research findings' own audio-topic language) picks a chord colour for
+# audio.py's "pad" provider. Small and deliberately not exhaustive - a
+# richer synthesiser is a future provider, not this mapping's job.
+_MOOD_CHORDS = (
+    (("cozy", "warm", "comfort", "snug"), "warm"),
+    (("calm", "gentle", "soft", "soothing", "peaceful", "relax"), "calm"),
+    (("dream", "float", "airy", "weightless"), "dreamy"),
+    (("mysterious", "curious", "wonder", "enigmatic"), "mysterious"),
+    (("eerie", "unsettling", "tense", "suspense", "ominous"), "eerie"),
+    (("melancholy", "wistful", "somber", "sombre", "sad", "bittersweet"), "melancholy"),
+    (("cinematic", "epic", "grand", "sweeping"), "cinematic"),
+)
 
-def build_audio_composition(concept, target_seconds, narration_text=None):
-    """The executable ``audio_plan.composition`` for a concept, or None.
 
-    None means the requirement is not synthesisable today - the caller must
-    not invent a layer for it. This mirrors AUDIO_CAPABILITY exactly so the
-    two never drift apart.
+# Below this many target seconds a pad-led bed stays on one root the whole
+# way through, same as any short synthesisable_now clip; at or above it
+# (long-form ambience is the whole point of a multi-hour "leave it on"
+# video) the bed gets audio.py's slow root drift so it is not frozen on one
+# exact frequency for hours.
+PAD_LONGFORM_SECONDS = 1800.0
+
+
+def _resolve_mood_chord(mood, findings):
+    """The chord name implied by an explicit mood, or (failing that) the
+    research findings' own recurring audio-topic language. ``None`` when
+    there is nothing to go on - a project with neither gets no pad at all.
+    """
+    text = (mood or "").strip().lower()
+    if not text and findings:
+        digest = research_mod.findings_digest(findings, max_per_topic=5)
+        text = " ".join(
+            line for line in digest.splitlines() if line.startswith("- [audio")).lower()
+    if not text:
+        return None
+    for keywords, name in _MOOD_CHORDS:
+        if any(k in text for k in keywords):
+            return name
+    return "calm"
+
+
+# Where a long-form pad's root drifts to and back: tonic, a perfect fourth
+# up, tonic, a perfect fourth down. The chord shape is unchanged throughout,
+# so every step is consonant - movement, never a harmonic surprise.
+PAD_DRIFT_RATIOS = (1.0, 4 / 3, 1.0, 3 / 4)
+
+
+def _mood_pad_layer(mood, findings, target_seconds=None):
+    """A gentle harmonic pad layer chosen from the brief's audio_mood, or
+    the research findings' own recurring audio-topic language when no mood
+    was given. ``None`` when there is nothing to go on - a project with
+    neither gets no second layer, exactly as before either existed.
+
+    On a long-form texture bed the pad drifts (``root_drift_ratios``)
+    rather than holding one exact frequency for hours; audio.py's
+    ``provider_pad`` does the crossfading.
+    """
+    chord = _resolve_mood_chord(mood, findings)
+    if chord is None:
+        return None
+    params = {"root_hz": 98.0, "chord": chord}
+    if target_seconds and target_seconds >= PAD_LONGFORM_SECONDS:
+        params["root_drift_ratios"] = list(PAD_DRIFT_RATIOS)
+    return {"id": "pad", "provider": "pad", "params": params,
+           "gain_db": -14.0, "fade_in_seconds": 3.0, "fade_out_seconds": 3.0}
+
+
+# Words in a concept's own description that mean "this video's audio is
+# music", as distinct from a texture bed. Checked against the concept's
+# audio_concept, working title and format description - never invented.
+_MUSIC_WORDS = ("music", "melody", "melodic", "piano", "lullaby", "lofi",
+                "lo-fi", "song", "harp", "guitar", "strings", "score",
+                "soundtrack", "instrumental", "musical")
+
+
+def _audio_kind(concept, mood, findings):
+    """What kind of audio this video actually needs, and why.
+
+    The distinction the routing turns on: a *texture* (brown noise, rain,
+    a drone) is the product itself for the niches that ship it, so
+    synthesising it is not a compromise. *Music* is not - a synthesiser
+    standing in for music is a stand-in, and the rest of this module is
+    careful never to pretend otherwise.
     """
     requirement = concept.get("audio_source_requirement")
-    if requirement in _BLOCKED_REQUIREMENTS:
-        return None
-
     if requirement == "tts_required":
+        return "narration", "the concept is narrated; speech is the primary audio"
+    if requirement in _BLOCKED_REQUIREMENTS:
+        return "music", f"the concept declares audio_source_requirement={requirement!r}"
+
+    text = " ".join(str(concept.get(field) or "") for field in
+                    ("audio_concept", "working_title_pattern", "content_format",
+                     "visual_concept")).lower()
+    named = [w for w in _MUSIC_WORDS if w in text]
+    if named:
+        return "music", (f"the concept describes its own audio as music "
+                         f"({', '.join(sorted(set(named))[:3])})")
+    for keywords, _layer in _SYNTHESISABLE_KEYWORDS:
+        if any(k in (concept.get("audio_concept") or "").lower() for k in keywords):
+            return "texture", (f"the concept names a specific texture "
+                               f"({keywords[0]}), which is the product itself")
+    if _resolve_mood_chord(mood, findings):
+        return "music", ("the concept names no texture, and the creative brief "
+                         "(or the project's research) describes the audio in "
+                         "musical terms")
+    return "texture", "no musical or textural signal; the default bed applies"
+
+
+def _music_sources(concept, mood, tags, target_seconds):
+    """Every way this build could produce music, best first, with why.
+
+    Recorded in full - including the options that are *not* available and
+    the reason - so "we used a synthesiser" is visibly a routing outcome
+    with alternatives, not the only thing the code knows how to do.
+    """
+    requirement = concept.get("audio_source_requirement")
+    track = audio_mod.select_library_track(mood=mood, tags=tags)
+    sources = [{
+        "source": "licensed-library",
+        "provider": "file",
+        "available": track is not None,
+        "production_grade_capable": True,
+        "rights": ("declared per track in assets/music/library.json"
+                   if track else "n/a"),
+        "cost": "already licensed",
+        "detail": (f"library track {track['id']!r} ({track.get('license')})" if track
+                   else "no rights-declared track in assets/music/library.json; "
+                        "drop licensed music there and it is preferred over "
+                        "anything synthesised"),
+    }, {
+        "source": "music-generation-api",
+        "provider": None,
+        "available": False,
+        "production_grade_capable": True,
+        "rights": "depends on the vendor's terms; must be established before use",
+        "cost": "paid, per generated minute",
+        "detail": "no music-generation provider is configured in this build; "
+                  "adding one is an account decision, and nothing here "
+                  "substitutes for it silently",
+    }, {
+        "source": "generative-music",
+        "provider": "music",
+        "available": requirement not in _BLOCKED_REQUIREMENTS,
+        # The honest ceiling of this path. Synthesised ambient music is a
+        # real composition technique, but nothing in this codebase can
+        # establish that its output is music someone would choose to
+        # listen to - so it never claims to be production-grade, and the
+        # review gate holds it until a human has actually listened.
+        "production_grade_capable": False,
+        "rights": "generated-original; no third-party interest",
+        "cost": "none (local ffmpeg synthesis)",
+        "detail": ("synthesised ambient music: a resolving chord progression "
+                   "with phasing bell voices and reverb"
+                   if requirement not in _BLOCKED_REQUIREMENTS else
+                   f"refused for audio_source_requirement={requirement!r}: that "
+                   "requirement says this concept needs generated or licensed "
+                   "music, and a local synthesiser is not a substitute for it"),
+    }]
+    return sources, track
+
+
+def route_audio(concept, target_seconds, narration_text=None, mood=None,
+                findings=None):
+    """Decide what audio this video needs and where it should come from.
+
+    Returns ``{"composition": ..., "direction": ...}``. The composition is
+    the executable plan (``None`` when nothing available can honestly
+    satisfy the requirement); the direction is the decision record - what
+    kind of audio the concept calls for, which sources were considered,
+    which was chosen, its rights and cost, and whether that source is even
+    capable of being production-grade. ``scripts/project.py`` gates review
+    on that last field, which is what keeps "we synthesised something"
+    from passing as "the music is good".
+    """
+    kind, why = _audio_kind(concept, mood, findings)
+    requirement = concept.get("audio_source_requirement")
+    fade = min(5.0, target_seconds / 6) if target_seconds else 0.0
+    direction = {
+        "kind": kind,
+        "kind_reasoning": why,
+        "audio_source_requirement": requirement,
+        "target_seconds": target_seconds,
+        "considered": [],
+        "chosen": None,
+        "decided_utc": audio_mod.utc_now(),
+    }
+
+    if kind == "narration":
         text = (narration_text or "").strip()
         if not text:
-            return None
-        return {
+            direction["chosen"] = {
+                "source": "none", "available": False,
+                "detail": "narrated concept with no script yet"}
+            return {"composition": None, "direction": direction}
+        direction["chosen"] = {
+            "source": "tts", "provider": "tts", "production_grade_capable": True,
+            "rights": "voice licence recorded per layer at render time",
+            "cost": "none (local Piper)",
+            "detail": "the concept is narrated; the script is the audio"}
+        return {"composition": {
             "target_seconds": target_seconds,
             "layers": [{"id": "narration", "provider": "tts",
                        "params": {"text": text}, "gain_db": 0.0}],
-        }
+        }, "direction": direction}
 
+    if kind == "music":
+        chord = _resolve_mood_chord(mood, findings) or "calm"
+        tags = [t for t in (concept.get("niche"), chord) if t]
+        sources, track = _music_sources(concept, chord, tags, target_seconds)
+        direction["considered"] = sources
+        chosen = next((s for s in sources if s["available"]), None)
+        if chosen is None:
+            direction["chosen"] = None
+            direction["blocked_reason"] = (
+                f"no available music source for audio_source_requirement="
+                f"{requirement!r}. Supply a rights-declared track in "
+                "assets/music/library.json, or configure a music-generation "
+                "provider.")
+            return {"composition": None, "direction": direction}
+        direction["chosen"] = chosen
+        if chosen["source"] == "licensed-library":
+            params = {
+                "path": track["path"],
+                "license": {
+                    "source": track["source"],
+                    "creator": track.get("creator"),
+                    "license": track["license"],
+                    "commercial_use": bool(track["commercial_use"]),
+                    "attribution_required": bool(track.get("attribution_required", False)),
+                    "attribution_text": track.get("attribution_text"),
+                    "evidence": track.get("evidence",
+                                          "Declared in assets/music/library.json."),
+                },
+                "crossfade_loop_seconds": float(track.get("crossfade_loop_seconds", 6.0)),
+            }
+            layer = {"id": "bed", "provider": "file", "params": params,
+                     "gain_db": 0.0, "fade_in_seconds": fade, "fade_out_seconds": fade}
+        else:
+            params = {"root_hz": 98.0, "mood": chord}
+            if target_seconds and target_seconds >= PAD_LONGFORM_SECONDS:
+                # A multi-hour listen gets a longer cycle before it repeats.
+                params["chord_seconds"] = 60.0
+            layer = {"id": "bed", "provider": "music", "params": params,
+                     "gain_db": 0.0, "fade_in_seconds": fade, "fade_out_seconds": fade}
+        return {"composition": {"target_seconds": target_seconds, "layers": [layer]},
+                "direction": direction}
+
+    # kind == "texture": a synthesised bed is the product, not a stand-in.
     if requirement in ("licensed_or_recorded", "licensed_or_recorded_plus_mixing"):
-        return {
+        direction["chosen"] = {
+            "source": "procedural-texture", "provider": _PARTIAL_LAYER["provider"],
+            "available": True, "production_grade_capable": True,
+            "rights": "generated-original; no third-party interest",
+            "cost": "none (local ffmpeg synthesis)",
+            "detail": "AUDIO_CAPABILITY calls this requirement PARTIAL: no "
+                      "licensed recording exists yet, and the synthesised bed "
+                      "is documented there as good enough to test the format",
+        }
+        return {"composition": {
             "target_seconds": target_seconds,
             "layers": [dict(_PARTIAL_LAYER, id="bed", gain_db=0.0)],
-        }
+        }, "direction": direction}
 
-    # synthesisable_now, and any future requirement we don't recognise yet -
-    # fail toward the always-available noise bed rather than raising, since
-    # every niche in this bucket already accepts a synthesised texture.
     text = (concept.get("audio_concept") or "").lower()
-    chosen = _DEFAULT_SYNTHESISABLE
+    chosen_layer = None
     for keywords, layer in _SYNTHESISABLE_KEYWORDS:
         if any(k in text for k in keywords):
-            chosen = layer
+            chosen_layer = layer
             break
-    return {
-        "target_seconds": target_seconds,
-        "layers": [dict(chosen, id="bed", gain_db=0.0)],
+    layers = [dict(chosen_layer or _DEFAULT_SYNTHESISABLE, id="bed", gain_db=0.0,
+                   fade_in_seconds=fade, fade_out_seconds=fade)]
+    pad = _mood_pad_layer(mood, findings, target_seconds)
+    if pad:
+        layers.append(pad)
+    direction["chosen"] = {
+        "source": "procedural-texture", "provider": layers[0]["provider"],
+        "available": True, "production_grade_capable": True,
+        "rights": "generated-original; no third-party interest",
+        "cost": "none (local ffmpeg synthesis)",
+        "detail": ("the texture this concept names is synthesised exactly, "
+                   "not approximated - it is the product"
+                   if chosen_layer else
+                   "no texture named and nothing musical to go on; the "
+                   "default brown-noise bed applies"),
     }
+    return {"composition": {"target_seconds": target_seconds, "layers": layers},
+            "direction": direction}
+
+
+def build_audio_composition(concept, target_seconds, narration_text=None,
+                            mood=None, findings=None):
+    """The executable ``audio_plan.composition`` for a concept, or None.
+
+    Thin wrapper over ``route_audio`` for callers that only want the plan.
+    None still means "nothing available can honestly satisfy this
+    requirement" - the caller must not invent a layer for it.
+    """
+    return route_audio(concept, target_seconds, narration_text=narration_text,
+                       mood=mood, findings=findings)["composition"]
 
 
 # --------------------------------------------------------------------------
@@ -149,15 +412,24 @@ Visual direction: {visual_concept}{direction_section}
 Audio direction: {audio_concept}
 Monetization hypothesis: {monetization_hypothesis}
 Target length: {minutes:.0f} minutes
-{facts_section}
+{facts_section}{research_section}
 Return a JSON object with exactly these keys:
 - "title": a concrete YouTube title under 100 characters, following the working title pattern's spirit
 - "description": a 2-4 sentence YouTube description, plain language, no hashtag spam
 - "narration_script": spoken narration text if this concept calls for narration, otherwise an empty string. Flat and calm where the concept asks for monotony; never mention it is AI-generated.
 - "image_prompt": a text-to-image prompt capturing the visual direction, suitable for a diffusion model. Where a palette, motifs and things to avoid are given, the prompt must use that palette and those motifs and must not include anything listed to avoid.
 - "negative_prompt": what to exclude from the image (e.g. text, watermarks, people, if not wanted)
+- "audio_mood": 3-8 words describing the intended sonic atmosphere (e.g. "cozy, distant rain, slow warm pad") - grounded in the audio direction and, where present, the research below. Never mention specific providers or file formats.
 
-Do not claim the video is professionally produced or hand-made. Do not invent facts about the audience or channel."""
+Do not claim the video is professionally produced or hand-made. Do not invent facts about the audience or channel. Where research findings are given below, an "observation" is sourced and may inform the brief; an "interpretation" is this project's own pattern-count across sourced observations, not a fact about any single source - do not present either as something you personally verified."""
+
+RESEARCH_SECTION_TEMPLATE = """
+Research brief for this project - creative intent, preferences and (if research has run) sourced findings about what works in this niche. Use it to shape title, script tone, image direction and audio_mood; never treat "dislikes" as something to depict or narrate favourably:
+Creative intent: {creative_intent}
+Likes: {likes}
+Dislikes: {dislikes}
+{findings_block}
+"""
 
 # Appended into PROMPT_TEMPLATE only for concepts flagged
 # requires_subject_research=true. The facts are the only claims the
@@ -192,6 +464,27 @@ def direction_section(concept):
     return ("\n" + "\n".join(lines)) if lines else ""
 
 
+def research_section(brief=None, findings=None):
+    """The operator's research brief plus a compact findings digest, as
+    prompt guidance - or "" when there is neither, so a project with no
+    brief prompts exactly as it did before this existed.
+    """
+    if not brief and not findings:
+        return ""
+    brief = brief or {}
+    digest = research_mod.findings_digest(findings) if findings else ""
+    findings_block = (
+        f"Sourced/interpreted findings (see the [topic/kind] tag on each line):\n{digest}"
+        if digest else "No competitor research findings yet."
+    )
+    return RESEARCH_SECTION_TEMPLATE.format(
+        creative_intent=brief.get("creative_intent") or "(none given)",
+        likes=", ".join(brief.get("likes") or []) or "(none given)",
+        dislikes=", ".join(brief.get("dislikes") or []) or "(none given)",
+        findings_block=findings_block,
+    )
+
+
 def _mock_brief(concept):
     """The TEST_MODE reply: no network, deterministic, same shape as a real
     one. Mirrors generate.py's own TEST_MODE convention."""
@@ -205,6 +498,7 @@ def _mock_brief(concept):
         ),
         "image_prompt": direction.get("prompt_core") or concept.get("visual_concept", "abstract calm backdrop"),
         "negative_prompt": direction.get("negative") or "text, watermark, logo, people, faces",
+        "audio_mood": "[MOCK] calm, steady, unobtrusive",
     }
 
 
@@ -298,8 +592,10 @@ def _call_llm(provider, prompt):
     return result.stdout
 
 
-def generate_brief(concept, target_seconds, subject_research=None):
-    """Title, script, description and image direction for one concept.
+def generate_brief(concept, target_seconds, subject_research=None,
+                   research_brief=None, findings=None):
+    """Title, script, description, image direction and audio mood for one
+    concept.
 
     Follows generate.py's own provider pattern (LLM_PROVIDER, TEST_MODE)
     rather than a new one. Raises CreativeError on any failure - a missing
@@ -310,6 +606,13 @@ def generate_brief(concept, target_seconds, subject_research=None):
     are the only claims the narration may make about the subject. Calling
     this without it for such a concept is refused rather than left to the
     model's own (unsourced) knowledge of the topic.
+
+    ``research_brief`` (the operator's own intent, from ``research.py``)
+    and ``findings`` (brief-driven competitor research, if it has run) are
+    both optional - a project with neither prompts exactly as it did before
+    either existed. Neither is ever required the way subject research is:
+    this is additive creative context, not a factual claim the narration
+    depends on.
     """
     if concept.get("requires_subject_research") and not (subject_research or {}).get("facts"):
         raise CreativeError(
@@ -339,6 +642,7 @@ def generate_brief(concept, target_seconds, subject_research=None):
         monetization_hypothesis=concept.get("monetization_hypothesis", ""),
         minutes=(target_seconds or 0) / 60.0,
         facts_section=facts_section,
+        research_section=research_section(research_brief, findings),
         direction_section=direction_section(concept),
     )
 
@@ -349,6 +653,7 @@ def generate_brief(concept, target_seconds, subject_research=None):
     missing = [k for k in required if k not in brief]
     if missing:
         raise CreativeError(f"LLM reply missing key(s) {missing}: {text[:200]!r}")
+    brief.setdefault("audio_mood", None)
     return brief
 
 
@@ -412,6 +717,208 @@ def generate_scene_motifs(concept, subject_research, scenes, base_prompt=""):
     if missing:
         raise CreativeError(f"LLM reply missing motif(s) for scene(s) {missing}: {text[:200]!r}")
     return {s["scene_id"]: str(motifs[s["scene_id"]]) for s in scenes}
+
+
+# --------------------------------------------------------------------------
+# scene environments (LLM, batched) - the non-documentary counterpart of
+# generate_scene_motifs above, for concepts with no sourced facts to depict
+# --------------------------------------------------------------------------
+
+SCENE_ENVIRONMENT_PROMPT_TEMPLATE = """You are choosing the visual environments for a video. Reply with ONLY a JSON object, no markdown fences, no commentary.
+
+Concept: {content_format}
+Niche: {niche}
+Target audience: {target_audience}
+Duration: {duration_description}
+How this video is actually watched: {viewing_behavior}
+Base visual style: {base_prompt}{direction_section}{research_section}
+
+Decide how many distinct-but-visually-consistent environments THIS video needs, then describe each one. There is no fixed target - reason from the duration, format and viewing behavior above. A video that plays passively in the background for hours needs only as many strong environments as a half-attentive viewer would ever notice change; a single held setting can be the right, deliberate choice for a long ambient/slow-TV piece if it is excellent and clearly connects to the concept. A shorter or more actively watched video can support more. Do not pick a count just to give every scene something different, and do not default to one per scene.
+
+Each environment must be a concrete, specific visual description (15-30 words) suitable for a text-to-image prompt, clearly reinforcing the concept above (not a generic, unconnected setting), and must not include anything the research below calls unwanted.
+
+Return a JSON object with exactly two keys: "reasoning" (one sentence: why this many, given the duration and viewing behavior) and "environments" (an object mapping short slug names to their descriptions), e.g. {{"reasoning": "...", "environments": {{"env1": "..."}}}}."""
+
+# A ceiling against a malformed or runaway reply, never a design target: the
+# count of environments an actual video needs is the model's judgment call
+# (duration, format, viewing behavior, concept), made in the prompt above.
+_ABSOLUTE_MAX_ENVIRONMENTS = 12
+
+
+def _duration_description(target_seconds):
+    if not target_seconds:
+        return "unknown"
+    minutes = float(target_seconds) / 60.0
+    if minutes >= 60:
+        return f"{minutes / 60:.1f} hours ({int(minutes)} minutes)"
+    return f"{minutes:.0f} minutes"
+
+
+def _sanitize_environments(environments, scene_count):
+    """Enforce only the bounds a malformed LLM reply could violate: at least
+    one environment, and never more than there are scenes to assign or the
+    absolute safety ceiling. This never second-guesses how many the model
+    judged appropriate - it only guards against a broken reply.
+    """
+    cap = max(1, min(_ABSOLUTE_MAX_ENVIRONMENTS, scene_count))
+    names = list(environments)[:cap]
+    return {name: environments[name] for name in names}
+
+
+def _mock_scene_environments(scenes):
+    """The TEST_MODE reply: no network, deterministic. Real duration/format/
+    viewing-behavior reasoning only happens against the live model (that is
+    what the prompt above is for) - this stub exists purely to exercise the
+    assignment/cycling wiring without a network call, at a small,
+    representative count.
+    """
+    count = max(1, min(3, len(scenes)))
+    return {f"env{i + 1}": f"[MOCK environment {i + 1}]" for i in range(count)}
+
+
+def generate_scene_environments(concept, scenes, brief=None, research_brief=None,
+                                findings=None, base_prompt="", target_seconds=None):
+    """One batched LLM call choosing the distinct, visually consistent
+    environments a concept that carries no sourced facts to depict (the
+    ``requires_subject_research`` case that ``generate_scene_motifs`` handles
+    instead) actually needs - the fix for scenes that would otherwise all
+    reuse one fixed base prompt. How many environments is not a formula: the
+    model decides from this video's duration, format and viewing behavior.
+
+    Returns a ``{scene_id: motif}`` mapping, exactly the shape
+    ``storyboard.apply_scene_motifs`` already expects, so it wires into the
+    identical call site. Scenes are assigned environments round-robin in
+    scene order, so consecutive scenes still vary while the same handful of
+    settings recur across the video - long-form subtle variation, not a new
+    setting every few minutes.
+    """
+    if os.environ.get("TEST_MODE") == "1":
+        environments = _mock_scene_environments(scenes)
+    else:
+        prompt = SCENE_ENVIRONMENT_PROMPT_TEMPLATE.format(
+            content_format=concept.get("content_format", ""),
+            niche=concept.get("niche", ""),
+            target_audience=concept.get("target_audience", ""),
+            duration_description=_duration_description(target_seconds),
+            viewing_behavior=(concept.get("monetization_hypothesis")
+                              or concept.get("publishing_format") or "unknown"),
+            base_prompt=base_prompt or concept.get("visual_concept", ""),
+            direction_section=direction_section(concept),
+            research_section=research_section(research_brief, findings),
+        )
+        provider = os.environ.get("LLM_PROVIDER", "anthropic").lower()
+        text = _call_llm(provider, prompt)
+        reply = _extract_json(text)
+        environments = reply.get("environments") or {}
+        if not environments:
+            raise CreativeError(f"LLM reply carried no environments: {text[:200]!r}")
+
+    environments = _sanitize_environments(environments, len(scenes))
+    names = list(environments)
+    return {s["scene_id"]: str(environments[names[i % len(names)]])
+           for i, s in enumerate(scenes)}
+
+
+# --------------------------------------------------------------------------
+# visual direction (LLM, one call per video) - the structured replacement
+# for a single free-text image prompt reused across every scene
+# --------------------------------------------------------------------------
+
+VISUAL_DIRECTION_PROMPT_TEMPLATE = """You are the art director for a video. Reply with ONLY a JSON object, no markdown fences, no commentary.
+
+Concept: {content_format}
+Niche: {niche}
+Audience: {target_audience}
+Visual concept: {visual_concept}
+Duration: {duration_description}
+How this video is actually watched: {viewing_behavior}
+Scenes to fill: {scene_count}{direction_section}{research_section}
+
+Write the visual direction for this video as structured facets, not as a prompt. Something else assembles the prompts from what you return, so do not write prompt text, do not repeat the same idea in several fields, and never use generic quality words ("8k", "hyper-realistic", "masterpiece", "highly detailed", "award winning") - they are stripped before generation and waste the field they sit in.
+
+Decide how many distinct environments this video genuinely needs. Reason from the duration and how it is watched: a long piece playing in the background needs only as many strong settings as a half-attentive viewer would notice changing, and a single excellent setting can be the right answer. Do not give every scene its own environment.
+
+Every environment must be concrete and specific to this concept - a place, not a mood - and the identity facets must hold across all of them, because they are what makes the scenes read as one video.
+
+Return a JSON object with exactly these keys:
+- "reasoning": one sentence on why this many environments, given duration and viewing behaviour
+- "identity": an object with
+    "palette": 3-5 specific colour terms (name real colours, not "warm tones")
+    "lighting": one phrase describing the light source and its quality, specific enough to reproduce
+    "atmosphere": one phrase for the feeling of the air in these spaces
+    "materials": 3-5 specific surfaces and textures that recur
+    "continuity_anchors": 2-4 concrete things that appear across scenes so a viewer knows it is the same world
+    "camera": {{"lens": <e.g. "35mm", "85mm", "wide 24mm">, "perspective": <e.g. "eye level", "low and close">, "depth_of_field": one of "deep", "shallow", "medium"}}
+    "render_intent": one phrase for the image's medium and treatment (e.g. "natural available light photography, faint film grain")
+- "environments": a list of objects {{"slug": <short name>, "description": <15-30 words, concrete and specific>, "focal_point": <the one thing the eye lands on>, "scale": <how much of the space is in frame>}}
+- "avoid": a list of short things that must not appear in these images, specific to this concept"""
+
+
+def _mock_visual_direction(concept, scene_count):
+    """The TEST_MODE reply: no network, deterministic, same shape."""
+    return {
+        "reasoning": "[MOCK] two settings for a background piece",
+        "identity": {
+            "palette": ["[MOCK] slate", "[MOCK] oat", "[MOCK] moss"],
+            "lighting": "[MOCK] soft overcast light from one window",
+            "atmosphere": "[MOCK] still and unhurried",
+            "materials": ["[MOCK] worn oak", "[MOCK] brushed wool"],
+            "continuity_anchors": ["[MOCK] the same brass lamp"],
+            "camera": {"lens": "35mm", "perspective": "eye level",
+                       "depth_of_field": "medium"},
+            "render_intent": "[MOCK] natural light photography",
+        },
+        "environments": [
+            {"slug": "envA", "description": f"[MOCK environment A] {concept.get('visual_concept', '')}".strip(),
+             "focal_point": "[MOCK] the window", "scale": "[MOCK] a corner of the room"},
+            {"slug": "envB", "description": f"[MOCK environment B] {concept.get('visual_concept', '')}".strip(),
+             "focal_point": "[MOCK] the doorway", "scale": "[MOCK] the full room"},
+        ][:max(1, min(2, scene_count or 2))],
+        "avoid": ["[MOCK] text"],
+    }
+
+
+def generate_visual_direction(concept, scene_count, brief=None,
+                              research_brief=None, findings=None,
+                              target_seconds=None, llm=None):
+    """One batched LLM call producing this video's visual direction document.
+
+    One call per video, like the creative brief and the sound design - the
+    per-scene call this project's economy rules exist to avoid. The reply is
+    sanitised by ``visual_direction.sanitize_direction`` before anyone sees
+    it, so a model that ignores the instruction not to write slop still
+    cannot get slop into a prompt.
+    """
+    if os.environ.get("TEST_MODE") == "1":
+        return vd.sanitize_direction(
+            _mock_visual_direction(concept, scene_count), scene_count)
+
+    prompt = VISUAL_DIRECTION_PROMPT_TEMPLATE.format(
+        content_format=concept.get("content_format", ""),
+        niche=concept.get("niche", ""),
+        target_audience=concept.get("target_audience", ""),
+        visual_concept=(brief or {}).get("image_prompt")
+                       or concept.get("visual_concept", ""),
+        duration_description=_duration_description(target_seconds),
+        viewing_behavior=(concept.get("monetization_hypothesis")
+                          or concept.get("publishing_format") or "unknown"),
+        scene_count=scene_count,
+        direction_section=direction_section(concept),
+        research_section=research_section(research_brief, findings),
+    )
+    if llm is None:
+        provider = os.environ.get("LLM_PROVIDER", "anthropic").lower()
+
+        def llm(text):
+            return _call_llm(provider, text)
+
+    reply = _extract_json(llm(prompt))
+    direction = vd.sanitize_direction(reply, scene_count)
+    if not vd.is_usable(direction):
+        raise CreativeError(
+            "visual direction reply carried no usable environments or "
+            f"identity facets: {str(reply)[:200]!r}")
+    return direction
 
 
 def main():

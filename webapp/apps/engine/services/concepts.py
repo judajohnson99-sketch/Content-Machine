@@ -23,3 +23,23 @@ def create_project(video_id, concept_id, duration=None):
     """
     experiment.scaffold_project(concept_id, video_id, duration=duration)
     return project.project_summary(video_id)
+
+
+def create_from_goal(goal, video_id=None, minutes=None, excerpt_seconds=None):
+    """Derive a whole production from a plain-language goal.
+
+    One call into scripts.goal: it derives the concept, scaffolds the
+    project and writes the research brief every production carries. Returns
+    the same summary shape as create_project plus what was derived, so the
+    dashboard can show the operator what it understood them to mean.
+    """
+    import scripts.goal as goal_mod
+
+    result = goal_mod.derive_production(goal, video_id=video_id, minutes=minutes,
+                                        excerpt_seconds=excerpt_seconds)
+    return {
+        "project": project.project_summary(result["video_id"]),
+        "plan": result["plan"],
+        "brief": result["brief"],
+        "concept_id": result["concept"]["id"],
+    }

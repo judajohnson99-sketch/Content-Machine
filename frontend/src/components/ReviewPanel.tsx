@@ -2,13 +2,15 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getProject, getProjectStatus } from "../api/projects";
 import { getAssets } from "../api/assets";
-import { listReviewDecisions, recordReviewDecision, recordVisualGrade } from "../api/review";
+import {
+  listReviewDecisions, recordAudioGrade, recordReviewDecision, recordVisualGrade,
+} from "../api/review";
 import { ApiError } from "../api/client";
 import { StatusBadge } from "./StatusBadge";
 import { DeliverablePanel } from "./DeliverablePanel";
 import { Badge } from "./ui/Badge";
 import { Button } from "./ui/Button";
-import { InlineSpinner } from "./ui/States";
+import { ErrorState, InlineSpinner } from "./ui/States";
 import { ShieldIcon } from "./ui/icons";
 import { formatDateTime } from "../lib/format";
 import type { ReviewDecisionKind } from "../types/review";
@@ -80,10 +82,24 @@ export function ReviewPanel({ videoId }: Props) {
 
   if (projectQuery.isLoading || statusQuery.isLoading) return <InlineSpinner label="Loading review state…" />;
   if (projectQuery.isError) {
-    return <p role="alert">Failed to load project: {(projectQuery.error as Error).message}</p>;
+    return (
+      <ErrorState
+        title="Could not load this project"
+        where="GET /api/v1/projects/{id}/"
+        hint="No review decision was recorded. Reload to retry."
+        detail={(projectQuery.error as Error).message}
+      />
+    );
   }
   if (statusQuery.isError) {
-    return <p role="alert">Failed to load status: {(statusQuery.error as Error).message}</p>;
+    return (
+      <ErrorState
+        title="Could not load the review gate's verdict"
+        where="GET /api/v1/projects/{id}/status/"
+        hint="Approval stays blocked until the gate can be read - an unknown verdict is never treated as a passing one."
+        detail={(statusQuery.error as Error).message}
+      />
+    );
   }
 
   const status = statusQuery.data!;
@@ -111,7 +127,12 @@ export function ReviewPanel({ videoId }: Props) {
       </section>
 
       <section className={styles.section}>
-        <h3 className={styles.sectionTitle}><span className={styles.stepNo}>3</span> Decision</h3>
+        <h3 className={styles.sectionTitle}><span className={styles.stepNo}>3</span> Audio grade</h3>
+        <AudioGradeControl videoId={videoId} />
+      </section>
+
+      <section className={styles.section}>
+        <h3 className={styles.sectionTitle}><span className={styles.stepNo}>4</span> Decision</h3>
         <div className={styles.verdictRow}>
           <StatusBadge status={status.verdict} />
           {status.stale && <span className={styles.staleNote}>stale — recorded as {status.recorded}</span>}
@@ -164,7 +185,13 @@ export function ReviewPanel({ videoId }: Props) {
         <h3 className={styles.historyTitle}>Decision history</h3>
         {historyQuery.isLoading && <InlineSpinner label="Loading…" />}
         {historyQuery.isError && (
-          <p role="alert">Failed to load history: {(historyQuery.error as Error).message}</p>
+          <ErrorState
+            title="Could not load decision history"
+            where="GET /api/v1/projects/{id}/review/"
+            hint="Past decisions are still recorded; only this view failed."
+            detail={(historyQuery.error as Error).message}
+            compact
+          />
         )}
         {historyQuery.data && historyQuery.data.length === 0 && (
           <p className={styles.emptyHistory}>No decisions recorded yet.</p>
@@ -183,6 +210,117 @@ export function ReviewPanel({ videoId }: Props) {
           </ul>
         )}
       </section>
+    </div>
+  );
+}
+
+// The human's verdict on the audio. Nothing here can judge whether a
+// synthesised track is music somebody would leave on for four hours, so
+// where the routing says the chosen source cannot be production-grade
+// (creative.route_audio), the gate holds review until a person says. Where
+// the source *is* the product - a brown-noise bed for a sleep video - no
+// claim is asked for, because demanding a ceremonial one teaches people to
+// click through it.
+function AudioGradeControl({ videoId }: { videoId: string }) {
+  const queryClient = useQueryClient();
+  const [confirmed, setConfirmed] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const assets = useQuery({ queryKey: ["project-assets", videoId], queryFn: () => getAssets(videoId) });
+  const prov = assets.data?.audio_provenance;
+  const grade = prov?.production_grade ?? null;
+  const hasAudio = Boolean(assets.data?.audio);
+
+  const claim = useMutation({
+    mutationFn: (value: boolean) => recordAudioGrade(videoId, value, notes),
+    onSuccess: () => {
+      setError(null);
+      setConfirmed(false);
+      setNotes("");
+      queryClient.invalidateQueries({ queryKey: ["project-assets", videoId] });
+      queryClient.invalidateQueries({ queryKey: ["project-status", videoId] });
+      queryClient.invalidateQueries({ queryKey: ["project", videoId] });
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+    },
+    onError: (e: unknown) => setError(e instanceof Error ? e.message : "Request failed."),
+  });
+
+  if (assets.isLoading) return <InlineSpinner label="Loading audio provenance…" />;
+  if (!hasAudio) return <p className={styles.gradeHint}>No audio track has been composed yet.</p>;
+
+  const capable = prov?.production_grade_capable ?? null;
+  const verdictNeeded = capable === false;
+
+  return (
+    <div className={styles.grade} data-testid="audio-grade">
+      <div className={styles.gradeHead}>
+        <span className={styles.gradeIcon}><ShieldIcon width={16} height={16} /></span>
+        <div className={styles.gradeText}>
+          <span className={styles.gradeState}>
+            {grade === true && <Badge tone="success">audio passed · {prov?.graded_by ?? "a human"}</Badge>}
+            {grade === false && <Badge tone="danger">audio rejected</Badge>}
+            {grade === null && verdictNeeded && <Badge tone="warning">needs a listen</Badge>}
+            {grade === null && !verdictNeeded && <Badge tone="neutral">no verdict required</Badge>}
+          </span>
+          <span className={styles.gradeHint}>
+            {prov?.kind ? `${prov.kind} from ${prov.source ?? "an unrecorded source"}. ` : ""}
+            {prov?.kind_reasoning ? `${prov.kind_reasoning}. ` : ""}
+            {grade === false
+              ? prov?.grade_notes || "Recorded as not production-grade; review is blocked until the audio is replaced."
+              : verdictNeeded
+                ? "This source cannot establish that its output is good — only listening can, so review stays closed until you record a verdict."
+                : prov?.chosen_detail ?? ""}
+          </span>
+        </div>
+      </div>
+      {(prov?.considered?.length ?? 0) > 0 && (
+        <ul className={styles.blockingList} data-testid="audio-sources">
+          {prov!.considered.map((option) => (
+            <li key={option.source}>
+              <strong>{option.source}</strong>
+              {option.available ? " · used" : " · unavailable"}
+              {option.cost ? ` · ${option.cost}` : ""}
+              {option.detail ? ` — ${option.detail}` : ""}
+            </li>
+          ))}
+        </ul>
+      )}
+      {(verdictNeeded || grade !== null) && (
+        <div className={styles.gradeForm}>
+          {grade !== true && (
+            <label className={styles.gradeConfirm}>
+              <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
+              I have listened to this track and it is pleasant enough to publish
+            </label>
+          )}
+          <input
+            className={styles.gradeNotes}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Notes for the verdict (optional)"
+            aria-label="Audio grade notes"
+          />
+          <div className={styles.gradeActions}>
+            {grade !== true && (
+              <Button
+                variant="success"
+                size="sm"
+                disabled={!confirmed || claim.isPending}
+                onClick={() => claim.mutate(true)}
+                title={!confirmed ? "Confirm you listened first" : undefined}
+              >
+                Audio is publishable
+              </Button>
+            )}
+            {grade !== false && (
+              <Button variant="ghost" size="sm" disabled={claim.isPending} onClick={() => claim.mutate(false)}>
+                {grade === true ? "Withdraw verdict" : "Audio is not publishable"}
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+      {error && <p role="alert" className={styles.noticeError}>{error}</p>}
     </div>
   );
 }

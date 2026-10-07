@@ -271,6 +271,26 @@ def build_transition_chain(labels, scenes, out_prefix="sx"):
     return parts, current, elapsed
 
 
+def scene_start_times(scenes):
+    """When each scene begins on the finished timeline.
+
+    Same crossfade arithmetic as timeline_seconds(), so a caller that needs
+    to point at one scene's frames (thumbnail extraction) lands inside that
+    scene rather than near it.
+    """
+    starts = []
+    position = 0.0
+    for index, scene in enumerate(scenes):
+        if index:
+            previous = scenes[index - 1]
+            transition = previous.get("transition") or {}
+            overlap = 0.0 if transition.get("kind", "crossfade") == "cut" else float(
+                transition.get("duration_seconds", 0.0) or 0.0)
+            position += float(previous["duration_seconds"]) - overlap
+        starts.append(round(position, 3))
+    return starts
+
+
 def timeline_seconds(scenes):
     """Finished runtime of a scene list, accounting for crossfade overlap.
 

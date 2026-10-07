@@ -11,6 +11,7 @@ runnable directly:
 import argparse
 import json
 import logging
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -259,6 +260,253 @@ def _storyboard_report(pdir, checks):
     return report
 
 
+def visual_diversity_warnings(scenes, motifs_recorded):
+    """Flag *unplanned* repetition, not a deliberate low environment count.
+
+    ``motifs_recorded`` is True when a scene-environment/motif step actually
+    reasoned about this storyboard's visuals (``generate_scene_motifs`` or
+    ``generate_scene_environments`` - see scripts/creative.py). When it has,
+    a low or even single-environment result is that reasoning's deliberate
+    call - a long ambient/slow-TV video legitimately may need only one
+    excellent, concept-connected setting - so it is trusted, not
+    second-guessed here. This only fires for the case no such reasoning ever
+    ran: every scene reusing one fixed prompt is a planning gap, not a
+    creative choice, and reads as repetitive visuals rather than a designed
+    video. A render is not technically invalid for it, so this never fails
+    the technical QC status here - see ``gate_blockers`` in scripts/project.py
+    for where an unplanned case like this actually blocks review.
+    """
+    if motifs_recorded or len(scenes) < 4:
+        return []
+    # storyboard.py::apply_scene_motifs always appends ", scene N, <section>"
+    # to every prompt, so even a raw, unplanned single-prompt reuse never
+    # produces byte-identical strings - strip that bookkeeping suffix before
+    # comparing, or this never fires for the exact case it exists to catch.
+    prompts = [_strip_scene_suffix((s.get("image_prompt") or "").strip().lower())
+              for s in scenes]
+    distinct = len({p for p in prompts if p})
+    if distinct <= 1:
+        return [f"all {len(scenes)} scenes share one identical image prompt, and "
+               "no scene-environment planning step ran for this storyboard - "
+               "likely unplanned repetition rather than a designed video"]
+    return []
+
+
+_SCENE_SUFFIX_RE = re.compile(r",\s*scene\s+\d+\s*,\s*\S+\s*$")
+
+
+def _strip_scene_suffix(prompt):
+    """Remove the trailing per-scene bookkeeping tag so two prompts that
+    depict the identical setting compare equal regardless of which scene
+    index or section they were rendered for."""
+    return _SCENE_SUFFIX_RE.sub("", prompt)
+
+
+# --------------------------------------------------------------------------
+# image assessment - is this picture obviously not worth keeping?
+# --------------------------------------------------------------------------
+#
+# The narrow, honest question: not "is this image good" (no measurement
+# here answers that, and the production-grade claim stays a human's), but
+# "is this image so obviously broken that an unattended run should throw it
+# away and ask again". A blank plate, a black frame, a blown-out white
+# rectangle and two supposedly different scenes that came back as the same
+# picture are all answerable from the pixels.
+
+# Luma standard deviation, on 0-255, under which an image has essentially
+# no structure in it - a flat fill or a near-flat gradient.
+MIN_LUMA_STDDEV = 6.0
+# Mean luma outside this range is a frame that is effectively black or
+# effectively white, whatever it was supposed to depict.
+MIN_MEAN_LUMA = 8.0
+MAX_MEAN_LUMA = 247.0
+# Peak-to-trough luma under this is a picture with no tonal range at all.
+MIN_LUMA_RANGE = 24.0
+# signalstats SATAVG is 0-255ish; past this the image is a poster, not a
+# photograph, which is the classic over-cooked-diffusion look.
+MAX_MEAN_SATURATION = 130.0
+# Hamming distance between two 64-bit difference hashes, at or under which
+# two images are the same picture for a viewer's purposes.
+DUPLICATE_HASH_DISTANCE = 6
+
+# The hash is computed from a 9x8 greyscale reduction: each row yields 8
+# bits, one per "is this pixel brighter than the next". Small, stable under
+# rescaling and compression, and entirely standard library once ffmpeg has
+# done the resampling.
+_HASH_WIDTH = 9
+_HASH_HEIGHT = 8
+_STATS_WIDTH = 32
+_STATS_HEIGHT = 32
+
+
+def _gray_bytes(path, width, height):
+    """A greyscale downsample of an image as raw bytes, or None."""
+    result = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path),
+         "-vf", f"scale={width}:{height},format=gray", "-frames:v", "1",
+         "-f", "rawvideo", "-"],
+        capture_output=True)
+    data = result.stdout
+    if result.returncode != 0 or len(data) < width * height:
+        return None
+    return data[:width * height]
+
+
+def image_hash(path):
+    """A 64-bit difference hash of an image, or None if it cannot be read."""
+    data = _gray_bytes(path, _HASH_WIDTH, _HASH_HEIGHT)
+    if data is None:
+        return None
+    bits = 0
+    for row in range(_HASH_HEIGHT):
+        offset = row * _HASH_WIDTH
+        for col in range(_HASH_WIDTH - 1):
+            bits = (bits << 1) | int(data[offset + col] > data[offset + col + 1])
+    return f"{bits:016x}"
+
+
+def hash_distance(a, b):
+    """Hamming distance between two hashes from ``image_hash``."""
+    if not a or not b:
+        return None
+    return bin(int(a, 16) ^ int(b, 16)).count("1")
+
+
+def _signalstats(path):
+    result = _run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(path),
+                   "-vf", "signalstats,metadata=print", "-f", "null", "-"])
+    stats = {}
+    for line in result.stderr.splitlines():
+        if "lavfi.signalstats." not in line:
+            continue
+        key, _, value = line.split("lavfi.signalstats.")[1].partition("=")
+        try:
+            stats[key.strip()] = float(value)
+        except ValueError:
+            pass
+    return stats
+
+
+def assess_image(path):
+    """Measure one generated image and say what is obviously wrong with it.
+
+    Returns ``{"measurement": {...}, "findings": [...], "verdict": ...}``
+    with the same three severities the audio assessment uses, and the same
+    rule about what they mean: ``block`` is for defects with no legitimate
+    reading, so an unattended run may discard and retry on one; ``warn`` is
+    reported and left to a person. Passing every check means nothing
+    measurable is wrong, never that the image is good.
+    """
+    path = Path(path)
+    findings = []
+    if not path.is_file():
+        return {"measurement": {}, "verdict": "BLOCKED",
+                "findings": [check_finding("missing", "block", f"no such file: {path}")]}
+
+    stats = _signalstats(path)
+    data = _gray_bytes(path, _STATS_WIDTH, _STATS_HEIGHT)
+    measurement = {
+        "mean_luma": round(stats.get("YAVG"), 2) if "YAVG" in stats else None,
+        "min_luma": stats.get("YMIN"),
+        "max_luma": stats.get("YMAX"),
+        "mean_saturation": round(stats.get("SATAVG"), 2) if "SATAVG" in stats else None,
+        "hash": image_hash(path),
+    }
+    if data:
+        mean = sum(data) / len(data)
+        variance = sum((v - mean) ** 2 for v in data) / len(data)
+        measurement["luma_stddev"] = round(variance ** 0.5, 2)
+    if measurement.get("mean_luma") is None and "luma_stddev" not in measurement:
+        return {"measurement": measurement, "verdict": "BLOCKED",
+                "findings": [check_finding(
+                    "unreadable", "block",
+                    f"{path.name} could not be measured at all")]}
+
+    stddev = measurement.get("luma_stddev")
+    if stddev is not None and stddev < MIN_LUMA_STDDEV:
+        findings.append(check_finding(
+            "blank", "block",
+            f"{path.name} has almost no structure (luma sd {stddev:.1f}); "
+            "it is a flat fill, not a depicted scene"))
+
+    mean_luma = measurement.get("mean_luma")
+    if mean_luma is not None and mean_luma < MIN_MEAN_LUMA:
+        findings.append(check_finding(
+            "black_frame", "block",
+            f"{path.name} is effectively black (mean luma {mean_luma:.0f})"))
+    elif mean_luma is not None and mean_luma > MAX_MEAN_LUMA:
+        findings.append(check_finding(
+            "blown_out", "block",
+            f"{path.name} is effectively white (mean luma {mean_luma:.0f})"))
+
+    low, high = measurement.get("min_luma"), measurement.get("max_luma")
+    if low is not None and high is not None and (high - low) < MIN_LUMA_RANGE:
+        findings.append(check_finding(
+            "no_tonal_range", "warn",
+            f"{path.name} spans only {high - low:.0f} luma levels - no "
+            "highlights or shadows to read depth from"))
+
+    saturation = measurement.get("mean_saturation")
+    if saturation is not None and saturation > MAX_MEAN_SATURATION:
+        findings.append(check_finding(
+            "oversaturated", "warn",
+            f"{path.name} averages {saturation:.0f} saturation - the "
+            "over-cooked look that reads as machine-generated"))
+
+    return {"measurement": measurement, "findings": findings,
+            "verdict": _verdict(findings)}
+
+
+def check_finding(code, severity, detail):
+    return {"code": code, "severity": severity, "detail": detail}
+
+
+def _verdict(findings):
+    severities = {f["severity"] for f in findings}
+    if "block" in severities:
+        return "BLOCKED"
+    if "warn" in severities:
+        return "REVIEW"
+    return "OK"
+
+
+def duplicate_scene_findings(scenes, pdir):
+    """Scenes that asked for different pictures and got the same one.
+
+    Two scenes sharing a prompt share a render by design (that is the
+    picture-identity rule, and it is a saving, not a defect). Two scenes
+    with *different* prompts coming back as visually the same image is the
+    opposite: the variation the direction asked for did not survive
+    generation, and a reviewer would see the same wallpaper twice.
+    """
+    entries = []
+    for scene in scenes:
+        image = scene.get("image")
+        if not image:
+            continue
+        path = Path(pdir) / image
+        digest = (scene.get("generation") or {}).get("request_digest")
+        entries.append((scene, digest, image, image_hash(path)))
+
+    findings, seen = [], set()
+    for i, (scene_a, digest_a, image_a, hash_a) in enumerate(entries):
+        for scene_b, digest_b, image_b, hash_b in entries[i + 1:]:
+            if digest_a == digest_b or image_a == image_b:
+                continue  # the same picture on purpose
+            distance = hash_distance(hash_a, hash_b)
+            if distance is None or distance > DUPLICATE_HASH_DISTANCE:
+                continue
+            key = tuple(sorted((scene_a["scene_id"], scene_b["scene_id"])))
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.append(check_finding(
+                "near_duplicate_scenes", "warn",
+                f"{key[0]} and {key[1]} asked for different pictures but came "
+                f"back visually identical (hash distance {distance})"))
+    return findings
+
+
 def qc_storyboard(storyboard, pdir, audio_seconds=None):
     """Pre-render QC for a scene plan.
 
@@ -274,7 +522,9 @@ def qc_storyboard(storyboard, pdir, audio_seconds=None):
     checks.append(check("storyboard_has_scenes", bool(scenes),
                         f"{len(scenes)} scene(s)"))
     if not scenes:
-        return _storyboard_report(pdir, checks)
+        report = _storyboard_report(pdir, checks)
+        report["visual_diversity_warnings"] = []
+        return report
 
     missing = [s.get("scene_id") for s in scenes if not s.get("image")]
     checks.append(check(
@@ -352,7 +602,10 @@ def qc_storyboard(storyboard, pdir, audio_seconds=None):
             f"audio {audio_seconds:.2f}s vs timeline {timeline:.2f}s "
             f"(drift {drift:.2f}s)"))
 
-    return _storyboard_report(pdir, checks)
+    report = _storyboard_report(pdir, checks)
+    motifs_recorded = bool(storyboard.get("scene_motifs"))
+    report["visual_diversity_warnings"] = visual_diversity_warnings(scenes, motifs_recorded)
+    return report
 
 
 def _finalize(video_path, checks):

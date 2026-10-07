@@ -37,4 +37,9 @@ if [ "${1:-}" = "worker" ]; then
     exec python3 scripts/worker.py "$@"
 fi
 
+if [ "${1:-}" = "media" ]; then
+    shift
+    exec python3 scripts/media.py "$@"
+fi
+
 exec python3 scripts/project.py "$@"

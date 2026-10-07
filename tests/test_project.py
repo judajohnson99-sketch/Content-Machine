@@ -23,6 +23,7 @@ AUDIO = ROOT / "tests" / "fixtures" / "audio" / "test_tone.wav"
 
 sys.path.insert(0, str(ROOT / "scripts"))
 import project  # noqa: E402 - direct import for the typed domain functions
+import research  # noqa: E402
 
 # Exit codes from scripts/project.py run.
 EXIT_OK = 0
@@ -755,6 +756,246 @@ class TestStoryboardAndScenesCommands(ProduceTestCase):
         second_board = json.loads((self.pdir / "storyboard.json").read_text())
         self.assertEqual(second_board["scene_motifs"], board["scene_motifs"])
 
+    def test_storyboard_assigns_environment_motifs_when_no_research_is_required_but_depicted_imagery_is(self):
+        """sleep-rain-window-static needs real depicted imagery
+        (procedural_visuals_acceptable=false) but has no subject to
+        research: it must still get scene-diversifying motifs, not one
+        fixed base prompt reused for every scene."""
+        self.init_project("--duration", "20")
+        self.write_metadata({
+            "visual_plan": {"prompt": "rain on a window", "negative_prompt": "text",
+                           "style": "deep-night"},
+            "experiment": {"concept_id": "sleep-rain-window-static",
+                          "generation_cost_usd": 0.0, "generation_seconds": None, "variables": {}},
+        })
+        proc = self.cm("storyboard", self.video_id, "--scenes", "4")
+        self.assertEqual(proc.returncode, EXIT_OK, proc.stdout + proc.stderr)
+        board = json.loads((self.pdir / "storyboard.json").read_text())
+        self.assertEqual(len(board["scene_motifs"]), 4)
+        for scene in board["scenes"]:
+            self.assertEqual(scene["visual_intent"], board["scene_motifs"][scene["scene_id"]])
+
+        # Rebuilding without --force reuses the cached motifs rather than
+        # calling the (batched) environment generator again.
+        second = self.cm("storyboard", self.video_id, "--scenes", "4")
+        self.assertEqual(second.returncode, EXIT_OK, second.stderr)
+        second_board = json.loads((self.pdir / "storyboard.json").read_text())
+        self.assertEqual(second_board["scene_motifs"], board["scene_motifs"])
+
+
+class SceneAssetReuseTest(ProduceTestCase):
+    """Two scenes that were deliberately given the same environment are one
+    picture, not two renders of the same thing - and `images/` is not the
+    same list as "the images this video uses"."""
+
+    def test_identical_scene_prompts_are_rendered_once_and_shared(self):
+        self.init_project("--duration", "20")
+        self.write_metadata({
+            "visual_plan": {"prompt": "a dark still", "negative_prompt": "text",
+                           "style": "deep-night"},
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                          "generation_cost_usd": 0.0, "generation_seconds": None,
+                          "variables": {}},
+        })
+        self.assertEqual(self.cm("storyboard", self.video_id, "--scenes", "3").returncode,
+                         EXIT_OK)
+        board = json.loads((self.pdir / "storyboard.json").read_text())
+        digests = {s["generation"]["request_digest"] for s in board["scenes"]}
+        self.assertEqual(len(digests), 1,
+                         "scenes with the same environment must share one digest")
+
+        proc = self.cm("scenes", self.video_id)
+        self.assertEqual(proc.returncode, EXIT_OK, proc.stdout + proc.stderr)
+        board = json.loads((self.pdir / "storyboard.json").read_text())
+        images = {s["image"] for s in board["scenes"]}
+        self.assertEqual(len(images), 1, f"expected one shared render, got {images}")
+        self.assertEqual(
+            self.metadata()["provenance"]["images"]["scene_images"], sorted(images))
+
+    def test_a_stray_image_is_not_part_of_the_deliverable(self):
+        self.init_project("--duration", "20")
+        self.write_metadata({
+            "visual_plan": {"prompt": "a dark still", "negative_prompt": "text",
+                           "style": "deep-night"},
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                          "generation_cost_usd": 0.0, "generation_seconds": None,
+                          "variables": {}},
+        })
+        self.assertEqual(self.cm("storyboard", self.video_id, "--scenes", "2").returncode,
+                         EXIT_OK)
+        self.assertEqual(self.cm("scenes", self.video_id).returncode, EXIT_OK)
+
+        referenced = project.scene_referenced_images(self.pdir)
+        self.assertTrue(referenced)
+        # init ingested source images that no scene points at; they are
+        # already residue by this definition.
+        before = project.unreferenced_images(self.pdir)
+        for path in referenced:
+            self.assertNotIn(path, before)
+
+        # A retry that wrote a file and was then abandoned: residue, not an asset.
+        stray = self.pdir / "images" / "zz_abandoned_retry.png"
+        shutil.copyfile(referenced[0], stray)
+        self.assertEqual(project.scene_referenced_images(self.pdir), referenced)
+        self.assertEqual(project.unreferenced_images(self.pdir), sorted(before + [stray]))
+
+    def test_without_a_storyboard_there_is_nothing_to_say(self):
+        """No storyboard means no opinion about which images are the
+        deliverable - not "none of them are"."""
+        self.init_project()
+        self.assertIsNone(project.scene_referenced_images(self.pdir))
+        self.assertEqual(project.unreferenced_images(self.pdir), [])
+
+
+class AudioGradeTest(ProjectTestCase):
+    """The audio counterpart of the visual production-grade claim. A source
+    that cannot be production-grade (synthesised music standing in for
+    music) holds review until a human has actually listened."""
+
+    def _synthesised_music_project(self):
+        self.init_project("--title", "Audio Grade", "--production-grade-visuals")
+        meta = self.metadata()
+        meta["description"] = "A description, required before review."
+        meta["provenance"]["audio"].update({
+            "kind": "music", "source": "generative-music",
+            "production_grade_capable": False, "plan_digest": "abc123",
+        })
+        (self.pdir / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n")
+
+    def _blockers(self):
+        """Everything the gate would hold review for, with every non-audio
+        input already satisfying it."""
+        metadata = self.metadata()
+        manifest_path = self.pdir / "audio" / "audio_manifest.json"
+        manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {
+            "commercial_use_cleared": True, "attributions_required": [],
+            "quality": {"warnings": []}}
+        return project.gate_blockers(self.pdir, metadata, "PASS", [], True, manifest)
+
+    def test_an_ungraded_synthesised_music_track_blocks_review(self):
+        self._synthesised_music_project()
+        blockers = self._blockers()
+        self.assertTrue(any("audio-grade" in b for b in blockers), blockers)
+
+    def test_a_human_pass_clears_the_blocker(self):
+        self._synthesised_music_project()
+        project.record_audio_grade(self.video_id, "a human", True, notes="listened")
+        self.assertFalse(any("audio" in b for b in self._blockers()), self._blockers())
+        prov = self.metadata()["provenance"]["audio"]
+        self.assertEqual(prov["graded_by"], "a human")
+        self.assertTrue(prov["graded_utc"])
+
+    def test_a_human_fail_blocks_with_their_own_reason(self):
+        self._synthesised_music_project()
+        project.record_audio_grade(self.video_id, "a human", False,
+                                   notes="the bells clash")
+        self.assertTrue(any("the bells clash" in b for b in self._blockers()))
+
+    def test_a_grade_requires_a_named_human(self):
+        self._synthesised_music_project()
+        with self.assertRaises(project.ReviewDecisionError):
+            project.record_audio_grade(self.video_id, "", True)
+        with self.assertRaises(project.ReviewDecisionError):
+            project.record_audio_grade(self.video_id, "a human", "yes")
+
+    def test_a_capable_source_needs_no_ceremonial_claim(self):
+        """Where a synthesised texture *is* the product, the artefact is
+        exactly what was specified; demanding a claim there would teach
+        people to click through one."""
+        self.init_project("--title", "Texture", "--production-grade-visuals")
+        meta = self.metadata()
+        meta["description"] = "A description."
+        meta["provenance"]["audio"].update({
+            "kind": "texture", "source": "procedural-texture",
+            "production_grade_capable": True})
+        (self.pdir / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n")
+        self.assertFalse(any("audio-grade" in b for b in self._blockers()))
+
+    def test_the_verdict_does_not_survive_a_changed_audio_plan(self):
+        """A human listened to a specific track. Re-rendering the same plan
+        reproduces it; a different plan does not."""
+        self.init_project("--title", "Regraded")
+        self.write_metadata({"audio_plan": {"composition": {
+            "target_seconds": 3,
+            "layers": [{"id": "bed", "provider": "noise",
+                       "params": {"color": "brown"}, "gain_db": 0.0}]}}})
+        self.assertEqual(self.cm("audio", self.video_id, "--duration", "3").returncode,
+                         EXIT_OK)
+        project.record_audio_grade(self.video_id, "a human", True)
+        self.assertEqual(self.cm("audio", self.video_id, "--duration", "3").returncode,
+                         EXIT_OK)
+        self.assertTrue(self.metadata()["provenance"]["audio"]["production_grade"],
+                        "the same plan must keep the verdict")
+
+        self.write_metadata({"audio_plan": {"composition": {
+            "target_seconds": 3,
+            "layers": [{"id": "bed", "provider": "pad",
+                       "params": {"chord": "warm"}, "gain_db": 0.0}]}}})
+        self.assertEqual(self.cm("audio", self.video_id, "--duration", "3").returncode,
+                         EXIT_OK)
+        self.assertIsNone(self.metadata()["provenance"]["audio"]["production_grade"],
+                          "a different plan must drop the verdict")
+
+
+class ProjectErrorMessageTest(unittest.TestCase):
+    """One string is one problem, never a list of characters."""
+
+    def test_a_single_string_is_not_split_into_characters(self):
+        e = project.ProjectError("no such project: abc")
+        self.assertEqual(str(e), "no such project: abc")
+        self.assertEqual(e.problems, ["no such project: abc"])
+
+    def test_a_list_still_joins_its_problems(self):
+        e = project.ProjectError(["first", "second"])
+        self.assertEqual(str(e), "first; second")
+
+
+class ThumbnailSamplingTest(unittest.TestCase):
+    """Candidates must be different pictures, not different clock times.
+
+    A board that reuses one environment for three scenes is the normal case
+    now that one distinct picture means one render; sampling fixed fractions
+    of the runtime would offer the reviewer the same frame three times.
+    """
+
+    @staticmethod
+    def _scene(scene_id, image, seconds, transition=2.0):
+        return {"scene_id": scene_id, "image": image,
+                "duration_seconds": seconds,
+                "transition": {"kind": "crossfade" if transition else "cut",
+                               "duration_seconds": transition}}
+
+    def test_one_timestamp_per_distinct_picture_in_scene_order(self):
+        board = {"scenes": [
+            self._scene("s01", "images/a.png", 10.0),
+            self._scene("s02", "images/a.png", 10.0),
+            self._scene("s03", "images/b.png", 10.0, transition=0.0),
+        ]}
+        # Starts are 0, 8, 16 with a 2s crossfade; midpoints 5 and 21.
+        self.assertEqual(project.thumbnail_timestamps(board, 26.0), [5.0, 21.0])
+
+    def test_no_storyboard_falls_back_to_runtime_fractions(self):
+        self.assertEqual(project.thumbnail_timestamps(None, 100.0),
+                         [25.0, 50.0, 75.0])
+
+    def test_scenes_without_a_rendered_image_fall_back_too(self):
+        board = {"scenes": [self._scene("s01", None, 10.0)]}
+        self.assertEqual(project.thumbnail_timestamps(board, 100.0),
+                         [25.0, 50.0, 75.0])
+
+    def test_a_long_board_is_capped_rather_than_seeking_once_per_scene(self):
+        board = {"scenes": [self._scene(f"s{i:02d}", f"images/{i}.png", 10.0)
+                            for i in range(40)]}
+        stamps = project.thumbnail_timestamps(board, 400.0)
+        self.assertEqual(len(stamps), project.MAX_THUMBNAIL_CANDIDATES)
+        self.assertEqual(stamps, sorted(stamps))
+
+    def test_a_timestamp_past_the_finished_runtime_is_dropped(self):
+        board = {"scenes": [self._scene("s01", "images/a.png", 10.0),
+                            self._scene("s02", "images/b.png", 10.0, transition=0.0)]}
+        # A truncated render: only the first scene's midpoint is inside it.
+        self.assertEqual(project.thumbnail_timestamps(board, 9.0), [5.0])
+
 
 class ListProjectsTest(ProjectTestCase):
     """Direct unit tests on the typed domain function - no subprocess, no
@@ -766,11 +1007,64 @@ class ListProjectsTest(ProjectTestCase):
         ids = [s["video_id"] for s in summaries]
         self.assertIn(self.video_id, ids)
 
+    def test_archiving_hides_without_deleting_and_is_attributed(self):
+        self.init_project()
+        # Every mutating domain function takes the project's flock, and the
+        # lock file it opens is a permanent fixture of the directory - not an
+        # asset. What this test is about is that nothing of the project's
+        # content moves when it is archived.
+        def contents():
+            return sorted(str(p) for p in self.pdir.rglob("*")
+                          if p.name != ".lock")
+
+        before = contents()
+        with self.assertRaises(project.ProjectError):
+            project.set_archived(self.video_id, True, "")
+        summary = project.set_archived(self.video_id, True, "owner@example.com",
+                                       reason="pytest residue")
+        self.assertTrue(summary["archived"])
+        meta = json.loads((self.pdir / "metadata.json").read_text())
+        self.assertEqual(meta["archived"]["by"], "owner@example.com")
+        self.assertEqual(meta["archived"]["reason"], "pytest residue")
+        self.assertEqual(meta["history"][-1]["event"], "archived")
+        self.assertEqual(contents(), before,
+                         "archiving must not remove or add any file")
+        listed = next(s for s in project.list_projects() if s["video_id"] == self.video_id)
+        self.assertTrue(listed["archived"], "still listed - views filter, the domain does not hide")
+        restored = project.set_archived(self.video_id, False, "owner@example.com")
+        self.assertFalse(restored["archived"])
+        self.assertNotIn("archived", json.loads((self.pdir / "metadata.json").read_text()))
+        with self.assertRaises(project.ProjectError):
+            project.set_archived("no-such-project", True, "owner@example.com")
+
     def test_summary_reflects_recorded_overall_status(self):
         self.init_project()
         self.write_metadata({"status": {"overall": "NEEDS_ATTENTION"}})
         summary = next(s for s in project.list_projects() if s["video_id"] == self.video_id)
         self.assertEqual(summary["overall_status"], "NEEDS_ATTENTION")
+
+    def test_summary_offers_a_preview_image_and_never_invents_one(self):
+        """The dashboard browses productions by eye, so a summary carries one
+        servable still - but "no picture yet" stays a true answer."""
+        self.init_project()
+        summary = project.project_summary(self.video_id)
+        self.assertIsNotNone(summary["preview_image"])
+        self.assertTrue(summary["preview_image"].startswith("images/"),
+                        summary["preview_image"])
+        # Resolvable through the one rule for servable paths.
+        project.project_file_path(self.video_id, summary["preview_image"])
+
+        # A thumbnail from the finished render wins over a source image.
+        thumbs = self.pdir / "thumbnail"
+        thumbs.mkdir(exist_ok=True)
+        (thumbs / "candidate_1.jpg").write_bytes(b"not really a jpeg")
+        self.assertEqual(project.project_summary(self.video_id)["preview_image"],
+                         "thumbnail/candidate_1.jpg")
+
+        # Nothing on disk means None, not a placeholder.
+        for path in list((self.pdir / "images").iterdir()) + list(thumbs.iterdir()):
+            path.unlink()
+        self.assertIsNone(project.project_summary(self.video_id)["preview_image"])
 
     def test_a_corrupt_metadata_json_is_skipped_not_raised(self):
         self.init_project()
@@ -895,6 +1189,79 @@ class TypedDomainFunctionsTest(ProjectTestCase):
             [str(CLI), "creative", self.video_id, "--force"],
             capture_output=True, text=True, cwd=str(ROOT), env=env)
         self.assertEqual(proc.returncode, result.exit_code)
+
+
+class ResearchBriefWiringTest(ProjectTestCase):
+    """run_research picks up a project's research brief (if any) and runs
+    brief-driven competitor research alongside subject research, without
+    ever making the stage fail over an unconfigured/absent brief."""
+
+    def setUp(self):
+        super().setUp()
+        self._prev_test_mode = os.environ.get("TEST_MODE")
+        os.environ["TEST_MODE"] = "1"
+        self.addCleanup(self._restore_test_mode)
+        self.addCleanup(self._clean_research_files)
+
+    def _restore_test_mode(self):
+        if self._prev_test_mode is None:
+            os.environ.pop("TEST_MODE", None)
+        else:
+            os.environ["TEST_MODE"] = self._prev_test_mode
+
+    def _clean_research_files(self):
+        research.brief_path(self.video_id).unlink(missing_ok=True)
+        research.findings_path(self.video_id).unlink(missing_ok=True)
+
+    def test_no_brief_and_no_subject_research_required_is_a_clean_noop(self):
+        self.init_project()
+        self.write_metadata({
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                           "generation_cost_usd": 0.0, "generation_seconds": None,
+                           "variables": {}},
+        })
+        result = project.run_research(self.video_id)
+        self.assertTrue(result.ok)
+        self.assertIsNone(result.data.get("findings"))
+
+    def test_a_saved_brief_produces_findings_under_the_fixture_provider(self):
+        self.init_project()
+        self.write_metadata({
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                           "generation_cost_usd": 0.0, "generation_seconds": None,
+                           "variables": {}},
+        })
+        research.save_brief(self.video_id, {
+            "niche": "sleep ambience", "creative_intent": "cozy rainy night"})
+
+        result = project.run_research(self.video_id)
+        self.assertTrue(result.ok, result.message)
+        self.assertIsNotNone(result.data["findings"])
+        self.assertTrue(result.data["findings"]["findings"])
+        self.assertEqual(
+            self.metadata()["status"]["competitor_research"], "OK")
+
+        loaded = research.load_findings(self.video_id)
+        self.assertEqual(loaded, result.data["findings"])
+
+    def test_run_creative_passes_research_context_through_without_failing(self):
+        """No LLM is reached under TEST_MODE, so this proves the plumbing
+        (brief/findings loaded and handed to generate_brief/
+        build_audio_composition) does not break the stage - the prompt
+        content itself is covered in tests/test_creative.py."""
+        self.init_project()
+        self.write_metadata({
+            "experiment": {"concept_id": "sleep-brown-noise-dark",
+                           "generation_cost_usd": 0.0, "generation_seconds": None,
+                           "variables": {}},
+        })
+        research.save_brief(self.video_id, {"niche": "sleep ambience"})
+        project.run_research(self.video_id)
+
+        result = project.run_creative(self.video_id)
+        self.assertTrue(result.ok, result.message)
+        layers = self.metadata()["audio_plan"]["composition"]["layers"]
+        self.assertEqual(layers[1]["provider"], "pad")
 
 
 class ReviewDecisionTest(ProjectTestCase):
@@ -1337,6 +1704,41 @@ class TestGpuWorkerDeferral(unittest.TestCase):
         summary = project.project_assets(self.video_id)["storyboard"]["scenes"]
         self.assertTrue(all(s["job_id"] for s in summary))
 
+    def test_a_failed_remote_scene_job_blocks_rather_than_waits(self):
+        self.scaffold()
+        self.worker.enroll("home-gpu-01", ("comfyui",))
+        board = project.run_storyboard(self.video_id, scene_count=2)
+        self.assertTrue(board.ok, board.message)
+        first = project.run_scenes(self.video_id)
+        self.assertEqual(first.exit_code, EXIT_NEEDS_ATTENTION, first.message)
+        job_ids = first.data["remote_jobs"]
+
+        # The worker takes one and fails it for good (a VRAM ceiling).
+        self.worker.heartbeat("home-gpu-01", {"comfyui": "reachable"})
+        job, _ = self.worker.claim("home-gpu-01")
+        self.worker.report_failure(job["job_id"], "home-gpu-01",
+                                   job["lease"]["lease_id"],
+                                   "torch.OutOfMemoryError: CUDA out of memory",
+                                   permanent=True)
+
+        # Re-running does not pretend the failed scene is on its way.
+        again = project.run_scenes(self.video_id)
+        self.assertFalse(again.ok)
+        self.assertEqual(again.exit_code, 1, again.message)
+        self.assertEqual(again.data["failed"], 1)
+        self.assertEqual(again.data["queued"], 1)
+        self.assertEqual(len(self.worker.load_jobs()), 2, "nothing new was queued")
+        storyboard = json.loads((self.pdir / "storyboard.json").read_text())
+        states = {s["generation"]["job_id"]: s["generation"]["remote_state"]
+                  for s in storyboard["scenes"]}
+        self.assertEqual(states[job["job_id"]], self.worker.FAILED)
+
+        # An operator's requeue puts it back, and the stage waits again.
+        self.worker.requeue(job["job_id"], reason="capacity fixed")
+        resumed = project.run_scenes(self.video_id)
+        self.assertEqual(resumed.exit_code, EXIT_NEEDS_ATTENTION, resumed.message)
+        self.assertEqual(sorted(resumed.data["remote_jobs"]), sorted(job_ids))
+
     def test_visual_grade_is_an_explicit_human_claim(self):
         self.scaffold()
         with self.assertRaises(project.ReviewDecisionError):
@@ -1354,3 +1756,60 @@ class TestGpuWorkerDeferral(unittest.TestCase):
         self.assertEqual(meta["provenance"]["images"]["production_grade_claim"]["reviewer"],
                          "owner@example.com")
         self.assertEqual(entry["asset_count"], 1)
+
+
+class CreativeQualityBlockersTest(unittest.TestCase):
+    """Technical validity (qc_status) and production quality are kept
+    distinguishable: an obvious, unplanned creative-quality defect must
+    still block READY_FOR_REVIEW even when qc_status is PASS - see
+    project._creative_quality_blockers."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.pdir = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _scenes(self, n, prompt):
+        return [{"scene_id": f"s{i:02d}", "image_prompt": prompt} for i in range(n)]
+
+    def test_unplanned_identical_scenes_block_review(self):
+        storyboard = {"scenes": self._scenes(6, "a beige living room")}
+        blocking = project._creative_quality_blockers(self.pdir, storyboard, {})
+        self.assertTrue(any("identical image prompt" in b for b in blocking))
+
+    def test_deliberate_single_environment_choice_does_not_block(self):
+        scenes = self._scenes(6, "one held establishing shot")
+        storyboard = {"scenes": scenes,
+                     "scene_motifs": {s["scene_id"]: "x" for s in scenes}}
+        blocking = project._creative_quality_blockers(self.pdir, storyboard, {})
+        self.assertEqual(blocking, [])
+
+    def test_flat_unvaried_audio_blocks_review(self):
+        audio_manifest = {"quality": {"warnings": [
+            "single static layer with no fades - likely to read as a "
+            "monotonous tone rather than a designed soundscape"]}}
+        blocking = project._creative_quality_blockers(self.pdir, None, audio_manifest)
+        self.assertTrue(any("monotonous tone" in b for b in blocking))
+
+    def test_healthy_storyboard_and_audio_produce_no_blockers(self):
+        scenes = self._scenes(8, "")
+        for i, scene in enumerate(scenes):
+            scene["image_prompt"] = f"environment {i % 4}"
+        storyboard = {"scenes": scenes}
+        audio_manifest = {"quality": {"warnings": []}}
+        blocking = project._creative_quality_blockers(self.pdir, storyboard, audio_manifest)
+        self.assertEqual(blocking, [])
+
+    def test_gate_blockers_surfaces_creative_quality_alongside_the_production_grade_claim(self):
+        """Both the administrative "no decision yet" blocker and the
+        substantive detected defect must be visible together, not one
+        hiding the other."""
+        metadata = {"selected_title": "T", "description": "D",
+                    "provenance": {"images": {}}}
+        storyboard = {"scenes": self._scenes(6, "a beige living room")}
+        blocking = project.gate_blockers(
+            self.pdir, metadata, "PASS", [], True, {}, storyboard=storyboard)
+        self.assertTrue(any("production_grade is not set" in b for b in blocking))
+        self.assertTrue(any("identical image prompt" in b for b in blocking))

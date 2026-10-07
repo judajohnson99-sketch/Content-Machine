@@ -14,6 +14,7 @@ and the ComfyUI stand-in from ``tests.test_generation``, so the wire protocol
 is tested rather than mocked.
 """
 import hashlib
+import argparse
 import json
 import shutil
 import sys
@@ -509,13 +510,67 @@ class FailureTests(WorkerTestCase):
         self.assertLessEqual(worker._backoff_seconds(50),
                              worker.DEFAULT_BACKOFF_CAP)
 
-    def test_a_failed_job_is_terminal(self):
+    def test_a_failed_job_is_terminal_for_the_worker(self):
+        job, _ = worker.claim("home-gpu-01")
+        lease = job["lease"]["lease_id"]
+        worker.report_failure(job["job_id"], "home-gpu-01", lease, "fatal",
+                              permanent=True)
+        reloaded = worker.load_job(job["job_id"])
+        self.assertEqual(reloaded["state"], worker.FAILED)
+        # Nothing a worker reports moves it, and no state but QUEUED (the
+        # operator's requeue) is reachable from FAILED.
+        with self.assertRaises(worker.WorkerError):
+            worker.report_progress(job["job_id"], "home-gpu-01", lease, worker.RUNNING)
+        for to_state in (worker.CLAIMED, worker.RUNNING, worker.SUCCEEDED,
+                         worker.RETRY_WAIT):
+            with self.assertRaises(worker.WorkerError):
+                worker._transition(dict(reloaded), to_state, "test")
+        self.assertIsNone(worker.wait_reason(reloaded))
+
+    def test_an_operator_can_requeue_a_failed_job_with_a_fresh_budget(self):
         job, _ = worker.claim("home-gpu-01")
         worker.report_failure(job["job_id"], "home-gpu-01",
-                              job["lease"]["lease_id"], "fatal", permanent=True)
-        reloaded = worker.load_job(job["job_id"])
+                              job["lease"]["lease_id"],
+                              "torch.OutOfMemoryError: CUDA out of memory",
+                              permanent=True)
+        failed = worker.load_job(job["job_id"])
+        self.assertEqual(worker.job_view(failed)["failure_category"], "capacity")
+        history = len(failed["transitions"])
+
+        requeued = worker.requeue(job["job_id"], reason="tiny template deployed")
+        self.assertEqual(requeued["state"], worker.QUEUED)
+        self.assertEqual(requeued["attempt"], 0)
+        self.assertIsNone(requeued["error"])
+        self.assertIsNone(requeued["lease"])
+        self.assertIsNone(requeued["worker_id"])
+        self.assertEqual(requeued["assets"], [])
+        # The audit trail is kept: it failed, and an operator chose to retry.
+        self.assertEqual(len(requeued["transitions"]), history + 1)
+        last = requeued["transitions"][-1]
+        self.assertEqual((last["from"], last["to"], last["actor"]),
+                         (worker.FAILED, worker.QUEUED, "operator"))
+        self.assertIn("tiny template", last["detail"])
+        view = worker.job_view(worker.load_job(job["job_id"]))
+        self.assertIsNone(view["failure_category"])
+        self.assertEqual(view["wait_reason"], worker.READY_TO_CLAIM)
+        # And the worker can claim it again.
+        again, _ = worker.claim("home-gpu-01")
+        self.assertEqual(again["job_id"], job["job_id"])
+        self.assertEqual(again["attempt"], 1)
+
+    def test_only_failed_or_cancelled_jobs_can_be_requeued(self):
+        job_id = self.request().digest()
+        with self.assertRaises(worker.WorkerError) as ctx:
+            worker.requeue(job_id)                       # QUEUED
+        self.assertEqual(ctx.exception.status, 409)
+        job, _ = worker.claim("home-gpu-01")
         with self.assertRaises(worker.WorkerError):
-            worker._transition(reloaded, worker.QUEUED, "test")
+            worker.requeue(job["job_id"])                # CLAIMED
+        cancelled = worker.cancel(job["job_id"])
+        self.assertEqual(cancelled["state"], worker.CANCELLED)
+        self.assertEqual(worker.requeue(job["job_id"])["state"], worker.QUEUED)
+        with self.assertRaises(worker.WorkerError):
+            worker.requeue("does-not-exist")
 
 
 # --- State machine and audit ----------------------------------------------
@@ -748,6 +803,196 @@ def _all_keys(payload):
         for item in payload:
             keys |= _all_keys(item)
     return keys
+
+
+# --- Manual (dashboard/CLI) generation --------------------------------------
+
+class ManualEnqueueTests(WorkerTestCase):
+    """``enqueue_manual`` is the seam the dashboard's Generate page and the
+    ``--workflow`` CLI test flag both go through - never a parallel path."""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(shutil.rmtree, ROOT / "jobs" / "manual", True)
+        self.addCleanup(shutil.rmtree, ROOT / "jobs" / "workflow_test", True)
+
+    def test_out_dir_lands_under_jobs_manual_inside_the_repo(self):
+        job = worker.enqueue_manual("a lit window at night")
+        self.assertEqual(job["out_dir"], str(ROOT / "jobs" / "manual" / job["job_id"]))
+
+    def test_is_idempotent_on_the_request_digest(self):
+        first = worker.enqueue_manual("a lit window at night")
+        second = worker.enqueue_manual("a lit window at night")
+        self.assertEqual(first["job_id"], second["job_id"])
+        self.assertEqual(len(worker.load_jobs()), 1)
+
+    def test_blank_prompt_is_refused(self):
+        with self.assertRaises(worker.WorkerError):
+            worker.enqueue_manual("   ")
+
+    def test_default_capability_is_comfyui_only(self):
+        job = worker.enqueue_manual("a lit window at night")
+        self.assertEqual(job["required_capabilities"], ["comfyui"])
+
+    def test_workflow_path_is_carried_in_the_request_params(self):
+        job = worker.enqueue_manual("a lit window at night",
+                                    workflow_path="/some/candidate.json")
+        self.assertEqual(job["request"]["params"]["workflow_path"],
+                         "/some/candidate.json")
+
+    def test_workflow_test_subdir_keeps_output_separate_from_manual(self):
+        job = worker.enqueue_manual(
+            "a lit window at night", workflow_path="/some/candidate.json",
+            label_prefix="workflow-test", subdir="workflow_test")
+        self.assertEqual(job["out_dir"],
+                         str(ROOT / "jobs" / "workflow_test" / job["job_id"]))
+        self.assertTrue(job["label"].startswith("workflow-test:"))
+
+    def test_manual_and_workflow_test_of_the_same_prompt_are_different_jobs(self):
+        """``subdir`` is not part of the digest, but the two entry points
+        must never collide - a workflow test must not silently reuse or
+        block an ordinary manual generation of the same prompt."""
+        manual = worker.enqueue_manual("a lit window at night")
+        test_job = worker.enqueue_manual(
+            "a lit window at night", workflow_path="/some/candidate.json",
+            subdir="workflow_test")
+        self.assertNotEqual(manual["out_dir"], test_job["out_dir"])
+
+
+class JobAssetPathTests(WorkerTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.enroll()
+        self.online()
+        self.addCleanup(shutil.rmtree, ROOT / "jobs" / "manual", True)
+
+    def _finished_job(self):
+        job = worker.enqueue_manual("a lit window at night")
+        claimed, _ = worker.claim("home-gpu-01")
+        lease = claimed["lease"]["lease_id"]
+        job_id = claimed["job_id"]
+        worker.report_progress(job_id, "home-gpu-01", lease, worker.SUBMITTED)
+        worker.report_progress(job_id, "home-gpu-01", lease, worker.RUNNING)
+        worker.report_progress(job_id, "home-gpu-01", lease, worker.UPLOADING)
+        digest = hashlib.sha256(PNG).hexdigest()
+        worker.stage_asset(job_id, "home-gpu-01", lease, "ComfyUI_00001_.png",
+                           PNG, digest)
+        entry = {"filename": "ComfyUI_00001_.png", "sha256": digest,
+                 "bytes": len(PNG)}
+        return worker.complete(job_id, "home-gpu-01", lease, [entry])
+
+    def test_returns_the_indexth_asset_on_disk(self):
+        job = self._finished_job()
+        path = worker.job_asset_path(job["job_id"], 0)
+        self.assertEqual(str(path), job["assets"][0])
+        self.assertTrue(path.is_file())
+
+    def test_out_of_range_index_returns_none(self):
+        job = self._finished_job()
+        self.assertIsNone(worker.job_asset_path(job["job_id"], 1))
+        self.assertIsNone(worker.job_asset_path(job["job_id"], -1))
+
+    def test_unknown_job_id_returns_none_not_an_error(self):
+        self.assertIsNone(worker.job_asset_path("does-not-exist", 0))
+
+    def test_malformed_job_id_returns_none_not_an_error(self):
+        self.assertIsNone(worker.job_asset_path("../../etc/passwd", 0))
+
+
+# --- Workflow validation -----------------------------------------------------
+
+class ValidateWorkflowTests(unittest.TestCase):
+    """Static, offline linting of a candidate ComfyUI template - the safe
+    half of Claude's "inspect and adjust workflows" capability."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="cm-workflow-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.good = (ROOT / "config" / "comfyui_workflow.example.json").read_text()
+
+    def _write(self, name, text):
+        path = self.tmp / name
+        path.write_text(text)
+        return path
+
+    def test_the_shipped_default_template_is_valid(self):
+        result = generation.validate_workflow(
+            ROOT / "config" / "comfyui_workflow.example.json")
+        self.assertTrue(result["valid"], result["errors"])
+        self.assertGreater(result["node_count"], 0)
+
+    def test_the_shipped_lowvram_template_is_valid(self):
+        result = generation.validate_workflow(
+            ROOT / "config" / "comfyui_workflow_lowvram_upscale.json")
+        self.assertTrue(result["valid"], result["errors"])
+
+    def test_missing_file_is_invalid(self):
+        result = generation.validate_workflow(self.tmp / "nope.json")
+        self.assertFalse(result["valid"])
+        self.assertIn("not a file", result["errors"][0])
+
+    def test_a_leftover_placeholder_is_reported(self):
+        broken = self.good.replace("%seed%", "%seed% %typo_placeholder%")
+        path = self._write("missing_placeholder.json", broken)
+        result = generation.validate_workflow(path)
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("unsubstituted placeholder" in e for e in result["errors"]))
+
+    def test_a_broken_node_reference_is_reported(self):
+        broken = self.good.replace('["4", 0]', '["99", 0]')
+        path = self._write("broken_reference.json", broken)
+        result = generation.validate_workflow(path)
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("unknown node" in e for e in result["errors"]))
+
+    def test_invalid_json_after_substitution_is_reported(self):
+        broken = self.good.replace("{", "{{{", 1)
+        path = self._write("invalid_json.json", broken)
+        result = generation.validate_workflow(path)
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("not valid JSON" in e for e in result["errors"]))
+
+
+class ValidateWorkflowCliTests(unittest.TestCase):
+
+    def test_cmd_validate_workflow_prints_valid_and_returns_zero(self):
+        args = argparse.Namespace(path=str(ROOT / "config" / "comfyui_workflow.example.json"))
+        self.assertEqual(worker.cmd_validate_workflow(args), 0)
+
+    def test_cmd_validate_workflow_prints_errors_and_returns_one(self):
+        args = argparse.Namespace(path=str(ROOT / "jobs"))  # a directory, not a file
+        self.assertEqual(worker.cmd_validate_workflow(args), 1)
+
+
+# --- CLI --workflow routes into jobs/workflow_test/ -------------------------
+
+class EnqueueWorkflowFlagTests(WorkerTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(shutil.rmtree, ROOT / "jobs" / "workflow_test", True)
+
+    def _args(self, **overrides):
+        base = dict(video_id=None, prompt="a lit window at night", negative=None,
+                    out=None, count=1, width=1920, height=1080, seed=20260827,
+                    model=None, capabilities="comfyui", max_attempts=None,
+                    workflow="/some/candidate.json")
+        base.update(overrides)
+        return argparse.Namespace(**base)
+
+    def test_workflow_flag_routes_into_workflow_test_and_sets_the_label(self):
+        worker.cmd_enqueue(self._args())
+        jobs = worker.load_jobs()
+        self.assertEqual(len(jobs), 1)
+        job = jobs[0]
+        self.assertEqual(job["out_dir"], str(ROOT / "jobs" / "workflow_test" / job["job_id"]))
+        self.assertTrue(job["label"].startswith("workflow-test:"))
+        self.assertEqual(job["request"]["params"]["workflow_path"], "/some/candidate.json")
+
+    def test_workflow_flag_without_a_prompt_is_refused(self):
+        with self.assertRaises(worker.WorkerError):
+            worker.cmd_enqueue(self._args(prompt=None))
 
 
 class _CountingProvider(generation.Provider):

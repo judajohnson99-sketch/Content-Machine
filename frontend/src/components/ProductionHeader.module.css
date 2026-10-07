@@ -1,0 +1,221 @@
+.header {
+  position: relative;
+  overflow: hidden;
+  margin-bottom: var(--space-6);
+  padding: var(--space-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--grad-surface);
+  box-shadow: var(--shadow-md);
+}
+
+.header::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--grad-vignette);
+  pointer-events: none;
+}
+
+.top {
+  position: relative;
+  z-index: var(--z-sticky);
+  display: grid;
+  grid-template-columns: 148px 1fr auto;
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.still {
+  overflow: hidden;
+  aspect-ratio: 1 / 1;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-well);
+}
+
+.stillImage {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.stillEmpty {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  color: var(--text-tertiary);
+}
+
+.identity {
+  min-width: 0;
+}
+
+.eyebrow {
+  margin: 0 0 var(--space-2);
+  color: var(--text-tertiary);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.title {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+}
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.next {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-end;
+  min-width: 200px;
+}
+
+.why {
+  max-width: 260px;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-relaxed);
+  text-align: right;
+}
+
+.busy {
+  color: var(--info-fg);
+  font-size: var(--text-sm);
+}
+
+.phases {
+  position: relative;
+  z-index: var(--z-sticky);
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: var(--space-2);
+  margin-top: var(--space-6);
+  padding: 0;
+  list-style: none;
+}
+
+.phase {
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-top: 2px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--glass-1);
+}
+
+.phaseDone {
+  border-top-color: var(--success-fg);
+}
+
+.phaseActive {
+  border-top-color: var(--info-fg);
+  background: var(--glass-2);
+  box-shadow: var(--glow-info);
+}
+
+.phaseBlocked {
+  border-top-color: var(--warning-fg);
+  background: var(--warning-bg);
+}
+
+.phaseName {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.phaseSummary {
+  margin: var(--space-1) 0 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
+.phaseMark {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.markDone { color: var(--success-fg); }
+.markActive { color: var(--info-fg); }
+.markBlocked { color: var(--warning-fg); }
+
+.technical {
+  position: relative;
+  z-index: var(--z-sticky);
+  margin-top: var(--space-4);
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.technical summary {
+  cursor: pointer;
+}
+
+.technicalBody {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin-top: var(--space-2);
+  font-family: var(--mono);
+}
+
+@media (max-width: 1100px) {
+  .top {
+    grid-template-columns: 110px 1fr;
+  }
+
+  .next {
+    grid-column: 1 / -1;
+    align-items: stretch;
+  }
+
+  .why {
+    max-width: none;
+    text-align: left;
+  }
+
+  .phases {
+    grid-auto-flow: row;
+  }
+}
+
+@media (max-width: 700px) {
+  .header {
+    padding: var(--space-4);
+  }
+
+  .top {
+    grid-template-columns: 1fr;
+  }
+
+  .still {
+    max-width: 140px;
+  }
+
+  .title {
+    font-size: var(--text-xl);
+  }
+}

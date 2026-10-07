@@ -23,7 +23,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import audio  # noqa: E402
 import generation  # noqa: E402
+import goal as goal_mod  # noqa: E402
 import worker  # noqa: E402
 import project as project_mod  # noqa: E402
 import subject_research  # noqa: E402
@@ -255,6 +257,15 @@ VIDEO_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
 
 
 def find_concept(concept_id, concepts=None):
+    """The concept with this id, from the catalogue or from a derived one.
+
+    A production derived from an operator goal carries its own concept in
+    experiments/derived/; it is a real concept to everything downstream and
+    is deliberately not written into the curated catalogue.
+    """
+    derived = goal_mod.load_derived_concept(concept_id)
+    if derived is not None:
+        return derived
     if concepts is None:
         _, concepts = load_concepts()
     return next((c for c in concepts if c["id"] == concept_id), None)
@@ -414,6 +425,7 @@ def host_capabilities():
     router = generation.Router()
     depicted = [p.name for p in router.candidates() if p.produces_depicted and p.configured()]
     search = subject_research.provider_status()
+    narration = audio.narration_status()
     gpu = worker.depicted_readiness()
     if depicted:
         state, detail = "provider_configured", f"depicted-image provider configured: {', '.join(depicted)}"
@@ -426,7 +438,8 @@ def host_capabilities():
         "procedural_images": True,
         "search_provider": search["configured"],
         "search_available": search["available"],
-        "narration_available": True,
+        "narration_available": narration["available"],
+        "narration": narration,
         "depicted_imagery": {"state": state, "detail": detail,
                              "starts_now": bool(depicted) or gpu["state"] in _GPU_STARTS_NOW,
                              "worker_id": gpu.get("worker_id")},

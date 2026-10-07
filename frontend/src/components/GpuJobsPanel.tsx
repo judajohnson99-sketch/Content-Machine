@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { listProjectGpuJobs } from "../api/system";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { listProjectGpuJobs, requeueGpuJob } from "../api/system";
 import { StatusBadge } from "./StatusBadge";
-import { InlineSpinner } from "./ui/States";
+import { ErrorState, InlineSpinner } from "./ui/States";
 import { formatRelative } from "../lib/format";
 import { isGpuJobActive, isGpuJobWaiting, type GpuJob } from "../types/system";
 import styles from "./GpuJobsPanel.module.css";
@@ -19,8 +19,10 @@ const WAIT_LABEL: Record<string, string> = {
 };
 
 // This project's remote GPU jobs, read from scripts.worker's own queue view.
-// Nothing here drives the job state machine; it only shows where each
-// render is and why it is (or is not) moving.
+// The one action here is Retry on a finished-badly job, which is the
+// operator's own transition (FAILED/CANCELLED -> QUEUED) in scripts.worker;
+// everything else only shows where each render is and why it is (or is
+// not) moving.
 export function GpuJobsPanel({ videoId, compact = false }: Props) {
   const [showAll, setShowAll] = useState(!compact);
   const query = useQuery({
@@ -30,7 +32,17 @@ export function GpuJobsPanel({ videoId, compact = false }: Props) {
   });
 
   if (query.isLoading) return <InlineSpinner label="Loading GPU jobs…" />;
-  if (query.isError) return <p role="alert" className={styles.muted}>GPU queue unavailable: {(query.error as Error).message}</p>;
+  if (query.isError) {
+    return (
+      <ErrorState
+        title="GPU queue unavailable"
+        where="GET /api/v1/system/gpu-jobs/"
+        hint="Queued renders are unaffected - this is the queue's read view, not the queue itself."
+        detail={(query.error as Error).message}
+        compact
+      />
+    );
+  }
   const jobs = query.data ?? [];
   if (jobs.length === 0) return null;
 
@@ -53,8 +65,16 @@ export function GpuJobsPanel({ videoId, compact = false }: Props) {
   );
 }
 
-function JobRow({ job }: { job: GpuJob }) {
+// Exported so a page that submits a job outside this panel's own query (the
+// Generate page's manual-render form) can render the same row for it.
+export function JobRow({ job }: { job: GpuJob }) {
+  const queryClient = useQueryClient();
+  const retry = useMutation({
+    mutationFn: () => requeueGpuJob(job.job_id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["gpu-jobs"] }),
+  });
   const active = isGpuJobActive(job);
+  const retryable = job.state === "FAILED" || job.state === "CANCELLED";
   const waitReason = job.wait_reason?.replace(/ \(.*\)$/, "") ?? null;
   const waitDetail = job.wait_reason?.match(/\((.*)\)/)?.[1];
   return (
@@ -78,8 +98,27 @@ function JobRow({ job }: { job: GpuJob }) {
       {active && job.last_transition.detail && <p className={styles.reason}>{job.last_transition.detail}</p>}
       {job.state === "FAILED" && job.error && (
         <p className={styles.error} role="alert">
+          {job.failure_category === "capacity" && (
+            <span className={styles.capacityTag}>hardware capacity</span>
+          )}
           {job.error}
         </p>
+      )}
+      {retryable && (
+        <div className={styles.actions}>
+          <button
+            type="button"
+            className={styles.retry}
+            disabled={retry.isPending}
+            onClick={() => retry.mutate()}
+            aria-label={`Retry ${job.label ?? job.job_id}`}
+          >
+            {retry.isPending ? "Requeuing…" : "Retry"}
+          </button>
+          {retry.isError && (
+            <span className={styles.error} role="alert">{(retry.error as Error).message}</span>
+          )}
+        </div>
       )}
     </li>
   );

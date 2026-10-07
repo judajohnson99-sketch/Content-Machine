@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fileUrl, getAssets } from "../api/assets";
 import { StatusBadge } from "./StatusBadge";
-import { InlineSpinner } from "./ui/States";
+import { ErrorState, InlineSpinner } from "./ui/States";
 import { formatDateTime } from "../lib/format";
 import type { ProjectAssets } from "../types/assets";
 import styles from "./DeliverablePanel.module.css";
@@ -33,7 +33,15 @@ export function DeliverablePanel({ videoId, compact = false }: Props) {
 
   if (query.isLoading) return <InlineSpinner label="Loading deliverable…" />;
   if (query.isError) {
-    return <p role="alert">Failed to load assets: {(query.error as Error).message}</p>;
+    return (
+      <ErrorState
+        title="Could not load the deliverable"
+        where="GET /api/v1/projects/{id}/assets/"
+        hint="Nothing is lost: this is the read path only. Reload to retry."
+        detail={(query.error as Error).message}
+        compact
+      />
+    );
   }
   const assets = query.data!;
 
@@ -45,6 +53,7 @@ export function DeliverablePanel({ videoId, compact = false }: Props) {
       <div className={styles.side}>
         <QcBlock assets={assets} compact={compact} />
         <PackageBlock assets={assets} />
+        <EditableBlock videoId={videoId} assets={assets} />
       </div>
     </div>
   );
@@ -156,6 +165,42 @@ function PackageBlock({ assets }: { assets: ProjectAssets }) {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+// Two things leave this system: a video someone can watch, and a project
+// someone can keep editing. The second one is only real if it can be
+// downloaded, so it is listed here next to the render rather than buried in
+// the metadata it is recorded in.
+function EditableBlock({ videoId, assets }: { videoId: string; assets: ProjectAssets }) {
+  const editing = assets.editing;
+  if (!editing || (!editing.project && !editing.archive)) return null;
+  return (
+    <div className={styles.block}>
+      <h4 className={styles.sectionTitle}>Editable project</h4>
+      <ul className={styles.downloads}>
+        {editing.archive && (
+          <li>
+            <a href={fileUrl(videoId, editing.archive.path)} download>
+              Kdenlive project + media ({formatBytes(editing.archive.bytes)})
+            </a>
+            <span className={styles.downloadHint}>
+              Project file, its project-local media and a provenance manifest.
+            </span>
+          </li>
+        )}
+        {editing.project && (
+          <li>
+            <a href={fileUrl(videoId, editing.project.path)} download>
+              {editing.project.path.split("/").pop()}
+            </a>
+            <span className={styles.downloadHint}>
+              The .kdenlive file alone; it references the media beside it.
+            </span>
+          </li>
+        )}
+      </ul>
     </div>
   );
 }

@@ -8,9 +8,10 @@ import { PageHeader } from "../../components/ui/PageHeader";
 import { Card, CardHeader } from "../../components/ui/Card";
 import { EmptyState, ErrorState, SkeletonRows } from "../../components/ui/States";
 import { Button } from "../../components/ui/Button";
-import { ActivityIcon, CheckCircleIcon, FolderIcon, GpuIcon, PlayIcon } from "../../components/ui/icons";
+import { ActivityIcon, CheckCircleIcon, FilmIcon, FolderIcon, GpuIcon, PlayIcon } from "../../components/ui/icons";
 import { isReviewable } from "../../lib/projectStatus";
 import { formatDateTime, formatRelative } from "../../lib/format";
+import { fileUrl } from "../../api/assets";
 import { gpuStateLabel, statusTone } from "../../lib/statusTokens";
 import type { ProjectSummary } from "../../types/project";
 import type { PipelineRun } from "../../types/pipeline";
@@ -40,6 +41,15 @@ export function DashboardPage() {
 
   const attentionQueue = useMemo(
     () => (data ?? []).filter((p) => isReviewable(p.overall_status)).slice(0, 6),
+    [data],
+  );
+
+  const continueQueue = useMemo(
+    () =>
+      [...(data ?? [])]
+        .filter((p) => !p.archived && !isReviewable(p.overall_status))
+        .sort((a, b) => ((a.created_utc ?? "") < (b.created_utc ?? "") ? 1 : -1))
+        .slice(0, 6),
     [data],
   );
 
@@ -106,7 +116,7 @@ export function DashboardPage() {
           title="Failed to load projects"
           where="GET /api/v1/projects/"
           description={(projects.error as Error).message}
-          hint="The API did not answer. If you are logged out, sign in through /admin/login/ and reload; if the server is down, start it and retry."
+          hint="The API did not answer. If the server is down, start it and retry; if your session expired, reload to sign in again."
           action={
             <Button size="sm" onClick={() => projects.refetch()}>
               Retry
@@ -130,18 +140,33 @@ export function DashboardPage() {
 
       {data && total > 0 && (
         <>
-          <section className={styles.now} aria-label="Right now">
+          <section className={styles.now} aria-label="Where you left off">
             <Card className={styles.nowCard}>
               <CardHeader
-                eyebrow="Running now"
-                title={active.length ? `${active.length} job${active.length === 1 ? "" : "s"} in flight` : "Nothing running"}
+                eyebrow="Pick up where you left off"
+                title={continueQueue.length ? `${continueQueue.length} in progress` : "Nothing in progress"}
                 actions={<span className={`${styles.nowIcon} ${active.length ? styles.nowIconLive : ""}`}><ActivityIcon /></span>}
               />
-              {active.length === 0 && <p className={styles.muted}>The pipeline is idle. Start a production or re-run a stage from a workspace.</p>}
-              <ul className={styles.runList}>
-                {active.map((run) => (
-                  <RunRow key={run.id} run={run} title={titleOf.get(run.video_id) ?? run.video_id} />
-                ))}
+              {continueQueue.length === 0 && (
+                <p className={styles.muted}>Every production is either finished or waiting on your decision.</p>
+              )}
+              <ul className={styles.queueList}>
+                {continueQueue.map((p) => {
+                  const run = active.find((r) => r.video_id === p.video_id);
+                  return (
+                    <li key={p.video_id}>
+                      <Link to={`/projects/${p.video_id}`} className={styles.queueRow}>
+                        <span className={styles.queueMain}>
+                          <span className={styles.queueTitle}>{p.selected_title || p.video_id}</span>
+                          <span className={styles.queueMeta}>
+                            {run ? `${STAGE_LABEL[run.stage] ?? run.stage} running` : `started ${formatRelative(p.created_utc)}`}
+                          </span>
+                        </span>
+                        <StatusBadge status={run ? run.status : p.overall_status} />
+                      </Link>
+                    </li>
+                  );
+                })}
               </ul>
             </Card>
 
@@ -151,7 +176,7 @@ export function DashboardPage() {
                 title={attentionQueue.length ? `${attentionQueue.length} awaiting review` : "Review queue clear"}
                 actions={
                   <Link to="/review" className={styles.cardLink}>
-                    Review Center →
+                    Review Center &rarr;
                   </Link>
                 }
               />
@@ -162,7 +187,7 @@ export function DashboardPage() {
                     <Link to={`/review?project=${p.video_id}`} className={styles.queueRow}>
                       <span className={styles.queueMain}>
                         <span className={styles.queueTitle}>{p.selected_title || p.video_id}</span>
-                        <span className={styles.queueMeta}>{p.video_id}</span>
+                        <span className={styles.queueMeta}>{p.niche?.replace(/_/g, " ") ?? "production"}</span>
                       </span>
                       <StatusBadge status={p.overall_status} />
                     </Link>
@@ -171,51 +196,18 @@ export function DashboardPage() {
               </ul>
             </Card>
 
-            <Card className={`${styles.nowCard} ${styles.gpuCard}`}>
+            <Card className={styles.nowCard}>
               <CardHeader
-                eyebrow="Depicted imagery"
-                title={gpu ? gpuStateLabel(gpu.state) : "Checking…"}
-                actions={<span className={`${styles.nowIcon} ${styles[`tone_${gpu ? statusTone(gpu.state) : "neutral"}`]}`}><GpuIcon /></span>}
+                eyebrow="Start something"
+                title="New production"
+                actions={<span className={styles.nowIcon}><PlayIcon /></span>}
               />
-              {gpu && <p className={styles.gpuDetail}>{gpu.detail}</p>}
-              {worker && (
-                <dl className={styles.gpuFacts}>
-                  <div><dt>Worker</dt><dd>{worker.worker_id} · <StatusBadge status={worker.state} /></dd></div>
-                  {worker.status.gpu && <div><dt>GPU</dt><dd>{worker.status.gpu}{worker.status.vram_total_mb ? ` · ${Math.round(worker.status.vram_total_mb / 1024)} GB` : ""}</dd></div>}
-                  {worker.status.model && <div><dt>Checkpoint</dt><dd className={styles.mono}>{worker.status.model}</dd></div>}
-                  {worker.last_heartbeat_at && <div><dt>Heartbeat</dt><dd>{formatRelative(worker.last_heartbeat_at)}</dd></div>}
-                </dl>
-              )}
-              {remote && (
-                <div className={styles.queueCounts}>
-                  <span><strong>{remote.queue.running}</strong> rendering</span>
-                  <span><strong>{remote.queue.queued}</strong> waiting</span>
-                  <span><strong>{remote.queue.failed}</strong> failed</span>
-                </div>
-              )}
-              {readiness.isError && <p className={styles.muted}>Readiness unavailable: {(readiness.error as Error).message}</p>}
-            </Card>
-          </section>
-
-          <section className={styles.split}>
-            <Card>
-              <CardHeader eyebrow="Recently finished" title="Completed stages" />
-              {finished.length === 0 && <p className={styles.muted}>No stage has finished through the web layer yet.</p>}
-              <ul className={styles.runList}>
-                {finished.map((run) => (
-                  <RunRow key={run.id} run={run} title={titleOf.get(run.video_id) ?? run.video_id} />
-                ))}
-              </ul>
-            </Card>
-
-            <Card>
-              <CardHeader eyebrow="Failures & blockers" title={failures.length ? `${failures.length} to look at` : "No recent failures"} />
-              {failures.length === 0 && <p className={styles.muted}>Recent runs all completed. Blocked reviews appear in the queue above.</p>}
-              <ul className={styles.runList}>
-                {failures.map((run) => (
-                  <RunRow key={run.id} run={run} title={titleOf.get(run.video_id) ?? run.video_id} showMessage />
-                ))}
-              </ul>
+              <p className={styles.muted}>
+                Describe what you want to make and the catalogue suggests a direction to build from.
+              </p>
+              <Link to="/projects/new" className={styles.primaryLink}>
+                <PlayIcon width={16} height={16} /> New production
+              </Link>
             </Card>
           </section>
 
@@ -252,6 +244,60 @@ export function DashboardPage() {
               <ProjectTable projects={filtered} />
             </div>
           </Card>
+
+          <details className={styles.systemRegion}>
+            <summary className={styles.systemSummary}>
+              System activity
+              {active.length > 0 && <span className={styles.systemCount}>{active.length} running</span>}
+              {failures.length > 0 && <span className={styles.systemCount}>{failures.length} to look at</span>}
+            </summary>
+            <div className={styles.split}>
+              <Card>
+                <CardHeader eyebrow="Recently finished" title="Completed stages" />
+                {finished.length === 0 && <p className={styles.muted}>No stage has finished through the web layer yet.</p>}
+                <ul className={styles.runList}>
+                  {finished.map((run) => (
+                    <RunRow key={run.id} run={run} title={titleOf.get(run.video_id) ?? run.video_id} />
+                  ))}
+                </ul>
+              </Card>
+
+              <Card>
+                <CardHeader eyebrow="Failures & blockers" title={failures.length ? `${failures.length} to look at` : "No recent failures"} />
+                {failures.length === 0 && <p className={styles.muted}>Recent runs all completed. Blocked reviews appear in the queue above.</p>}
+                <ul className={styles.runList}>
+                  {failures.map((run) => (
+                    <RunRow key={run.id} run={run} title={titleOf.get(run.video_id) ?? run.video_id} showMessage />
+                  ))}
+                </ul>
+              </Card>
+            </div>
+
+            <Card className={styles.gpuCard}>
+              <CardHeader
+                eyebrow="Depicted imagery"
+                title={gpu ? gpuStateLabel(gpu.state) : "Checking…"}
+                actions={<span className={`${styles.nowIcon} ${styles[`tone_${gpu ? statusTone(gpu.state) : "neutral"}`]}`}><GpuIcon /></span>}
+              />
+              {gpu && <p className={styles.gpuDetail}>{gpu.detail}</p>}
+              {worker && (
+                <dl className={styles.gpuFacts}>
+                  <div><dt>Worker</dt><dd>{worker.worker_id} · <StatusBadge status={worker.state} /></dd></div>
+                  {worker.status.gpu && <div><dt>GPU</dt><dd>{worker.status.gpu}{worker.status.vram_total_mb ? ` · ${Math.round(worker.status.vram_total_mb / 1024)} GB` : ""}</dd></div>}
+                  {worker.status.model && <div><dt>Checkpoint</dt><dd className={styles.mono}>{worker.status.model}</dd></div>}
+                  {worker.last_heartbeat_at && <div><dt>Heartbeat</dt><dd>{formatRelative(worker.last_heartbeat_at)}</dd></div>}
+                </dl>
+              )}
+              {remote && (
+                <div className={styles.queueCounts}>
+                  <span><strong>{remote.queue.running}</strong> rendering</span>
+                  <span><strong>{remote.queue.queued}</strong> waiting</span>
+                  <span><strong>{remote.queue.failed}</strong> failed</span>
+                </div>
+              )}
+              {readiness.isError && <p className={styles.muted}>Readiness unavailable: {(readiness.error as Error).message}</p>}
+            </Card>
+          </details>
         </>
       )}
     </div>
@@ -280,18 +326,33 @@ function ProjectTile({ project }: { project: ProjectSummary }) {
   const tone = statusTone(project.overall_status);
   return (
     <Link to={`/projects/${project.video_id}`} className={`${styles.tile} ${styles[`tile_${tone}`]}`}>
-      <span className={styles.tileTop}>
-        <StatusBadge status={project.overall_status} />
-        <span className={styles.tileWhen}>{formatRelative(project.created_utc)}</span>
+      <span className={styles.tileStill}>
+        {project.preview_image ? (
+          <img
+            className={styles.tileImage}
+            src={fileUrl(project.video_id, project.preview_image)}
+            alt=""
+            loading="lazy"
+          />
+        ) : (
+          <span className={styles.tileStillEmpty}>
+            <FilmIcon width={20} height={20} />
+          </span>
+        )}
       </span>
-      <span className={styles.tileTitle}>{project.selected_title || project.video_id}</span>
-      <span className={styles.tileMeta}>
-        <span className={styles.mono}>{project.video_id}</span>
-        {project.niche && <span> · {project.niche.replace(/_/g, " ")}</span>}
+      <span className={styles.tileBody}>
+        <span className={styles.tileTop}>
+          <StatusBadge status={project.overall_status} />
+          <span className={styles.tileWhen}>{formatRelative(project.created_utc)}</span>
+        </span>
+        <span className={styles.tileTitle}>{project.selected_title || project.video_id}</span>
+        <span className={styles.tileMeta}>
+          {project.niche ? project.niche.replace(/_/g, " ") : "production"}
+        </span>
+        {isReviewable(project.overall_status) && (
+          <span className={styles.tileCta}><CheckCircleIcon width={14} height={14} /> Review</span>
+        )}
       </span>
-      {isReviewable(project.overall_status) && (
-        <span className={styles.tileCta}><CheckCircleIcon width={14} height={14} /> Review</span>
-      )}
     </Link>
   );
 }

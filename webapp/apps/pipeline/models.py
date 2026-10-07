@@ -21,6 +21,7 @@ class PipelineRun(models.Model):
         ("visuals", "visuals"),
         ("run", "run"),
         ("produce", "produce"),
+        ("editable", "editable"),
     ]
 
     STATUS_QUEUED = "QUEUED"

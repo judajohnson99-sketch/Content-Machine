@@ -5,17 +5,17 @@
   min-height: 40px;
   padding: 0 var(--space-4);
   border-radius: var(--radius-sm);
-  background: linear-gradient(180deg, #8a99ff 0%, var(--indigo) 100%);
+  background: var(--grad-accent);
   color: var(--text-on-accent);
   text-decoration: none;
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   font-size: var(--text-base);
-  box-shadow: 0 6px 20px -8px rgba(124, 140, 255, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  box-shadow: var(--glow-accent-sm), var(--sheen);
   transition: box-shadow var(--dur-2) var(--ease), transform var(--dur-1) var(--ease);
 }
 
 .primaryLink:hover {
-  box-shadow: 0 10px 28px -8px rgba(124, 140, 255, 0.85), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  box-shadow: var(--glow-accent-md), var(--sheen-strong);
 }
 
 .primaryLink:active {
@@ -37,8 +37,8 @@
 
 .gpuCard {
   background:
-    radial-gradient(420px 200px at 100% 0%, rgba(95, 214, 232, 0.14), transparent 60%),
-    linear-gradient(180deg, rgba(20, 28, 49, 0.9) 0%, rgba(14, 20, 36, 0.92) 100%);
+    radial-gradient(420px 200px at 100% 0%, var(--halo-aqua), transparent 60%),
+    var(--grad-surface);
 }
 
 .nowIcon {
@@ -48,7 +48,7 @@
   height: 34px;
   border-radius: 10px;
   border: 1px solid var(--border-subtle);
-  background: rgba(9, 13, 25, 0.6);
+  background: var(--glass-3);
   color: var(--text-tertiary);
 }
 
@@ -159,7 +159,7 @@
 .cardLink,
 .projectLink {
   color: var(--accent-hover);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   text-decoration: none;
   font-size: var(--text-sm);
 }
@@ -193,7 +193,7 @@
 
 .runRow:hover,
 .queueRow:hover {
-  background: rgba(148, 163, 209, 0.08);
+  background: var(--tint-2);
 }
 
 .runMain,
@@ -207,7 +207,7 @@
 .runTitle,
 .queueTitle {
   font-size: var(--text-sm);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   line-height: 1.3;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -253,10 +253,10 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: var(--space-4);
+  padding: 0;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
-  background: linear-gradient(180deg, rgba(20, 28, 49, 0.9) 0%, rgba(14, 20, 36, 0.92) 100%);
+  background: var(--grad-surface);
   text-decoration: none;
   color: inherit;
   overflow: hidden;
@@ -303,7 +303,7 @@
 }
 
 .tileTitle {
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   font-size: var(--text-md);
   line-height: 1.3;
   display: -webkit-box;
@@ -402,7 +402,7 @@
 }
 
 .table tbody tr:hover {
-  background: rgba(148, 163, 209, 0.05);
+  background: var(--tint-1);
 }
 
 .videoId {
@@ -446,4 +446,70 @@
     color: var(--text-tertiary);
     font-size: var(--text-xs);
   }
+}
+
+.tileStill {
+  display: block;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  background: var(--bg-well);
+}
+
+.tileImage {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform var(--dur-3) var(--ease);
+}
+
+.tile:hover .tileImage {
+  transform: scale(1.03);
+}
+
+.tileStillEmpty {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  color: var(--text-tertiary);
+  background: var(--grad-surface);
+}
+
+.tileBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--space-4);
+}
+
+.systemRegion {
+  margin-top: var(--space-8);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.systemSummary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.systemSummary:hover {
+  color: var(--text-secondary);
+}
+
+.systemCount {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--glass-2);
+  color: var(--text-secondary);
+  font-size: var(--text-2xs);
+}
+
+.systemRegion .split,
+.systemRegion .gpuCard {
+  margin-top: var(--space-4);
 }

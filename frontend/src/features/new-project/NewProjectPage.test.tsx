@@ -29,6 +29,7 @@ const catalog: ConceptCatalog = {
   capabilities: {
     depicted_image_providers: [], procedural_images: true,
     search_provider: null, search_available: false, narration_available: true,
+    narration: { available: true, engine: "piper", voice: "en_US-libritts_r-medium", detail: "local Piper narration" },
     depicted_imagery: { state: "worker_offline", detail: "home-gpu-01 is offline", starts_now: false, worker_id: "home-gpu-01" },
     remote_gpu: {
       state: "worker_offline", detail: "home-gpu-01 is offline", worker_id: "home-gpu-01", workers: [],

@@ -93,14 +93,14 @@
 }
 
 .label {
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   font-size: var(--text-base);
 }
 
 .stateLabel {
   font-size: var(--text-xs);
   color: var(--node-color);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 
 .description {

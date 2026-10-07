@@ -16,20 +16,20 @@ function makeRun(overrides: Partial<PipelineRun>): PipelineRun {
 
 const emptyRuns: LatestRuns = {
   research: null, creative: null, storyboard: null, scenes: null,
-  audio: null, visuals: null, run: null, produce: null,
+  audio: null, visuals: null, run: null, produce: null, editable: null,
 };
 
 describe("PipelineStageGraph", () => {
   it("shows NOT_RUN for every stage with no run yet", () => {
     renderWithClient(<PipelineStageGraph videoId="abc" runs={emptyRuns} projectBusy={false} />);
-    expect(screen.getAllByText("NOT_RUN").length).toBeGreaterThan(0);
+    expect(document.querySelectorAll('[data-status="NOT_RUN"]').length).toBeGreaterThan(0);
     expect(screen.queryByText("SUCCEEDED")).not.toBeInTheDocument();
   });
 
   it("reflects a running stage's status and disables its own action", () => {
     const runs = { ...emptyRuns, creative: makeRun({ stage: "creative", status: "RUNNING" }) };
     renderWithClient(<PipelineStageGraph videoId="abc" runs={runs} projectBusy />);
-    expect(screen.getByText("RUNNING")).toBeInTheDocument();
+    expect(document.querySelector('[data-status="RUNNING"]')).not.toBeNull();
     expect(screen.getByRole("button", { name: "Running…" })).toBeDisabled();
   });
 

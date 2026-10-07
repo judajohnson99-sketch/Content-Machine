@@ -1,0 +1,42 @@
+{
+  "id": "dreamdrip-rain-psychedelic-sleep-experie-202610030305",
+  "niche": "adult_sleep",
+  "kind": "derived",
+  "working_title_pattern": "Dreamdrip Rain | Psychedelic Sleep Experience | 2 Hours",
+  "tagline": "Melt into deep sleep with psychedelic ambient textures and continuous gentle rain.",
+  "creative_intent": "To dissolve waking tension through hypnotic color bleeds, smooth audio pads, and the steady masking sound of rainfall.",
+  "target_audience": "Insomniacs and relaxation seekers looking for immersive, hypnotic soundscapes and visuals to wind down at night.",
+  "video_length_minutes": 1.5,
+  "visual_concept": "Slow-moving abstract procedural plates featuring deep indigo, violet, and soft magenta gradients with organic noise fields. The imagery morphs imperceptibly every few minutes, avoiding flashing lights or high contrast to keep the eyes heavy.",
+  "audio_concept": "Synthesised rain and distant night ambience lead the soundscape, supported by warm, slow-moving chord-based ambient music pads that evolve without jarring transitions.",
+  "content_format": "A two-hour continuous visual and auditory sleep aid combining slow psychedelic gradient shifts with natural rain and ambient pad synthesis.",
+  "narration": "silent",
+  "monetization_hypothesis": "UNVERIFIED - derived from an operator goal, not from measured performance.",
+  "production_complexity": 2,
+  "generation_dependence": 1,
+  "risks": [
+    "Derived from a one-line goal; the audience and format assumptions behind it are untested."
+  ],
+  "scores": {
+    "uncertainty_reduction": 3,
+    "generalizability": 3,
+    "repeatability": 4,
+    "monetization_clarity": 2,
+    "policy_risk": 3
+  },
+  "audio_source_requirement": "synthesisable_now",
+  "spec_template": "templates/long_slow_motion_ambient.json",
+  "procedural_visuals_acceptable": true,
+  "requires_subject_research": false,
+  "continue_evidence": "The finished video holds attention for its full length and the research behind it proved out.",
+  "kill_evidence": "Research contradicts the premise, or the finished video cannot be watched for its stated length.",
+  "assumptions_requiring_research": [
+    "Viewers want a completely uninterrupted two-hour block for overnight sleep.",
+    "Subtle color shifts are preferred over static screens for sleep induction.",
+    "Rain noise combined with pads is more effective for sleep than music alone."
+  ],
+  "derived_from_goal": true,
+  "goal_text": "Create a 2-hour psychedelic Dreamdrip sleep experience with rain and ambient music",
+  "derived_utc": "2026-10-03T03:05:11Z",
+  "derived_concept_version": 1
+}

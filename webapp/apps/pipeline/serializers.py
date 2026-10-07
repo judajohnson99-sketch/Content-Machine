@@ -78,6 +78,13 @@ class ProduceRequestSerializer(StageRequestSerializer):
     scenes = serializers.BooleanField(required=False, allow_null=True, default=None)
 
 
+class EditableRequestSerializer(StageRequestSerializer):
+    # Re-rendering through MLT is a second full encode of the same edit, so
+    # it is opt-in: the reviewable MP4 the pipeline already produced is what
+    # this project renders to.
+    render = serializers.BooleanField(default=False)
+
+
 STAGE_SERIALIZERS = {
     "research": ResearchRequestSerializer,
     "creative": CreativeRequestSerializer,
@@ -87,4 +94,5 @@ STAGE_SERIALIZERS = {
     "visuals": VisualsRequestSerializer,
     "run": RunRequestSerializer,
     "produce": ProduceRequestSerializer,
+    "editable": EditableRequestSerializer,
 }

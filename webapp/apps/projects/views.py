@@ -4,25 +4,27 @@ Translation only - HTTP in, a call into apps.engine.services, JSON (or a
 file) out. No pipeline/gate logic here (architecture plan §8, "keep the web
 layer thin").
 """
-import mimetypes
-import re
-
-from django.http import FileResponse, HttpResponse, StreamingHttpResponse
 from rest_framework import status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 import scripts.project as project
+import scripts.research as research
 
 from apps.engine.exceptions import ProjectNotFound
+from apps.engine.http import serve_file
 from apps.engine.services import assets as assets_service
 from apps.engine.services import concepts as concepts_service
 from apps.engine.services import projects as projects_service
+from apps.engine.services import research as research_service
 from apps.engine.services import workers as workers_service
 
 from .serializers import (
-    ProjectCreateSerializer, ProjectSummarySerializer, StatusReportSerializer,
+    ProductionGoalSerializer, ProjectCreateSerializer, ProjectDeleteSerializer,
+    ProjectSummarySerializer, ResearchBriefSerializer,
+    ProjectArchiveSerializer,
+    StatusReportSerializer,
 )
 
 
@@ -38,7 +40,9 @@ class ProjectListView(APIView):
     """
 
     def get(self, request):
-        summaries = projects_service.list_projects()
+        include_archived = str(request.query_params.get("include_archived", "")).lower() in (
+            "1", "true", "yes")
+        summaries = projects_service.list_projects(include_archived=include_archived)
         return Response(ProjectSummarySerializer(summaries, many=True).data)
 
     def post(self, request):
@@ -56,14 +60,92 @@ class ProjectListView(APIView):
         return Response(ProjectSummarySerializer(summary).data, status=status.HTTP_201_CREATED)
 
 
+class ProductionFromGoalView(APIView):
+    """POST /api/v1/projects/from-goal/ - a production from a sentence.
+
+    Derives a concept, scaffolds the project and writes its research brief,
+    all through scripts.goal. Synchronous on purpose: it is one model call
+    and the operator is looking at the result, so a job id they would then
+    have to poll would be worse than a few seconds of waiting. Nothing is
+    produced here - starting the run stays the separate, idempotent POST
+    .../produce/ every other creation path uses.
+    """
+
+    def post(self, request):
+        serializer = ProductionGoalSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            result = concepts_service.create_from_goal(
+                data["goal"], video_id=data["video_id"], minutes=data["minutes"],
+                excerpt_seconds=data["excerpt_seconds"])
+        except concepts_service.ScaffoldError as e:
+            if e.code == "exists":
+                return Response({"detail": str(e), "code": e.code},
+                                status=status.HTTP_409_CONFLICT)
+            raise ValidationError({"detail": str(e), "code": e.code}) from e
+        except Exception as e:  # noqa: BLE001 - derivation failure is a 400, not a 500
+            raise ValidationError({
+                "detail": f"could not derive a production from that goal: {e}",
+                "code": "derivation_failed"}) from e
+        result["project"] = ProjectSummarySerializer(result["project"]).data
+        return Response(result, status=status.HTTP_201_CREATED)
+
+
+class ProjectArchiveView(APIView):
+    """POST /api/v1/projects/{id}/archive/ - {"archived": bool, "reason"?}.
+
+    Hides development residue from the active views (or restores it). The
+    actor is request.user, never a default, and nothing on disk is removed:
+    permanent deletion stays a deliberate act outside this API.
+    """
+
+    def post(self, request, video_id):
+        serializer = ProjectArchiveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        actor = (getattr(request.user, "email", "") or request.user.get_username())
+        try:
+            summary = projects_service.set_archived(
+                video_id, data["archived"], actor, reason=data["reason"])
+        except project.ProjectError as e:
+            if "no such project" in str(e):
+                raise ProjectNotFound(str(e)) from e
+            raise ValidationError({"detail": str(e)}) from e
+        return Response(ProjectSummarySerializer(summary).data)
+
+
 class ProjectDetailView(APIView):
-    """GET /api/v1/projects/{id}/ - raw metadata.json."""
+    """GET /api/v1/projects/{id}/ - raw metadata.json.
+
+    DELETE - permanently remove the production. The body must echo the id
+    being deleted; scripts.project.delete_project decides what that removes
+    and refuses a published project. There is no undo, which is why this is
+    a different verb on a different body rather than a flag on archive.
+    """
 
     def get(self, request, video_id):
         metadata = projects_service.get_metadata(video_id)
         if metadata is None:
             raise ProjectNotFound(f"no such project: {video_id}")
         return Response(metadata)
+
+    def delete(self, request, video_id):
+        serializer = ProjectDeleteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        if data["confirm_video_id"] != video_id:
+            raise ValidationError({
+                "detail": "confirm_video_id must match the project being deleted",
+                "code": "confirmation_mismatch"})
+        actor = (getattr(request.user, "email", "") or request.user.get_username())
+        try:
+            result = projects_service.delete(video_id, actor, reason=data["reason"])
+        except project.ProjectError as e:
+            if "no such project" in str(e):
+                raise ProjectNotFound(str(e)) from e
+            raise ValidationError({"detail": str(e)}) from e
+        return Response(result)
 
 
 class ProjectStatusView(APIView):
@@ -104,22 +186,6 @@ class ProjectGpuJobsView(APIView):
         return Response(workers_service.project_jobs(video_id))
 
 
-_RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
-_CHUNK = 512 * 1024
-
-
-def _iter_slice(handle, remaining):
-    try:
-        while remaining > 0:
-            chunk = handle.read(min(_CHUNK, remaining))
-            if not chunk:
-                break
-            remaining -= len(chunk)
-            yield chunk
-    finally:
-        handle.close()
-
-
 class ProjectFileView(APIView):
     """GET /api/v1/projects/{id}/files/{path} - one servable asset.
 
@@ -137,36 +203,72 @@ class ProjectFileView(APIView):
             # Every refusal - traversal, wrong directory, missing file - is
             # a 404, so a probe learns nothing about what exists.
             raise ProjectNotFound(str(e)) from e
+        return serve_file(path, request)
 
-        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        size = path.stat().st_size
-        header = request.headers.get("Range")
 
-        if not header:
-            response = FileResponse(open(path, "rb"), content_type=content_type)
-            response["Content-Length"] = size
-            response["Accept-Ranges"] = "bytes"
-            return response
+class ProjectResearchInfluenceView(APIView):
+    """GET /api/v1/projects/{id}/research/influence/ - what research changed.
 
-        match = _RANGE.match(header.strip())
-        if not match or (not match.group(1) and not match.group(2)):
-            return HttpResponse(status=416, headers={"Content-Range": f"bytes */{size}"})
-        start_raw, end_raw = match.groups()
-        if start_raw:
-            start = int(start_raw)
-            end = min(int(end_raw), size - 1) if end_raw else size - 1
-        else:
-            # Suffix range: the last N bytes.
-            length = min(int(end_raw), size)
-            start, end = size - length, size - 1
-        if size == 0 or start >= size or start > end:
-            return HttpResponse(status=416, headers={"Content-Range": f"bytes */{size}"})
+    Three separate things the dashboard shows side by side: every directive
+    sourced findings produced (with the finding ids and URLs behind it),
+    what the build actually applied, and what it did not. 404 until research
+    has run, because "no influence yet" and "research found nothing to
+    change" are different states and must not look the same.
+    """
 
-        handle = open(path, "rb")
-        handle.seek(start)
-        response = StreamingHttpResponse(
-            _iter_slice(handle, end - start + 1), status=206, content_type=content_type)
-        response["Content-Range"] = f"bytes {start}-{end}/{size}"
-        response["Content-Length"] = end - start + 1
-        response["Accept-Ranges"] = "bytes"
-        return response
+    def get(self, request, video_id):
+        if projects_service.get_metadata(video_id) is None:
+            raise ProjectNotFound(f"no such project: {video_id}")
+        influence = research_service.get_influence(video_id)
+        if influence is None:
+            raise NotFound(f"no research influence recorded for {video_id}")
+        return Response(influence)
+
+
+class ProjectResearchBriefView(APIView):
+    """GET /api/v1/projects/{id}/research/brief/ - the project's research
+    brief, or 404 if none has been written yet.
+
+    PUT - validate and save. scripts.research.save_brief() re-validates
+    and is the only writer; this view refuses obviously malformed input
+    first so a bad request never reaches the domain layer.
+    """
+
+    def get(self, request, video_id):
+        if projects_service.get_metadata(video_id) is None:
+            raise ProjectNotFound(f"no such project: {video_id}")
+        brief = research_service.get_brief(video_id)
+        if brief is None:
+            raise NotFound(f"no research brief for {video_id}")
+        return Response(brief)
+
+    def put(self, request, video_id):
+        if projects_service.get_metadata(video_id) is None:
+            raise ProjectNotFound(f"no such project: {video_id}")
+        serializer = ResearchBriefSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            brief = research_service.save_brief(video_id, serializer.validated_data)
+        except research.ResearchError as e:
+            raise ValidationError({"detail": str(e)}) from e
+        return Response(brief)
+
+
+class ProjectResearchFindingsView(APIView):
+    """GET /api/v1/projects/{id}/research/findings/ - cached brief-driven
+    findings, or 404 if research has not run (or produced nothing) yet.
+
+    Running research itself is not a separate endpoint: it is the existing
+    "Research" pipeline stage (apps.engine.tasks.STAGE_FUNCS["research"] ->
+    scripts.project.run_research), triggered the same way every other stage
+    is - POST /api/v1/projects/{id}/pipeline/research/run/. A brief simply
+    gives that stage more to do.
+    """
+
+    def get(self, request, video_id):
+        if projects_service.get_metadata(video_id) is None:
+            raise ProjectNotFound(f"no such project: {video_id}")
+        findings = research_service.get_findings(video_id)
+        if findings is None:
+            raise NotFound(f"no research findings for {video_id}")
+        return Response(findings)

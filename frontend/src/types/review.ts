@@ -18,3 +18,10 @@ export interface VisualGradeClaim {
   asset_count: number;
   production_grade: boolean;
 }
+
+export interface AudioGradeClaim {
+  utc: string;
+  reviewer: string;
+  notes: string;
+  production_grade: boolean;
+}

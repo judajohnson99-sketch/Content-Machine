@@ -465,6 +465,25 @@ class ComfyUIAdapterTestCase(unittest.TestCase):
         self.assertEqual(graph["5"]["inputs"]["height"], 720)
         self.assertEqual(graph["3"]["inputs"]["seed"], 7)
 
+    def test_load_workflow_honours_a_request_level_override(self):
+        """A candidate template can be tried without touching the deployed
+        default - the provider's own workflow_path is only the fallback."""
+        override = str(ROOT / "config" / "comfyui_workflow_lowvram_upscale.json")
+        request = generation.GenerationRequest(
+            prompt="x", model="test-checkpoint.safetensors",
+            params={"workflow_path": override})
+        graph = self.provider._load_workflow(request)
+        default_graph = self.provider._load_workflow(generation.GenerationRequest(
+            prompt="x", model="test-checkpoint.safetensors"))
+        self.assertNotEqual(set(graph.keys()), set(default_graph.keys()))
+
+    def test_load_workflow_override_missing_file_raises(self):
+        request = generation.GenerationRequest(
+            prompt="x", model="test-checkpoint.safetensors",
+            params={"workflow_path": str(self.tmp / "nope.json")})
+        with self.assertRaises(generation.GenerationError):
+            self.provider._load_workflow(request)
+
 
 class LowVramWorkflowTestCase(unittest.TestCase):
     """The default graph renders a bounded latent and upscales in-graph, and
@@ -488,6 +507,11 @@ class LowVramWorkflowTestCase(unittest.TestCase):
         self.request = generation.GenerationRequest(prompt="a lit window", count=1)
         self._model_env = os.environ.pop("COMFYUI_MODEL", None)
         self._budget_env = os.environ.pop("COMFYUI_LATENT_MAX_PIXELS", None)
+        self._vram_threshold_env = os.environ.pop("COMFYUI_UPSCALE_MIN_VRAM_MB", None)
+        # Below the fake device's reported 3GB, so these tests keep exercising
+        # the upscale template by default - VRAM-tiered selection has its own
+        # test case below.
+        os.environ["COMFYUI_UPSCALE_MIN_VRAM_MB"] = "1024"
         FakeComfyHandler.checkpoints = ["test-checkpoint.safetensors", "other.safetensors"]
         self.provider = generation.ComfyUIProvider(url=self.url)   # default workflow
 
@@ -496,6 +520,9 @@ class LowVramWorkflowTestCase(unittest.TestCase):
             os.environ["COMFYUI_MODEL"] = self._model_env
         if self._budget_env is not None:
             os.environ["COMFYUI_LATENT_MAX_PIXELS"] = self._budget_env
+        os.environ.pop("COMFYUI_UPSCALE_MIN_VRAM_MB", None)
+        if self._vram_threshold_env is not None:
+            os.environ["COMFYUI_UPSCALE_MIN_VRAM_MB"] = self._vram_threshold_env
         FakeComfyHandler.checkpoints = ["test-checkpoint.safetensors", "other.safetensors"]
         shutil.rmtree(self.tmp, ignore_errors=True)
 
@@ -559,6 +586,96 @@ class LowVramWorkflowTestCase(unittest.TestCase):
             self.tmp, timeout=5)
         self.assertEqual(result["model"], "test-checkpoint.safetensors")
         self.assertIn("680x384 -> 1920x1080", result["notes"])
+        self.assertTrue(result["upscaled_in_graph"])
+        self.assertEqual((result["native_width"], result["native_height"]), (680, 384))
+
+
+class VramTieredWorkflowTestCase(unittest.TestCase):
+    """The worker's own reported VRAM chooses the template automatically -
+    the tiny (no-upscale) graph under COMFYUI_UPSCALE_MIN_VRAM_MB, the
+    upscale graph at or above it - unless an explicit choice overrides it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = HTTPServer(("127.0.0.1", 0), FakeComfyHandler)
+        cls.url = f"http://127.0.0.1:{cls.server.server_port}"
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self):
+        FakeComfyHandler.behaviour["mode"] = "ok"
+        FakeComfyHandler.checkpoints = ["test-checkpoint.safetensors"]
+        self.tmp = Path(tempfile.mkdtemp(prefix="cm-comfy-vram-"))
+        self._threshold_env = os.environ.pop("COMFYUI_UPSCALE_MIN_VRAM_MB", None)
+        self._workflow_env = os.environ.pop("COMFYUI_WORKFLOW", None)
+
+    def tearDown(self):
+        os.environ.pop("COMFYUI_UPSCALE_MIN_VRAM_MB", None)
+        if self._threshold_env is not None:
+            os.environ["COMFYUI_UPSCALE_MIN_VRAM_MB"] = self._threshold_env
+        if self._workflow_env is not None:
+            os.environ["COMFYUI_WORKFLOW"] = self._workflow_env
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_small_card_gets_the_tiny_no_upscale_template(self):
+        """The fake device reports 3GB; the default threshold (4096) puts it
+        below the line, so the deployed default is swapped automatically."""
+        provider = generation.ComfyUIProvider(url=self.url)
+        request = generation.GenerationRequest(prompt="x", width=1920, height=1080)
+        graph = provider._load_workflow(request)
+        self.assertNotIn("10", graph)
+        self.assertEqual(graph["9"]["inputs"]["images"], ["8", 0])
+
+    def test_a_large_card_keeps_the_upscale_template(self):
+        os.environ["COMFYUI_UPSCALE_MIN_VRAM_MB"] = "1024"
+        provider = generation.ComfyUIProvider(url=self.url)
+        request = generation.GenerationRequest(prompt="x", width=1920, height=1080)
+        graph = provider._load_workflow(request)
+        self.assertIn("10", graph)
+        self.assertEqual(graph["9"]["inputs"]["images"], ["10", 0])
+
+    def test_an_explicit_workflow_choice_is_never_overridden_by_vram(self):
+        upscale_path = str(ROOT / "config" / "comfyui_workflow_lowvram_upscale.json")
+        provider = generation.ComfyUIProvider(url=self.url, workflow_path=upscale_path)
+        request = generation.GenerationRequest(prompt="x", width=1920, height=1080)
+        graph = provider._load_workflow(request)
+        self.assertIn("10", graph)
+
+    def test_generate_reports_native_resolution_when_not_upscaled(self):
+        provider = generation.ComfyUIProvider(url=self.url)
+        result = provider.generate(
+            generation.GenerationRequest(prompt="x", width=1920, height=1080, count=1),
+            self.tmp, timeout=5)
+        self.assertFalse(result["upscaled_in_graph"])
+        self.assertEqual((result["native_width"], result["native_height"]), (680, 384))
+        self.assertIn("not yet reached", result["notes"])
+
+    def test_an_unreachable_worker_keeps_the_deployed_default(self):
+        """A card that cannot say its VRAM is not guessed at."""
+        provider = generation.ComfyUIProvider(url="http://127.0.0.1:1")
+        self.assertIsNone(provider.vram_total_mb(timeout=1))
+        self.assertEqual(provider._select_workflow_path(timeout=1), provider.workflow_path)
+
+
+class FailureClassificationTestCase(unittest.TestCase):
+
+    def test_vram_exhaustion_is_capacity(self):
+        self.assertEqual(generation.classify_failure(
+            "torch.OutOfMemoryError: Allocation on device 0 would exceed "
+            "allowed memory. (out of memory)"), "capacity")
+
+    def test_missing_checkpoint_is_software(self):
+        self.assertEqual(generation.classify_failure(
+            "checkpoint not installed in ComfyUI: 'nope.ckpt'"), "software")
+
+    def test_no_detail_is_unclassified(self):
+        self.assertIsNone(generation.classify_failure(None))
+        self.assertIsNone(generation.classify_failure(""))
 
 
 class ProceduralProviderTestCase(unittest.TestCase):

@@ -55,7 +55,8 @@ describe("DeliverablePanel", () => {
       },
     }));
     renderWithClient(<DeliverablePanel videoId="abc" compact />);
-    expect(await screen.findByText("FAIL")).toBeInTheDocument();
+    // The badge reads "Fail"; the literal server constant rides on data-status.
+    expect(await screen.findByTitle("FAIL")).toHaveAttribute("data-status", "FAIL");
     expect(screen.getByText(/black_frames/)).toBeInTheDocument();
     expect(screen.getByText("provenance.images.production_grade is not set")).toBeInTheDocument();
     // Compact mode hides passing checks until asked.
