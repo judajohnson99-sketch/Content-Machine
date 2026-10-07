@@ -50,6 +50,13 @@ const queuedJob: GpuJob = {
   last_transition: { at: null, to: null, detail: null }, completed_at: null,
 };
 
+const completedJob: GpuJob = {
+  ...queuedJob,
+  state: "SUCCEEDED",
+  assets: ["one", "two", "three", "four"],
+  completed_at: "2026-10-07T00:00:00Z",
+};
+
 describe("GeneratePage", () => {
   it("disables submit until a prompt is entered", async () => {
     vi.spyOn(systemApi, "getReadiness").mockResolvedValue(readiness);
@@ -83,5 +90,37 @@ describe("GeneratePage", () => {
     await userEvent.click(screen.getByRole("button", { name: /generate/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("prompt is required");
+  });
+
+  it("surfaces completed generations in a gallery with inspection and selection actions", async () => {
+    vi.spyOn(systemApi, "getReadiness").mockResolvedValue(readiness);
+    vi.spyOn(systemApi, "enqueueGpuJob").mockResolvedValue(completedJob);
+    vi.spyOn(systemApi, "listGpuJobs").mockResolvedValue([completedJob]);
+    const save = vi.spyOn(systemApi, "saveGpuJobAsset").mockResolvedValue({ asset: {}, id: "asset-id" });
+    renderPage();
+
+    await userEvent.type(await screen.findByLabelText(/^prompt$/i), "surreal ocean at night");
+    await userEvent.click(screen.getByRole("button", { name: /generate/i }));
+
+    expect(await screen.findByRole("heading", { name: "Your generated images" })).toBeInTheDocument();
+    expect(screen.getAllByRole("img")).toHaveLength(4);
+    expect(screen.getAllByRole("button", { name: /choose image/i })).toHaveLength(4);
+    await userEvent.click(screen.getAllByRole("button", { name: "Save to Assets" })[0]);
+    await waitFor(() => expect(save).toHaveBeenCalledWith("abc123", 0));
+    expect(await screen.findByRole("button", { name: "Saved to Assets" })).toBeInTheDocument();
+    await userEvent.click(screen.getAllByRole("button", { name: /view/i })[0]);
+    expect(await screen.findByRole("dialog", { name: "Image detail" })).toBeInTheDocument();
+  });
+
+  it("gives a single completed image the large gallery treatment", async () => {
+    const single = { ...completedJob, assets: ["one"] };
+    vi.spyOn(systemApi, "getReadiness").mockResolvedValue(readiness);
+    vi.spyOn(systemApi, "enqueueGpuJob").mockResolvedValue(single);
+    vi.spyOn(systemApi, "listGpuJobs").mockResolvedValue([single]);
+    renderPage();
+    await userEvent.type(await screen.findByLabelText(/^prompt$/i), "a moonlit forest");
+    await userEvent.click(screen.getByRole("button", { name: /generate/i }));
+    await screen.findByRole("heading", { name: "Your generated images" });
+    expect(document.querySelector('[class*="gallerySingle"]')).not.toBeNull();
   });
 });

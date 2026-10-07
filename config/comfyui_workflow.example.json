@@ -1,5 +1,5 @@
 {
-  "_comment": "Direct-latent ComfyUI API-format txt2img graph: renders exactly %width%x%height%, so it needs a card that fits that latent. The default is comfyui_workflow_lowvram_upscale.json (small latent + in-graph upscale); select this one with COMFYUI_WORKFLOW=config/comfyui_workflow.example.json on a GPU with the VRAM for it. Placeholders (%prompt% %negative% %width% %height% %latent_width% %latent_height% %seed% %model%) are substituted by scripts/generation.py before submission.",
+  "_comment": "Direct-latent ComfyUI API-format txt2img graph: renders exactly %width%x%height%, so it needs a card that fits that latent. The default is comfyui_workflow_lowvram_upscale.json (small latent + in-graph upscale); select this one with COMFYUI_WORKFLOW=config/comfyui_workflow.example.json on a GPU with the VRAM for it. Placeholders (%prompt% %negative% %width% %height% %latent_width% %latent_height% %count% %seed% %model%) are substituted by scripts/generation.py before submission.",
   "3": {
     "class_type": "KSampler",
     "inputs": {
@@ -21,7 +21,7 @@
   },
   "5": {
     "class_type": "EmptyLatentImage",
-    "inputs": {"width": %width%, "height": %height%, "batch_size": 1}
+    "inputs": {"width": %width%, "height": %height%, "batch_size": %count%}
   },
   "6": {
     "class_type": "CLIPTextEncode",

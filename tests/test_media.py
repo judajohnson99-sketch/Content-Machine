@@ -71,6 +71,21 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(media.search(query="misleading", catalog=self.catalog), [])
         self.assertEqual(before, {p: (media.digest(p), p.stat().st_mtime_ns) for p in before})
 
+    def test_generated_import_is_cataloged_with_provenance_and_idempotent(self):
+        imported = media.import_generated(
+            self.image, job_id="a" * 16, asset_index=0,
+            prompt="a surreal ocean", negative_prompt="text", model="dream",
+            width=512, height=512, seed=42, settings={"steps": 20},
+            catalog=self.catalog)
+        self.assertEqual(imported["origin"], "generated")
+        self.assertEqual(imported["provenance"]["generation_job_id"], "a" * 16)
+        self.assertEqual(imported["provenance"]["seed"], 42)
+        again = media.import_generated(
+            self.image, job_id="a" * 16, asset_index=0,
+            prompt="a surreal ocean", catalog=self.catalog)
+        self.assertEqual(again["id"], imported["id"])
+        self.assertEqual(len(media.search(catalog=self.catalog)), 1)
+
     def test_duplicate_alias_missing_source_and_content_change(self):
         self.scan()
         self.annotate_all()

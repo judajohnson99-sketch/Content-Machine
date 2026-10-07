@@ -16,9 +16,12 @@ from apps.engine.exceptions import ProjectNotFound
 from apps.engine.http import serve_file
 from apps.engine.services import assets as assets_service
 from apps.engine.services import concepts as concepts_service
+from apps.engine.services import library as library_service
 from apps.engine.services import projects as projects_service
 from apps.engine.services import research as research_service
 from apps.engine.services import workers as workers_service
+
+from apps.library.serializers import OwnerMediaSelectionSerializer
 
 from .serializers import (
     ProductionGoalSerializer, ProjectCreateSerializer, ProjectDeleteSerializer,
@@ -170,6 +173,39 @@ class ProjectAssetsView(APIView):
         if manifest is None:
             raise ProjectNotFound(f"no such project: {video_id}")
         return Response(manifest)
+
+
+class ProjectOwnerMediaView(APIView):
+    """GET /api/v1/projects/{id}/owner-media/ - what this production uses
+    from the owner's own library. PUT - choose it.
+
+    The selection is per role (visuals, music, ambience, sound effects) and
+    ordered. Choosing is all this does: the bytes are staged into the
+    project so a later stage cannot be defeated by the source machine being
+    off, and the next run of the affected stage picks them up. The response
+    says which stages that makes stale, so the dashboard can ask for a
+    re-run instead of implying the current render already used them.
+    """
+
+    def get(self, request, video_id):
+        view = library_service.selection(video_id)
+        if view is None:
+            raise ProjectNotFound(f"no such project: {video_id}")
+        return Response(view)
+
+    def put(self, request, video_id):
+        if projects_service.get_metadata(video_id) is None:
+            raise ProjectNotFound(f"no such project: {video_id}")
+        serializer = OwnerMediaSelectionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        actor = (getattr(request.user, "email", "") or request.user.get_username())
+        try:
+            result = library_service.select(video_id, serializer.validated_data, actor)
+        except project.ProjectError as e:
+            if "no such project" in str(e):
+                raise ProjectNotFound(str(e)) from e
+            raise ValidationError({"detail": str(e)}) from e
+        return Response(result)
 
 
 class ProjectGpuJobsView(APIView):

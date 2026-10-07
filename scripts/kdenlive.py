@@ -25,6 +25,10 @@ class Clip:
     start_frame: int
     duration_frames: int
     source_in: int = 0
+    # "image" (a still held for the shot), "video" (owner footage) or
+    # "audio". MLT needs a different producer service for each, and a still
+    # held by pixbuf is not interchangeable with a decoded clip.
+    media_kind: str = "image"
     track: str = "video"
     label: str = ""
     gain_db: float = 0.0
@@ -69,18 +73,25 @@ def _producer(parent, producer_id, clip, fps, index, width, height, project_dir)
     end = clip.source_in + clip.duration_frames - 1
     producer = ET.SubElement(parent, "producer", {"id": producer_id, "in": "0", "out": str(end)})
     audio = clip.track.startswith("audio")
+    footage = not audio and clip.media_kind == "video"
     properties = {
         "resource": os.path.relpath(clip.path.absolute(), project_dir),
-        "mlt_service": "avformat" if audio else "pixbuf",
-        "length": end + 1, "eof": "pause", "ttl": end + 1,
+        "mlt_service": "avformat" if audio or footage else "pixbuf",
+        "length": end + 1, "eof": "pause",
         "kdenlive:clipname": clip.label or clip.path.name,
         "kdenlive:id": index, "kdenlive:duration": end + 1,
-        "kdenlive:clip_type": 1 if audio else 2,
+        # 0 = audio+video, 1 = audio only, 2 = a still image.
+        "kdenlive:clip_type": 1 if audio else 0 if footage else 2,
         "set.test_image": 1 if audio else 0,
+        # The composed track is this edit's audio. Footage keeps its own
+        # sound muted here rather than quietly doubling up under it.
         "set.test_audio": 0 if audio else 1,
         "content-machine:sha256": _sha256(clip.path),
         "kdenlive:zone_in": clip.source_in, "kdenlive:zone_out": end,
     }
+    if not audio and not footage:
+        # How long one still frame is held; meaningless for a decoded clip.
+        properties["ttl"] = end + 1
     for key, value in properties.items():
         _prop(producer, key, value)
     if audio:

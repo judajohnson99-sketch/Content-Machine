@@ -69,6 +69,7 @@ class RunRequestSerializer(StageRequestSerializer):
 
 
 class ProduceRequestSerializer(StageRequestSerializer):
+    image_source = serializers.ChoiceField(choices=["automatic", "generated", "procedural"], required=False, allow_null=True)
     concept_id = serializers.CharField(required=False, allow_null=True, default=None)
     duration = serializers.FloatField(required=False, allow_null=True, default=None)
     production_grade_visuals = serializers.BooleanField(

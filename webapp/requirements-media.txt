@@ -1,0 +1,5 @@
+# Optional free CPU semantic visual analysis; not needed for rendering.
+onnxruntime>=1.20,<2
+tokenizers>=0.20,<1
+numpy>=1.26,<3
+transformers>=4.48,<5

@@ -429,3 +429,63 @@ class TestResearchInfluenceView:
             response = client.get("/api/v1/projects/vid/research/influence/")
         assert response.status_code == 200
         assert response.json() == fake
+
+
+@pytest.mark.django_db
+class TestProjectOwnerMediaView:
+    def selection(self, **overrides):
+        base = {
+            "updated_utc": "2026-10-07T12:00:00Z", "actor": "owner",
+            "roles": {role: {"label": role.title(), "count": 0, "entries": []}
+                      for role in ("visuals", "music", "ambience", "sfx")},
+            "problems": [], "stale_stages": [],
+        }
+        base.update(overrides)
+        return base
+
+    def test_returns_the_selection_and_404s_for_an_unknown_project(self, client):
+        with patch("apps.projects.views.library_service.selection",
+                   return_value=self.selection()):
+            response = client.get("/api/v1/projects/abc/owner-media/")
+        assert response.status_code == 200
+        assert set(response.json()["roles"]) == {"visuals", "music", "ambience", "sfx"}
+        with patch("apps.projects.views.library_service.selection", return_value=None):
+            assert client.get("/api/v1/projects/abc/owner-media/").status_code == 404
+
+    def test_choosing_media_names_the_stages_it_makes_stale(self, client, owner):
+        result = {"selection": self.selection(), "changed_roles": ["visuals"],
+                  "stale_stages": ["scenes"]}
+        with patch("apps.projects.views.projects_service.get_metadata", return_value={}), \
+                patch("apps.projects.views.library_service.select",
+                      return_value=result) as call:
+            response = client.put("/api/v1/projects/abc/owner-media/",
+                                  {"visuals": ["a" * 64, "b" * 64]}, format="json")
+        assert response.status_code == 200
+        assert response.json()["stale_stages"] == ["scenes"]
+        call.assert_called_once_with(
+            "abc", {"visuals": ["a" * 64, "b" * 64]},
+            owner.email or owner.get_username())
+
+    def test_an_empty_body_is_a_400_and_a_refused_selection_is_a_400_with_the_reason(self, client):
+        import scripts.project as project
+        with patch("apps.projects.views.projects_service.get_metadata", return_value={}):
+            assert client.put("/api/v1/projects/abc/owner-media/", {},
+                              format="json").status_code == 400
+            with patch("apps.projects.views.library_service.select",
+                       side_effect=project.ProjectError(
+                           "Asset abc needs explicit rights and evidence")):
+                response = client.put("/api/v1/projects/abc/owner-media/",
+                                      {"music": ["c" * 64]}, format="json")
+        assert response.status_code == 400
+        assert "rights" in response.json()["detail"]
+
+    def test_clearing_a_role_is_an_empty_list_not_a_missing_one(self, client):
+        result = {"selection": self.selection(), "changed_roles": ["music"],
+                  "stale_stages": ["audio"]}
+        with patch("apps.projects.views.projects_service.get_metadata", return_value={}), \
+                patch("apps.projects.views.library_service.select",
+                      return_value=result) as call:
+            response = client.put("/api/v1/projects/abc/owner-media/",
+                                  {"music": []}, format="json")
+        assert response.status_code == 200
+        assert call.call_args[0][1] == {"music": []}

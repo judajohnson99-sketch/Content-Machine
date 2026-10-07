@@ -656,6 +656,16 @@ class UploadTests(WorkerTestCase):
         self.assertEqual(ctx.exception.status, 422)
         self.assertFalse((worker.uploads_dir() / self.job_id / "a.png").exists())
 
+    def test_missing_images_cannot_be_reported_as_a_successful_batch(self):
+        job = worker.load_job(self.job_id)
+        job["request"]["count"] = 2
+        worker._save_job(job)
+        worker.stage_asset(self.job_id, "home-gpu-01", self.lease, "a.png", PNG)
+        with self.assertRaisesRegex(worker.WorkerError, "1 of 2 requested images"):
+            worker.complete(self.job_id, "home-gpu-01", self.lease,
+                            [{"filename": "a.png", "sha256": hashlib.sha256(PNG).hexdigest(), "bytes": len(PNG)}])
+        self.assertEqual(worker.load_job(self.job_id)["state"], worker.FAILED)
+
     def test_an_oversized_asset_is_refused(self):
         limit = worker.max_asset_bytes()
         with self.assertRaises(worker.WorkerError) as ctx:

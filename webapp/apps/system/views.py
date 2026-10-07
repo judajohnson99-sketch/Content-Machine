@@ -71,6 +71,19 @@ class GpuJobAssetView(APIView):
         return serve_file(path, request)
 
 
+class GpuJobAssetSaveView(APIView):
+    """POST .../assets/{index}/save/ - add a result to the shared catalog."""
+
+    def post(self, request, job_id, index):
+        try:
+            asset = workers_service.save_asset(job_id, index)
+        except worker.WorkerError as e:
+            if e.status == 404:
+                raise NotFound(str(e)) from e
+            raise ValidationError({"detail": str(e)}) from e
+        return Response({"asset": asset, "id": asset["id"]}, status=status.HTTP_200_OK)
+
+
 class GpuJobRequeueView(APIView):
     """POST /api/v1/system/gpu-jobs/{job_id}/requeue/ - Retry a finished job.
 

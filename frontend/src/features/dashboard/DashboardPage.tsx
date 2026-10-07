@@ -99,8 +99,8 @@ export function DashboardPage() {
   return (
     <div>
       <PageHeader
-        eyebrow="Production overview"
-        title="Dashboard"
+        eyebrow="Your creator studio"
+        title="Make something worth watching."
         description={summary}
         actions={
           <Link to="/projects/new" className={styles.primaryLink}>
@@ -213,17 +213,18 @@ export function DashboardPage() {
 
           <section>
             <div className={styles.sectionHead}>
-              <h2 className={styles.sectionTitle}>Recent productions</h2>
+              <h2 className={styles.sectionTitle}>Your productions</h2>
               <span className={styles.muted}>newest first</span>
             </div>
+            <input className={styles.search} type="search" placeholder="Find a production…" value={query} onChange={e => setQuery(e.target.value)} aria-label="Search productions" />
             <div className={styles.projectGrid}>
-              {recentProjects.map((p) => (
+              {filtered.map((p) => (
                 <ProjectTile key={p.video_id} project={p} />
               ))}
             </div>
           </section>
 
-          <Card padded={false} className={styles.tableCard}>
+          <details className={styles.activityDisclosure}><summary>List view · {recentProjects.length ? total : 0} productions</summary><Card padded={false} className={styles.tableCard}>
             <div className={styles.tableHead}>
               <CardHeader eyebrow="Library" title="All projects" description={`${total} project${total === 1 ? "" : "s"} on disk.`} />
               <div className={styles.searchRow}>
@@ -243,7 +244,7 @@ export function DashboardPage() {
             <div className={styles.tableWrap}>
               <ProjectTable projects={filtered} />
             </div>
-          </Card>
+          </Card></details>
 
           <details className={styles.systemRegion}>
             <summary className={styles.systemSummary}>
@@ -369,6 +370,7 @@ function ProjectTable({ projects }: { projects: ProjectSummary[] }) {
           <th>Niche</th>
           <th>Status</th>
           <th>Created</th>
+          <th><span className={styles.srOnly}>Actions</span></th>
         </tr>
       </thead>
       <tbody>
@@ -385,10 +387,14 @@ function ProjectTable({ projects }: { projects: ProjectSummary[] }) {
               <StatusBadge status={p.overall_status} />
             </td>
             <td data-label="Created" className={styles.muted}>{formatDateTime(p.created_utc)}</td>
+            <td data-label="Actions">
+              <Link to={`/projects/${p.video_id}`} className={styles.projectLink}>Open</Link>
+              <span className={styles.actionDivider}> · </span>
+              <Link to={`/projects/${p.video_id}#danger-zone`} className={styles.projectLink}>Delete</Link>
+            </td>
           </tr>
         ))}
       </tbody>
     </table>
   );
 }
-

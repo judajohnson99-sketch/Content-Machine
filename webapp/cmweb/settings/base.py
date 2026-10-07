@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     'apps.pipeline',
     'apps.review',
     'apps.concepts',
+    'apps.library',
     'apps.system',
 ]
 

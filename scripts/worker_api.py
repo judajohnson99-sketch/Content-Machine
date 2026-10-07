@@ -28,11 +28,14 @@ asked for explicitly, because it cannot be the safe default.
 import json
 import logging
 import sys
+import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import worker  # noqa: E402
+import media  # noqa: E402
+import media_sync  # noqa: E402
 from worker import WorkerError  # noqa: E402
 
 log = logging.getLogger("worker.api")
@@ -129,6 +132,8 @@ class ControlPlaneHandler(BaseHTTPRequestHandler):
             self._send(*self._dispatch(path, record))
         except WorkerError as e:
             self._send(e.status, {"error": str(e)})
+        except media.MediaError as e:
+            self._send(409, {"error": str(e)})
         except Exception as e:  # noqa: BLE001 - a handler must not die silently
             log.exception("unhandled error serving %s", path)
             self._send(500, {"error": f"{type(e).__name__}: {e}"})
@@ -136,6 +141,39 @@ class ControlPlaneHandler(BaseHTTPRequestHandler):
     def _dispatch(self, path, record):
         worker_id = record["worker_id"]
         parts = [p for p in path.split("/") if p]
+
+        if parts == ["v1", "media", "inventory"]:
+            return 200, media_sync.inventory(worker_id, self._json_body(), catalog=media.DEFAULT_CATALOG)
+        if parts == ["v1", "media", "claim"]:
+            payload = self._json_body()
+            return 200, {"transfer": media_sync.claim(worker_id, payload.get("host_id"), catalog=media.DEFAULT_CATALOG)}
+        if len(parts) == 4 and parts[:2] == ["v1", "media"]:
+            identity, action = parts[2:]
+            if action == "fail":
+                payload = self._json_body()
+                return 200, media_sync.fail(identity, worker_id, self._lease_id(payload), payload.get("message", "Transfer failed"), catalog=media.DEFAULT_CATALOG)
+            if action == "bundle":
+                lease = self._lease_id({})
+                # Authorize before reading bytes. Keep large media out of RAM.
+                media_sync._leased(identity, worker_id, lease, media.DEFAULT_CATALOG)
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                except ValueError:
+                    raise WorkerError("Invalid transfer length", 411)
+                if not 0 < length <= 512 * 1024 * 1024:
+                    raise WorkerError("Media transfer exceeds the 512 MB limit", 413)
+                with tempfile.TemporaryDirectory(prefix="cm-upload-") as temporary:
+                    self.connection.settimeout(120)
+                    bundle = Path(temporary) / "bundle.tar.gz"
+                    with bundle.open("wb") as stream:
+                        remaining = length
+                        while remaining:
+                            chunk = self.rfile.read(min(1024 * 1024, remaining))
+                            if not chunk:
+                                raise WorkerError("Media transfer interrupted; retry retrieval", 400)
+                            stream.write(chunk)
+                            remaining -= len(chunk)
+                    return 200, media_sync.receive(identity, worker_id, lease, bundle, catalog=media.DEFAULT_CATALOG)
 
         if parts == ["v1", "heartbeat"]:
             payload = self._json_body()

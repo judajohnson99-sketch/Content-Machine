@@ -164,6 +164,23 @@
   font-size: var(--text-sm);
 }
 
+.actionDivider {
+  color: var(--text-tertiary);
+  margin: 0 0.25rem;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .cardLink:hover,
 .projectLink:hover {
   text-decoration: underline;
@@ -243,8 +260,9 @@
 
 .projectGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+  gap: var(--space-6);
+  margin-top: var(--space-5);
   margin-bottom: var(--space-6);
 }
 
@@ -513,3 +531,5 @@
 .systemRegion .gpuCard {
   margin-top: var(--space-4);
 }
+.activityDisclosure { color: var(--text-secondary); padding: var(--space-3) 0; }
+.activityDisclosure summary { cursor: pointer; padding-bottom: var(--space-3); }

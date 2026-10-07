@@ -48,6 +48,7 @@ import kdenlive as kdenlive_mod  # noqa: E402
 import make_visuals  # noqa: E402
 import media as media_mod  # noqa: E402
 import motion as motion_mod  # noqa: E402
+import ownermedia as ownermedia_mod  # noqa: E402
 import qc  # noqa: E402
 import render  # noqa: E402
 import research  # noqa: E402
@@ -65,7 +66,8 @@ PROJECTS_DIR = ROOT / "projects"
 SUPPORTED_AUDIO_EXTENSIONS = (".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus")
 SUPPORTED_IMAGE_EXTENSIONS = render.SUPPORTED_IMAGE_EXTENSIONS
 
-SUBDIRS = ("images", "audio", "thumbnail", "output", "logs")
+SUBDIRS = ("images", "audio", "thumbnail", "output", "logs",
+           ownermedia_mod.STAGED_DIRNAME)
 
 # Thumbnail candidates are pulled from these points through the video.
 THUMBNAIL_POSITIONS = (0.25, 0.5, 0.75)
@@ -431,7 +433,9 @@ def import_catalog_project(video_id, image_ids, audio_id, *, title, description,
             "evidence": source_rights.get("evidence") or "Track-level rights record pending",
             "status": "UNVERIFIED",
         }
-    manifest = {"status": "OK", "commercial_use_cleared": rights.get("commercial_use") is True,
+    manifest = {"status": "OK", "commercial_use_cleared": (
+                    rights.get("commercial_use") is True
+                    and rights.get("status") != "UNVERIFIED"),
                 "layers": [dict(rights, layer_id="existing-audio", provider="file",
                                 asset_id=audio_id, parameters={"path": str(audio_path)})],
                 "attributions_required": [rights["attribution_text"]]
@@ -501,6 +505,130 @@ def cmd_import_media(args):
         return 1
 
 
+def suggest_owner_media(video_id, role, catalog=media_mod.DEFAULT_CATALOG):
+    """Rank a rights-cleared proposal against this film's brief and research."""
+    if role not in ownermedia_mod.ROLES:
+        raise ProjectError(["Choose visuals, music, ambience or sound effects"])
+    pdir = project_dir(video_id)
+    metadata = json.loads((pdir / "metadata.json").read_text())
+    brief = research.load_brief(video_id) or {}
+    findings = research.load_findings(video_id) or {}
+    topic = "visuals" if role == "visuals" else "audio"
+    statements = [f.get("statement", "") for f in findings.get("findings", [])
+                  if f.get("topic") == topic and f.get("source_url")][:2]
+    prompt = (metadata.get("visual_plan") or {}).get("prompt", "") if role == "visuals" else role
+    intent = brief.get("creative_intent") or (metadata.get("experiment") or {}).get("goal_text") or metadata.get("selected_title", "")
+    query = " ".join([str(prompt)[:180], str(intent)[:180], *statements])[:500].strip()
+    entries = ownermedia_mod.browse(query=query, catalog=catalog)
+    candidates = [asset for asset in entries if role in asset["roles"] and asset["selectable"]]
+    # Hash identities remove duplicate files; low-resolution visuals are not
+    # proposed for a full-size production. The owner can still choose them.
+    if role == "visuals":
+        candidates = [asset for asset in candidates if (asset["technical"].get("width") or 0) >= 256]
+    return {"query": query, "assets": candidates[:4 if role == "visuals" else 1],
+            "reason": "Matched against the creative brief and sourced findings; only available media with recorded rights is proposed."}
+
+
+def set_owner_media(video_id, assignments, actor, catalog=media_mod.DEFAULT_CATALOG):
+    """Record which of the owner's own library assets this production uses.
+
+    ``assignments`` maps a role (visuals, music, ambience, sfx) to an ordered
+    list of catalog asset ids; a role present with an empty list clears it,
+    and a role left out keeps whatever was selected before. The bytes are
+    staged into the project here, so a later stage never has to reach back
+    to the owner's originals - or fail because the source machine is off.
+
+    What this does *not* do: grade anything, or touch a stage's output. The
+    next run of `scenes` and `audio` picks the selection up; until then what
+    is on disk is still what the last run made, and the dashboard says so.
+    """
+    with project_lock(video_id):
+        pdir = project_dir(video_id)
+        metadata_path = pdir / "metadata.json"
+        if not metadata_path.is_file():
+            raise ProjectError(f"no such project: {video_id}")
+        metadata = json.loads(metadata_path.read_text())
+        try:
+            update = ownermedia_mod.build_selection(
+                pdir, assignments, actor=actor, catalog=catalog)
+        except ownermedia_mod.OwnerMediaError as exc:
+            raise ProjectError(str(exc)) from exc
+        previous = ownermedia_mod.selection_of(metadata)
+        selection = ownermedia_mod.merge_selection(previous, update)
+        metadata["owner_media"] = selection
+
+        # A stage whose inputs just changed has not run with them yet. Say
+        # so rather than leaving a stale "OK" that reads as "this render
+        # used your footage" when it did not.
+        changed = [role for role in ownermedia_mod.ROLES
+                   if _role_asset_ids(previous, role) != _role_asset_ids(selection, role)]
+        if "visuals" in changed:
+            metadata.setdefault("status", {})[_visual_stage(video_id)] = "PENDING"
+        if {"music", "ambience", "sfx"} & set(changed):
+            metadata.setdefault("status", {})["audio"] = "PENDING"
+        save_metadata(pdir, metadata)
+        return {"selection": ownermedia_mod.summary(metadata),
+                "changed_roles": changed,
+                "stale_stages": _stale_stages(video_id, metadata)}
+
+
+def _visual_stage(video_id):
+    """Which stage puts pictures in this production: scenes, or plates.
+
+    A storyboard means every shot has its own picture and ``scenes`` is what
+    assigns them. Without one the project cycles a set of stills, which is
+    ``visuals``. Pointing an operator at the stage that will not run for
+    their project is worse than saying nothing.
+    """
+    board = storyboard_mod.load(video_id)
+    return "scenes" if board and board.get("scenes") else "visuals"
+
+
+def _stale_stages(video_id, metadata):
+    status = metadata.get("status") or {}
+    return sorted(stage for stage in (_visual_stage(video_id), "audio")
+                  if status.get(stage) == "PENDING")
+
+
+def _role_asset_ids(selection, role):
+    return [entry.get("asset_id") for entry in (selection.get(role) or [])]
+
+
+def owner_media_view(video_id):
+    """This production's owner-media selection, or None if no such project."""
+    pdir = project_dir(video_id)
+    metadata_path = pdir / "metadata.json"
+    if not metadata_path.is_file():
+        return None
+    metadata = json.loads(metadata_path.read_text())
+    view = ownermedia_mod.summary(metadata)
+    view["problems"] = ownermedia_mod.verification_problems(metadata, pdir)
+    view["stale_stages"] = _stale_stages(video_id, metadata)
+    return view
+
+
+def cmd_owner_media(args):
+    assignments = {}
+    for role in ownermedia_mod.ROLES:
+        if getattr(args, f"clear_{role}"):
+            assignments[role] = []
+        elif getattr(args, role):
+            assignments[role] = getattr(args, role)
+    try:
+        if assignments:
+            result = set_owner_media(args.video_id, assignments, args.actor,
+                                     catalog=args.catalog)
+        else:
+            result = owner_media_view(args.video_id)
+            if result is None:
+                raise ProjectError(f"no such project: {args.video_id}")
+    except (ProjectError, OSError) as exc:
+        log.error("%s", exc)
+        return 1
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def storyboard_scene_spec(pdir, raw_spec, board):
     """``raw_spec`` with the storyboard's scenes folded in, normalised.
 
@@ -510,18 +638,31 @@ def storyboard_scene_spec(pdir, raw_spec, board):
     at video_spec.json, so every storyboarded project (which is now almost
     all of them) refused to export an edit it had just rendered.
     """
-    raw = dict(raw_spec)
-    raw["scenes"] = [
+    # A scene list replaces images/ken_burns/crossfade entirely: it states
+    # per scene what each of those decided globally. Keeping `images` here
+    # would also demand a non-empty images/ folder, which a production whose
+    # pictures are all the owner's own media does not have.
+    raw = {k: v for k, v in raw_spec.items() if k != "images"}
+    raw["scenes"] = storyboard_raw_scenes(board)
+    return render.validate_and_normalize(raw, base_dir=pdir)
+
+
+def storyboard_raw_scenes(board):
+    """The storyboard's scenes as raw render-spec scene objects."""
+    return [
         {
             "scene_id": scene["scene_id"],
             "duration_seconds": scene["duration_seconds"],
             "image": scene["image"],
+            # Owner footage is a clip, not a still held under a pan/zoom.
+            # The renderer needs to be told which it is here, because
+            # video_spec.json is the only thing it reads.
+            "media_kind": ownermedia_mod.scene_media_kind(scene),
             "motion": scene.get("motion") or {},
             "transition": scene.get("transition") or {},
         }
         for scene in board["scenes"]
     ]
-    return render.validate_and_normalize(raw, base_dir=pdir)
 
 
 def build_kdenlive_project(video_id, *, render_output=True):
@@ -558,17 +699,35 @@ def build_kdenlive_project(video_id, *, render_output=True):
             motion = scene.get("motion") or {}
             amount = float(motion.get("amount") or 0.0)
             zoom_in = motion.get("kind") == "zoom_in"
-            clips.append(kdenlive_mod.Clip(
-                path=local_source,
-                start_frame=max(0, round(float(start) * spec["fps"])),
-                duration_frames=frames,
-                label=scene.get("scene_id") or Path(scene["image_path"]).name,
-                track="video",
-                zoom_start=1.0 if zoom_in else 1.0 + amount,
-                zoom_end=1.0 + amount if zoom_in else 1.0,
-            ))
+            media_kind = scene.get("media_kind") or "image"
+            start_frame = max(0, round(float(start) * spec["fps"]))
+            if media_kind == "video":
+                # The renderer loops footage shorter than its shot. An MLT
+                # entry cannot loop, so the loop is written out as what it
+                # is: the clip laid down end to end until the shot is
+                # covered, with the last repeat trimmed. The editor then
+                # sees the same picture the MP4 has, as editable cuts.
+                for clip_start, clip_frames in _footage_repeats(
+                        local_source, start_frame, frames, spec["fps"]):
+                    clips.append(kdenlive_mod.Clip(
+                        path=local_source, start_frame=clip_start,
+                        duration_frames=clip_frames, media_kind="video",
+                        label=scene.get("scene_id") or local_source.name,
+                        track="video"))
+            else:
+                clips.append(kdenlive_mod.Clip(
+                    path=local_source,
+                    start_frame=start_frame,
+                    duration_frames=frames,
+                    media_kind="image",
+                    label=scene.get("scene_id") or Path(scene["image_path"]).name,
+                    track="video",
+                    zoom_start=1.0 if zoom_in else 1.0 + amount,
+                    zoom_end=1.0 + amount if zoom_in else 1.0,
+                ))
             source_handoffs.append({"source": str(source), "editable_media": str(local_source),
-                                    "method": method, "sha256": sha256(local_source)})
+                                    "method": method, "sha256": sha256(local_source),
+                                    "media_kind": media_kind})
         total_frames = max(1, round(float(spec["duration_seconds"]) * spec["fps"]))
         audio_spec = spec.get("audio") or {}
         audio_source = Path(spec["audio_path"])
@@ -646,6 +805,35 @@ def build_kdenlive_project(video_id, *, render_output=True):
             "project": str(project_path), "render": rendered,
             "verification": verification, "timeline": result, "package": package,
         })
+
+
+def _footage_repeats(source, start_frame, frames, fps):
+    """``(start_frame, duration_frames)`` per laid-down repeat of a clip.
+
+    One entry when the footage is at least as long as the shot. Otherwise as
+    many whole repeats as fit plus a trimmed remainder, which is exactly
+    what ``-stream_loop`` produces in the render.
+    """
+    seconds = media_seconds(source)
+    available = int((seconds or 0) * fps)
+    if available <= 0 or available >= frames:
+        return [(start_frame, frames)]
+    laid, remaining = [], frames
+    while remaining > 0:
+        length = min(available, remaining)
+        laid.append((start_frame + frames - remaining, length))
+        remaining -= length
+    return laid
+
+
+def media_seconds(path):
+    """Container duration of any media file in seconds, or None."""
+    probed = qc.probe(path)
+    try:
+        seconds = float(probed["format"]["duration"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
 
 
 def package_kdenlive_project(video_id, project_path, source_handoffs):
@@ -830,22 +1018,48 @@ def load_project(video_id):
     if problems:
         raise ProjectError(problems)
 
+    # A finished storyboard *is* the edit, so validate the thing that will
+    # actually be rendered. This matters as soon as a scene's picture is not
+    # a file in images/: a production whose shots are all the owner's own
+    # media leaves that folder empty, and judging it by "are there images in
+    # images/" would reject an edit whose every scene has a picture.
+    # Deliberately only for a complete board - an unresolved scene still
+    # reports as the missing-asset it is, where it did before.
+    validation_spec = raw_spec
+    board = storyboard_mod.load(video_id)
+    if not raw_spec.get("scenes") and board and board.get("scenes") and all(
+            scene.get("image") for scene in board["scenes"]):
+        validation_spec = {k: v for k, v in raw_spec.items() if k != "images"}
+        validation_spec["scenes"] = storyboard_raw_scenes(board)
+
     # Reuse the renderer's own validation so the rules live in exactly one
     # place; paths resolve relative to the project directory.
     try:
-        spec = render.validate_and_normalize(raw_spec, base_dir=pdir)
+        spec = render.validate_and_normalize(validation_spec, base_dir=pdir)
     except render.SpecValidationError as e:
         raise ProjectError(e.errors)
 
     # Project-level checks the renderer does not make: assets must not just
     # exist, they must actually decode.
-    unreadable_images = [str(p) for p in spec["image_paths"] if qc.probe_image(p) is None]
+    # Whatever the edit is built from, however it got there: the cycled
+    # image set, or a scene's own picture (generated or the owner's).
+    sources = list(spec["image_paths"])
+    stills = list(spec["image_paths"])
+    for scene in spec.get("scenes") or []:
+        if scene.get("image_path") is None:
+            continue
+        sources.append(scene["image_path"])
+        if scene.get("media_kind", "image") == "image":
+            stills.append(scene["image_path"])
+
+    unreadable_images = [str(p) for p in sources if qc.probe_image(p) is None]
     if unreadable_images:
         problems.append(f"unreadable/corrupt image(s): {unreadable_images}")
 
     # Catch frames QC would reject as black BEFORE paying for a long render.
+    # Only stills: one dark frame in a clip is the footage, not a defect.
     too_dark = []
-    for image in spec["image_paths"]:
+    for image in stills:
         if str(image) in unreadable_images:
             continue
         luma = qc.image_mean_luma(image)
@@ -1242,6 +1456,18 @@ def run_audio(video_id, duration=None):
         if duration:
             plan["target_seconds"] = float(duration)
 
+        # The owner's own music, ambience or effects stand in for the
+        # synthesised layers they were chosen instead of. Applied to the
+        # plan, not to the composer: the plan is what the digest, the
+        # manifest and the production-grade judgement are all about, so an
+        # owner track has to be visible in it.
+        plan, owner_audio = ownermedia_mod.apply_audio_plan(plan, metadata, pdir)
+        if owner_audio:
+            for role, record in owner_audio.items():
+                log.info("Audio: owner %s (%s) replaces %s", role,
+                         ", ".join(record["added"]),
+                         ", ".join(record["replaced"]) or "nothing generated")
+
         (pdir / "audio").mkdir(parents=True, exist_ok=True)
         output_path = pdir / "audio" / "track.wav"
         try:
@@ -1287,6 +1513,12 @@ def run_audio(video_id, duration=None):
             "source": chosen.get("source"),
             "production_grade_capable": chosen.get("production_grade_capable"),
         }
+        if owner_audio:
+            # Recorded, not graded. Owner audio removes the reason a track
+            # is *known* to be a synthesised stand-in, but whether it is
+            # good enough to publish remains a person's verdict - and an
+            # absent verdict still blocks review, exactly as before.
+            audio_prov["owner_media"] = owner_audio
         # A human's judgement survives a re-render of the same plan and is
         # discarded by a different one - the same rule images follow.
         if previous.get("production_grade") is not None:
@@ -1343,6 +1575,52 @@ def cmd_audio(args):
     return run_audio(args.video_id, duration=args.duration).exit_code
 
 
+def _use_owner_plates(pdir, metadata, entries):
+    """The owner's own stills as this project's image set, nothing generated.
+
+    The plate path cycles whatever is in ``images/``, so the selection is
+    linked in there under its content-addressed name. Footage is refused
+    rather than quietly dropped: a clip needs a scene timeline to live in,
+    which this path does not have, and silently using only the stills would
+    produce a video missing shots the owner chose.
+    """
+    footage = [entry for entry in entries if entry["kind"] != "image"]
+    if footage:
+        log.error("This production cycles a set of stills and has no scene "
+                  "timeline, so %d selected clip(s) cannot be used. Build a "
+                  "storyboard for it, or select stills only.", len(footage))
+        return StageResult(False, 1, "footage needs a scene timeline",
+                           {"footage": [e["asset_id"] for e in footage]})
+    images_dir = pdir / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    used = []
+    for entry in entries:
+        staged = pdir / entry["staged_path"]
+        if not staged.is_file():
+            log.error("Selected media is missing from the project: %s", entry["staged_path"])
+            return StageResult(False, 1, "selected media is missing")
+        destination, _ = ingest(staged, images_dir)
+        used.append(str(destination.relative_to(pdir)))
+    images_prov = metadata.setdefault("provenance", {}).setdefault("images", {})
+    previous = sorted(images_prov.get("scene_images") or [])
+    images_prov.update({
+        "provider": OWNER_MEDIA_PROVIDER,
+        "model": None,
+        "notes": f"{len(used)} image(s) chosen by the owner from their own library",
+        "scene_images": sorted(used),
+        "owner_asset_ids": [entry["asset_id"] for entry in entries],
+    })
+    # The pictures changed, so an earlier judgement about different ones no
+    # longer applies. Never set to true here - that stays a person's claim.
+    if previous != sorted(used):
+        images_prov["production_grade"] = None
+    metadata.setdefault("status", {})["visuals"] = "OK"
+    save_metadata(pdir, metadata)
+    log.info("Visuals: %d image(s) from your own library; nothing generated", len(used))
+    return StageResult(True, 0, "owner media used for the visuals",
+                       {"images": used, "generated": 0})
+
+
 def run_visuals(video_id, prompt=None, negative=None, count=None, width=None,
                  height=None, seed=None, model=None, style=None, depicted=False):
     """Generate this project's images through the provider router.
@@ -1367,6 +1645,13 @@ def run_visuals(video_id, prompt=None, negative=None, count=None, width=None,
         spec_raw = json.loads(spec_path.read_text())
         metadata = json.loads(metadata_path.read_text())
         plan = (metadata.get("visual_plan") or {})
+
+        # A production whose pictures the owner chose has nothing to
+        # generate. This is the plate path's counterpart to run_scenes: the
+        # chosen stills become the image set the renderer cycles.
+        owner_visuals = ownermedia_mod.visuals(metadata)
+        if owner_visuals:
+            return _use_owner_plates(pdir, metadata, owner_visuals)
 
         prompt = prompt or plan.get("prompt")
         if not prompt:
@@ -1731,6 +2016,54 @@ def cmd_storyboard(args):
         force=args.force).exit_code
 
 
+OWNER_MEDIA_PROVIDER = "owner-media"
+
+
+def _apply_owner_visuals(scenes, assignment):
+    """Point each assigned scene at the owner's media. Returns their ids.
+
+    The scene keeps the storyboard's intent - its section, its prompt, its
+    dissolve - and only changes what the picture *is*. ``generation`` records
+    the selection instead of a provider job, so the scene's provenance still
+    names exactly where its image came from, and ``produces_depicted`` is
+    left unsaid: a machine cannot tell whether what the owner chose depicts
+    anything, and guessing would be the one claim this project never makes.
+    """
+    applied = []
+    for scene in scenes:
+        entry = assignment.get(scene["scene_id"])
+        if entry is None:
+            if ownermedia_mod.is_owner_scene(scene):
+                # Deselected since the last run: drop the stale picture so
+                # this scene is generated again rather than quietly keeping
+                # media the owner removed.
+                scene.pop("source", None)
+                scene["image"] = None
+                scene["generation"] = {
+                    k: v for k, v in (scene.get("generation") or {}).items()
+                    if k in ("request_digest", "prompt", "negative_prompt", "seed",
+                             "width", "height", "model", "style")}
+            continue
+        scene["image"] = entry["staged_path"]
+        scene["source"] = ownermedia_mod.scene_source(entry)
+        if (scene.get("motion") or {}).get("kind") and entry["kind"] == "video":
+            scene["motion"] = {**(scene.get("motion") or {}), "kind": "static"}
+        scene.setdefault("generation", {}).update({
+            # Traceable without pretending to be a generation: the id names
+            # the asset, and storyboard.validate only asks that a scene with
+            # an image can say where it came from.
+            "job_id": f"{OWNER_MEDIA_PROVIDER}:{entry['asset_id'][:16]}",
+            "provider": OWNER_MEDIA_PROVIDER,
+            "provider_job_id": None,
+            "generated_utc": entry.get("selected_utc"),
+            "owner_asset_id": entry["asset_id"],
+            "quality": None,
+        })
+        scene["generation"].pop("remote_state", None)
+        applied.append(scene["scene_id"])
+    return applied
+
+
 def run_scenes(video_id, force=False, depicted=False):
     """Generate (or reuse) one image per storyboard scene.
 
@@ -1765,15 +2098,30 @@ def run_scenes(video_id, force=False, depicted=False):
         scene_dir.mkdir(parents=True, exist_ok=True)
         quality_attempts = _scene_quality_attempts()
 
+        # What the owner chose from their own library comes first: a scene
+        # with footage or a photograph of theirs assigned to it is not a
+        # scene anything needs to generate. Scenes they left alone are
+        # generated exactly as before, so the two kinds mix in one edit.
+        owner_assignment = ownermedia_mod.assignment_for_scenes(metadata, board["scenes"])
+        owner_scenes = _apply_owner_visuals(board["scenes"], owner_assignment)
+
         generated, reused, failed, queued = 0, 0, [], []
         providers_used = set()
         any_abstract = False
+        if owner_scenes:
+            log.info("%d scene(s) use the owner's own media; %d to generate",
+                     len(owner_scenes), len(board["scenes"]) - len(owner_scenes))
+            providers_used.add(OWNER_MEDIA_PROVIDER)
         # Two scenes deliberately assigned the same environment share a
         # request digest, so the first render satisfies both. Serving the
         # second from this map (rather than from the job store a moment
         # later) keeps the "reused" count honest: it was one generation.
         generated_by_digest = {}
         for scene in board["scenes"]:
+            if ownermedia_mod.is_owner_scene(scene):
+                # A human put this picture here. `force` re-rolls what a
+                # provider made, never what the owner chose.
+                continue
             if scene.get("image") and not force:
                 reused += 1
                 continue
@@ -2333,6 +2681,12 @@ def _visual_blockers(pdir, metadata, images_provenance):
     if candidates is None:
         candidates = list_assets(pdir / "images", SUPPORTED_IMAGE_EXTENSIONS)
     for image in sorted(candidates):
+        if image.suffix.lower() not in SUPPORTED_IMAGE_EXTENSIONS:
+            # Owner footage, not a still: the procedural stamp and the
+            # flat-fill measurement are both tests of a generated plate and
+            # say nothing about a clip. The production-grade claim above is
+            # what this scene still has to pass.
+            continue
         kind, detail = make_visuals.classify(image)
         if kind in ("procedural", "flat"):
             offenders.append(f"{image.name} ({kind}: {detail})")
@@ -2397,6 +2751,15 @@ def _audio_blockers(pdir, metadata, audio_manifest):
                 f"{audio_prov.get('grade_notes') or 'a human listened and said so'}"]
     if claimed is True:
         return []
+    owner_audio = audio_prov.get("owner_media") or {}
+    if owner_audio:
+        # The track is the owner's own, not a synthesised stand-in, so the
+        # wording below would misdescribe the file. A person still has to
+        # say whether it is good enough - that judgement is never inferred.
+        return [
+            f"the audio uses your own {', '.join(sorted(owner_audio))} and nobody has "
+            "said yet whether it is good enough to publish: a human has to listen "
+            "and record the verdict"]
     if audio_prov.get("production_grade_capable") is False:
         direction = (metadata.get("audio_plan") or {}).get("direction") or {}
         chosen = direction.get("chosen") or {}
@@ -2417,6 +2780,7 @@ def gate_blockers(pdir, metadata, qc_status, qc_failures, has_thumbnail,
     which is precisely the failure this module now guards against.
     """
     blocking = _ingestion_problems(metadata)
+    blocking.extend(ownermedia_mod.verification_problems(metadata, pdir))
     if qc_status != "PASS":
         blocking.append(f"QC failed: {', '.join(qc_failures)}")
     title = metadata.get("selected_title") or ""
@@ -2673,7 +3037,8 @@ def set_archived(video_id, archived, actor, reason=""):
 # files (metadata.json, video_spec.json, storyboard.json) are deliberately
 # excluded: those are read models with their own endpoints, never raw
 # downloads, and nothing outside these five is a deliverable or evidence.
-ASSET_DIRS = ("output", "thumbnail", "images", "audio", "logs")
+ASSET_DIRS = ("output", "thumbnail", "images", "audio", "logs",
+              ownermedia_mod.STAGED_DIRNAME)
 
 
 def project_file_path(video_id, relative):
@@ -2842,11 +3207,22 @@ def project_assets(video_id):
             "archive": (_file_entry(pdir, archive_file)
                         if archive_file and archive_file.is_file() else None),
         }
+    # The owner's own media, as files a reviewer can open: what was chosen,
+    # for which stage, and whether the staged bytes are still the ones that
+    # were chosen. Served from owner-media/ like any other project asset.
+    owner_media = ownermedia_mod.summary(metadata)
+    for role in owner_media["roles"].values():
+        for entry in role["entries"]:
+            staged = pdir / entry["staged_path"]
+            entry["file"] = _file_entry(pdir, staged) if staged.is_file() else None
+    owner_media["problems"] = ownermedia_mod.verification_problems(metadata, pdir)
+
     return {
         "video_id": video_id,
         "video": video,
         "thumbnails": thumbnails,
         "images": images,
+        "owner_media": owner_media,
         "images_provenance": {
             "provider": images_prov.get("provider"),
             "model": images_prov.get("model"),
@@ -3290,7 +3666,7 @@ def holds_one_frame(concept):
 
 
 def run_produce(video_id, concept_id=None, duration=None, production_grade_visuals=None,
-                scenes=None):
+                scenes=None, image_source=None):
     """CONCEPT -> research -> creative -> images -> audio -> render -> QC -> package.
 
     Orchestration only: every stage below is the existing, independently
@@ -3311,6 +3687,8 @@ def run_produce(video_id, concept_id=None, duration=None, production_grade_visua
     calls them one at a time. An outer lock here would deadlock against
     them - fcntl locks are not reentrant within one process.
     """
+    if image_source not in {None, "automatic", "generated", "procedural"}:
+        return StageResult(False, 1, "Choose automatic, generated or procedural imagery")
     pdir = project_dir(video_id)
     if not pdir.exists():
         if not concept_id:
@@ -3340,6 +3718,12 @@ def run_produce(video_id, concept_id=None, duration=None, production_grade_visua
                 log.info("Length set to %.0fs; the scene plan will be rebuilt "
                          "for it.", float(duration))
 
+    if image_source is not None:
+        with project_lock(video_id):
+            metadata = json.loads((pdir / "metadata.json").read_text())
+            metadata.setdefault("visual_plan", {})["source_mode"] = image_source
+            save_metadata(pdir, metadata)
+
     log.info("=== Stage 2/6: research (subject facts if required; brief-driven "
              "competitor research if a brief exists) ===")
     result = run_research(video_id)
@@ -3353,15 +3737,20 @@ def run_produce(video_id, concept_id=None, duration=None, production_grade_visua
 
     metadata = json.loads((pdir / "metadata.json").read_text())
     use_scenes = scenes if scenes is not None else produce_uses_scenes(video_id, metadata)
+    source_mode = image_source or (metadata.get("visual_plan") or {}).get("source_mode", "automatic")
+    require_depicted = source_mode == "generated"
+    if source_mode == "automatic":
+        import worker
+        require_depicted = worker.remote_capable()
     if use_scenes:
         log.info("=== Stage 4/6: images (storyboard -> one image per scene) ===")
         result = run_storyboard(video_id)
         if not result.ok:
             return result
-        result = run_scenes(video_id)
+        result = run_scenes(video_id, depicted=True) if require_depicted else run_scenes(video_id)
     else:
         log.info("=== Stage 4/6: images (single plate set) ===")
-        result = run_visuals(video_id)
+        result = run_visuals(video_id, depicted=True) if require_depicted else run_visuals(video_id)
     if not result.ok:
         return result
 
@@ -3537,6 +3926,21 @@ def main():
         "--allow-unverified-audio", action="store_true",
         help="private review bootstrap only; keep the rights gate blocked until the track is verified")
     p_import.set_defaults(func=cmd_import_media)
+
+    p_owner = sub.add_parser(
+        "owner-media",
+        help="use your own cataloged media for a production's visuals or audio")
+    p_owner.add_argument("video_id")
+    p_owner.add_argument("--catalog", type=Path, default=media_mod.DEFAULT_CATALOG)
+    for role in ownermedia_mod.ROLES:
+        p_owner.add_argument(f"--{role}", action="append", metavar="ASSET_ID",
+                             help=f"catalog asset for {ownermedia_mod.ROLE_LABELS[role]}; "
+                                  f"repeat in the order it should be used")
+        p_owner.add_argument(f"--clear-{role}", action="store_true",
+                             help=f"stop using owner media for {ownermedia_mod.ROLE_LABELS[role]}")
+    p_owner.add_argument("--actor", required=True,
+                         help="who is choosing this media (a selection is attributable)")
+    p_owner.set_defaults(func=cmd_owner_media)
 
     p_init = sub.add_parser("init", help="create a project from a folder of images + an audio file")
     p_init.add_argument("video_id")

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getProject, getProjectStatus } from "../../api/projects";
 import { listRuns } from "../../api/pipeline";
@@ -10,6 +10,9 @@ import { StageActionButton } from "../../components/StageActionButton";
 import { PipelineStageGraph } from "../../components/PipelineStageGraph";
 import { DeliverablePanel } from "../../components/DeliverablePanel";
 import { AssetsPanel } from "../../components/AssetsPanel";
+import { OwnMediaPanel } from "../../components/OwnMediaPanel";
+import { ReviewPanel } from "../../components/ReviewPanel";
+import { DiscoverMedia } from "../../components/DiscoverMedia";
 import { ResearchPanel } from "../../components/ResearchPanel";
 import { ResearchInfluencePanel } from "../../components/ResearchInfluencePanel";
 import { DeleteProduction } from "../../components/DeleteProduction";
@@ -48,9 +51,13 @@ STAGE_LABEL.produce = "Produce";
 export function WorkspacePage() {
   const { videoId } = useParams<{ videoId: string }>();
   const queryClient = useQueryClient();
+  const [search, setSearch] = useSearchParams();
+  const steps = ["Goal", "Research", "Creative direction", "Media", "Produce", "Review", "Finished video"];
+  const step = steps.includes(search.get("step") ?? "") ? search.get("step")! : "Produce";
   // null = automatic (scripts.project.produce_uses_scenes decides);
   // true/false = the operator's explicit override, sent as `scenes`.
   const [scenesOverride, setScenesOverride] = useState<boolean | null>(null);
+  const [imageSource, setImageSource] = useState<"automatic" | "generated" | "procedural">("automatic");
   const [showLog, setShowLog] = useState(false);
 
   const projectQuery = useQuery({
@@ -155,6 +162,7 @@ export function WorkspacePage() {
           assets={assets}
           status={status}
           runs={runsQuery.data}
+          compact
         />
       )}
 
@@ -168,23 +176,24 @@ export function WorkspacePage() {
         />
       )}
 
+      <nav className={styles.steps} aria-label="Production steps">{steps.map((label, index) => <button key={label} type="button" aria-current={step === label ? "step" : undefined} className={`${styles.step} ${step === label ? styles.selectedStep : ""}`} onClick={() => setSearch({ step: label })}><span>{String(index + 1).padStart(2, "0")}</span>{label}</button>)}</nav>
       {projectQuery.isLoading ? (
         <SkeletonRows count={5} />
       ) : projectQuery.isError ? null : (
         <div className={styles.workstation}>
           {/* ---- Main creative canvas ---- */}
           <div className={styles.canvasCol}>
-            <Card padded={false} className={styles.canvasCard}>
+            {(step === "Produce" || step === "Finished video") && <Card padded={false} className={styles.canvasCard}>
               <div className={styles.canvasHead}>
                 <CardHeader
                   eyebrow="Deliverable"
-                  title={assets?.video ? "Current render" : assets?.images.length ? "Generated imagery" : "Nothing rendered yet"}
+                  title={assets?.video ? "Your film, coming to life" : assets?.images.length ? "Production imagery" : "Room for your vision"}
                   description={
                     assets?.video
-                      ? `${assets.video.path} · rendered ${formatDateTime(assets.video.modified_utc)}`
+                      ? `Latest preview · ${formatDateTime(assets.video.modified_utc)}`
                       : assets?.images.length
-                        ? `${assets.images.length} image${assets.images.length === 1 ? "" : "s"} on disk; the render follows Assemble & Render.`
-                        : "Run Produce to generate imagery and audio, then assemble and render the deliverable."
+                        ? `${assets.images.length} images ready to shape your film.`
+                        : "Choose your media or let the creative direction guide production."
                   }
                 />
               </div>
@@ -196,13 +205,13 @@ export function WorkspacePage() {
                   <EmptyState
                     icon={<FilmIcon width={24} height={24} />}
                     title="No media yet"
-                    description="Imagery, audio and the render appear here as the pipeline produces them. Start with Produce."
+                    description="Your pictures, sound and finished film will appear here. Choose Produce to bring them together."
                   />
                 ))}
               </div>
-            </Card>
+            </Card>}
 
-            <Card>
+            {step === "Produce" && <details className={styles.advanced}><summary>Production details & recovery</summary><Card>
               <CardHeader
                 eyebrow="Pipeline"
                 title={currentStage ? `Current stage: ${currentStage}` : "Pipeline"}
@@ -220,9 +229,9 @@ export function WorkspacePage() {
               {runsQuery.data && (
                 <PipelineStageGraph videoId={videoId} runs={runsQuery.data} projectBusy={busy} diskStatus={project?.status ?? undefined} />
               )}
-            </Card>
+            </Card></details>}
 
-            <Card>
+            {["Goal", "Research", "Creative direction"].includes(step) && <Card>
               <CardHeader
                 eyebrow="Research"
                 title="Research brief & findings"
@@ -243,26 +252,43 @@ export function WorkspacePage() {
                 disabled={busy}
                 disabledReason="Another operation is already in progress for this project."
               />
-            </Card>
+            </Card>}
+            {step === "Creative direction" && <Card><CardHeader eyebrow="Make it yours" title="Develop the creative direction" description="Your brief and sourced findings guide the writing, atmosphere and pacing." actions={<StageActionButton videoId={videoId} stage="creative" label="Develop creative direction" params={{ force: true }} disabled={busy} disabledReason="Wait for the current operation to finish." />} /><StageActionButton videoId={videoId} stage="storyboard" label="Build storyboard" params={{ force: true }} disabled={busy} disabledReason="Wait for the current operation to finish." /></Card>}
 
-            <Card>
+            {["Research", "Creative direction"].includes(step) && <Card>
               <CardHeader
                 eyebrow="Research influence"
                 title="What the research changed"
                 description="Every production parameter sourced findings asked for, the sentences and sources behind it, and whether this build actually applied it."
               />
               <ResearchInfluencePanel videoId={videoId} />
-            </Card>
+            </Card>}
 
-            <Card>
+            {step === "Media" && <Card>
               <CardHeader
-                eyebrow="Assets"
-                title="Generated assets"
+                eyebrow="Picture & sound"
+                title="Choose the feeling"
+                actions={<Link to={`/system/image-lab?project=${encodeURIComponent(videoId)}`}>Create images ↗</Link>}
+                description="Browse your library, preview it, and assign it to the shots or to a sound layer. Anything you leave unassigned is generated as before."
+              />
+              <OwnMediaPanel
+                videoId={videoId}
+                disabled={busy}
+                disabledReason="Another operation is already in progress for this project."
+              />
+              <details className={styles.advanced}><summary>Discover media for this film</summary><DiscoverMedia initialQuery={project?.experiment?.goal_text || project?.selected_title || ""} /></details>
+            </Card>}
+
+            {["Media", "Creative direction"].includes(step) && <Card>
+              <CardHeader
+                eyebrow="In this production"
+                title="Pictures, sound & storyboard"
                 description="Images with their scene lineage and prompts, the composed audio and its licences, the storyboard plan, and run logs."
                 actions={<ImageIcon />}
               />
               <AssetsPanel videoId={videoId} />
-            </Card>
+            </Card>}
+            {step === "Review" && <ReviewPanel videoId={videoId} />}
           </div>
 
           {/* ---- Contextual inspector ---- */}
@@ -284,12 +310,12 @@ export function WorkspacePage() {
                 )}
                 {isActive(focus) && (
                   <p className={styles.jobHint}>
-                    Stages run in the background worker; this page polls every few seconds and refreshes the deliverable when the job ends.
+                    Your production is taking shape. You can keep browsing; the preview updates when it is ready.
                   </p>
                 )}
                 {focus.status === "FAILED" && (
                   <p className={styles.jobHint}>
-                    Check the log below for the failing command, fix the cause, then re-run the stage. A stage that already has its outputs is reused, not regenerated.
+                    Your existing work is saved. Review the issue below, then retry the operation.
                   </p>
                 )}
                 {focus.log_tail && (
@@ -304,7 +330,7 @@ export function WorkspacePage() {
             )}
 
             {(gpuQuery.data ?? []).length > 0 && (
-              <Card className={styles.gpuCard}>
+              <details className={styles.advanced}><summary>{gpuOpen ? "Creating images" : "Image generation history"}</summary><Card className={styles.gpuCard}>
                 <CardHeader
                   eyebrow="GPU worker"
                   title={gpuOpen ? `${gpuOpen} render${gpuOpen === 1 ? "" : "s"} on the queue` : gpuFailed.length ? "Remote render failed" : "Remote renders landed"}
@@ -317,7 +343,7 @@ export function WorkspacePage() {
                   </div>
                 )}
                 <GpuJobsPanel videoId={videoId} compact />
-              </Card>
+              </Card></details>
             )}
 
             <Card id="blockers">
@@ -330,7 +356,7 @@ export function WorkspacePage() {
                       : "Clear to review"
                     : "Loading…"
                 }
-                description="Recomputed live from the project's current disk state - never cached."
+                description="Resolve these before approving the finished video."
               />
               {statusQuery.isError && (
                 <ErrorState compact title="Failed to load status" description={(statusQuery.error as Error).message} />
@@ -342,9 +368,11 @@ export function WorkspacePage() {
               <CardHeader
                 eyebrow="Actions"
                 title="Produce"
-                description="Research → creative → images → audio → assemble & render in one pass, reusing whatever each stage already has."
+                description="Bring your direction and selected media together into a finished film. Completed work is reused."
               />
-              <label className={styles.produceOption}>
+              <label className={styles.produceOption}><span className={styles.produceLabel}>Visual source</span><select className={styles.select} aria-label="Visual source" value={imageSource} onChange={e => setImageSource(e.target.value as typeof imageSource)}><option value="automatic">Automatic</option><option value="generated">AI-generated imagery</option><option value="procedural">Abstract / test imagery</option></select></label>
+              <p className={styles.jobHint}>Your selected library media takes priority. AI imagery waits for a capable creator computer; it is never replaced with abstract placeholders.</p>
+              <details className={styles.advanced}><summary>Advanced image planning</summary><label className={styles.produceOption}>
                 <span className={styles.produceLabel}>Image mode</span>
                 <select
                   value={scenesOverride === null ? "auto" : scenesOverride ? "scenes" : "plates"}
@@ -357,13 +385,13 @@ export function WorkspacePage() {
                   <option value="scenes">Storyboard scenes</option>
                   <option value="plates">Single plate set</option>
                 </select>
-              </label>
+              </label></details>
               <div className={styles.produceAction}>
                 <StageActionButton
                   videoId={videoId}
                   stage="produce"
                   label={waitingForGpu ? "Resume produce" : "Produce"}
-                  params={scenesOverride === null ? {} : { scenes: scenesOverride }}
+                  params={{ image_source: imageSource, ...(scenesOverride === null ? {} : { scenes: scenesOverride }) }}
                   disabled={busy}
                   disabledReason="Another operation is already in progress for this project."
                 />
@@ -411,14 +439,14 @@ export function WorkspacePage() {
               </Card>
             )}
 
-            <Card>
+            <details className={styles.advanced}><summary>Manage production</summary><Card id="danger-zone">
               <CardHeader eyebrow="Danger zone" title="Delete production" />
               <DeleteProduction
                 videoId={videoId}
-                disabled={busy}
+                disabled={busy || gpuOpen > 0}
                 disabledReason="Wait for the current operation to finish."
               />
-            </Card>
+            </Card></details>
 
           </aside>
         </div>

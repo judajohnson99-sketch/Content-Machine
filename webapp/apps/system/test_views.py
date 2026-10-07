@@ -147,3 +147,18 @@ class TestGpuJobAssetView:
     def test_unauthenticated_request_is_rejected(self):
         response = APIClient().get("/api/v1/system/gpu-jobs/abc/assets/0/")
         assert response.status_code == 403
+
+
+@pytest.mark.django_db
+class TestGpuJobAssetSaveView:
+    def test_saves_a_completed_result_through_the_shared_catalog_service(self, client):
+        fake = {"id": "a" * 64, "origin": "generated"}
+        with patch("apps.system.views.workers_service.save_asset", return_value=fake) as saver:
+            response = client.post("/api/v1/system/gpu-jobs/abc/assets/0/save/", {}, format="json")
+        assert response.status_code == 200
+        assert response.json() == {"asset": fake, "id": "a" * 64}
+        saver.assert_called_once_with("abc", 0)
+
+    def test_unauthenticated_request_is_rejected(self):
+        response = APIClient().post("/api/v1/system/gpu-jobs/abc/assets/0/save/", {}, format="json")
+        assert response.status_code == 403

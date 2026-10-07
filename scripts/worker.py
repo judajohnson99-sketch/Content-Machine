@@ -111,7 +111,7 @@ WAITING_FOR_CAPABLE_WORKER = "WAITING_FOR_CAPABLE_WORKER"
 HEARTBEAT_STATUS_KEYS = frozenset({
     "comfyui", "comfyui_reachable", "gpu", "vram_mb", "vram_total_mb",
     "vram_free_mb", "checkpoints", "model", "workflow", "agent_version",
-    "current_job", "host", "detail"})
+    "current_job", "host", "detail", "media_sync", "media_detail"})
 
 # Readiness of depicted imagery through the remote GPU, derived on every
 # read from the registry and the queue - never stored, like worker state.
@@ -538,6 +538,8 @@ def job_view(job, workers=None, now=None):
     lease = job.get("lease") or {}
     last = (job.get("transitions") or [{}])[-1]
     return {
+        "request": {key: (job.get("request") or {}).get(key)
+                    for key in ("prompt", "negative_prompt", "width", "height", "model", "seed")},
         "provider_job_id": job.get("provider_job_id"),
         "last_transition": {"at": last.get("at"), "to": last.get("to"),
                             "detail": last.get("detail")},
@@ -1060,6 +1062,13 @@ def complete(job_id, worker_id, lease_id, manifest, provider_job_id=None,
         if job["state"] != UPLOADING:
             _transition(job, UPLOADING, f"worker:{worker_id}",
                         "completion reported")
+        expected_count = int((job.get("request") or {}).get("count") or 1)
+        if not isinstance(manifest, list) or len(manifest) != expected_count:
+            detail = (f"The computer returned {len(manifest) if isinstance(manifest, list) else 0} "
+                      f"of {expected_count} requested images. Update the computer companion, then retry.")
+            _defer_or_fail(job, f"worker:{worker_id}", detail, permanent=True)
+            _save_job(job)
+            raise WorkerError(detail, 409)
         verified = _verify_manifest(job_id, manifest)
         out_dir = Path(job["out_dir"])
         if not out_dir.resolve().is_relative_to(ROOT):
