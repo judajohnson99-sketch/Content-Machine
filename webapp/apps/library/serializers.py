@@ -68,9 +68,11 @@ class OwnerMediaSelectionSerializer(serializers.Serializer):
             self.fields[role] = serializers.ListField(
                 child=serializers.CharField(min_length=64, max_length=64),
                 required=False)
+        self.fields["visuals_mode"] = serializers.ChoiceField(
+            choices=ownermedia.VISUAL_MODES, required=False)
 
     def validate(self, attrs):
-        if not any(role in attrs for role in ownermedia.ROLES):
+        if not any(role in attrs for role in (*ownermedia.ROLES, "visuals_mode")):
             raise serializers.ValidationError(
                 f"name at least one role to set: {', '.join(ownermedia.ROLES)}")
         return attrs

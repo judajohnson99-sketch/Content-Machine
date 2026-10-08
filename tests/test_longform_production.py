@@ -279,6 +279,20 @@ class GoalDerivationTest(unittest.TestCase):
 
     GOAL = "Create a 2-hour psychedelic sleep experience with rain and ambient music"
 
+    def test_an_unreachable_model_falls_back_to_a_rules_plan(self):
+        def broken(prompt):
+            raise RuntimeError("no Python interpreter has the anthropic SDK installed")
+        plan = goal_mod.derive_plan(
+            "A 2.5 hour sleep video: gentle rain on the window of a misty forest "
+            "cabin at night, soft ambient music and rain ambience, no voice", llm=broken)
+        self.assertTrue(plan["derived_by"].startswith("rules"))
+        self.assertEqual(plan["minutes"], 150)
+        self.assertEqual(plan["niche"], "adult_sleep")
+        self.assertEqual(plan["narration"], "silent")
+        self.assertTrue(plan["needs_depicted_imagery"])
+        self.assertIn("rain", plan["audio_concept"])
+        self.assertIn("forest", plan["visual_concept"])
+
     def test_the_length_is_read_from_the_words(self):
         self.assertEqual(goal_mod.requested_minutes(self.GOAL), 120.0)
         self.assertEqual(goal_mod.requested_minutes("a 30-minute study session"), 30.0)

@@ -89,9 +89,14 @@ export interface OwnerMediaRoleView {
   entries: OwnerMediaEntry[];
 }
 
+export type OwnerVisualsMode = "all" | "mixed";
+
 export interface OwnerMediaSelection {
   updated_utc: string | null;
   actor: string | null;
+  // "all": chosen visuals fill every shot (cycled). "mixed": each is placed
+  // once, spread evenly, and the remaining shots are generated.
+  visuals_mode?: OwnerVisualsMode;
   roles: Record<OwnerMediaRole, OwnerMediaRoleView>;
   // Selected media whose staged bytes are no longer what was chosen. These
   // block review; they are not advisory.

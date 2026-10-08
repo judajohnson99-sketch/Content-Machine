@@ -354,13 +354,82 @@ def derive_plan(goal, llm=None, minutes=None):
             return creative_mod._call_llm(
                 os.environ.get("LLM_PROVIDER", "anthropic").lower(), text)
 
-    text = llm(prompt)
+    try:
+        text = llm(prompt)
+    except Exception as exc:  # noqa: BLE001 - no SDK, no credit, quota, network
+        # A production must still be startable from the dashboard when no
+        # model can be reached; the plan says plainly how it was made.
+        log.warning("goal model unavailable (%s); deriving the plan by rules", exc)
+        plan = sanitize_plan(rules_plan(goal), goal, minutes=stated)
+        plan["derived_by"] = f"rules (model unavailable: {str(exc)[:160]})"
+        return plan
     try:
         import creative as creative_mod
         reply = creative_mod._extract_json(text)
     except Exception as exc:  # noqa: BLE001 - reported, never guessed around
         raise GoalError(f"goal derivation reply was not usable JSON: {exc}") from exc
-    return sanitize_plan(reply, goal, minutes=stated)
+    plan = sanitize_plan(reply, goal, minutes=stated)
+    plan["derived_by"] = "model"
+    return plan
+
+
+# Keyword tables for rules_plan. Ordered: the first matching niche wins.
+_RULE_NICHES = (
+    (("sleep", "insomnia", "bedtime", "night"), "adult_sleep"),
+    (("meditat", "mindful", "breath"), "meditation"),
+    (("study", "focus", "work", "concentrat"), "focus_ambience"),
+    (("relax", "calm", "ambient", "ambience", "chill"), "relaxation"),
+    (("kid", "lullaby", "baby", "child"), "kids_sleep"),
+)
+_RULE_SCENERY = ("forest", "cabin", "window", "ocean", "sea", "beach", "lake", "river",
+                 "mountain", "city", "street", "library", "garden", "room", "fire",
+                 "fireplace", "snow", "desert", "space", "nebula", "train", "cafe",
+                 "castle", "temple", "meadow", "field", "island", "waterfall", "jungle")
+_RULE_SOUNDS = ("rain", "thunder", "wind", "waves", "ocean", "fire", "crackling",
+                "birds", "owls", "crickets", "stream", "river", "brown noise",
+                "white noise", "pink noise", "music", "piano", "pad", "drone")
+_RULE_FACTUAL = ("history", "documentary", "facts", "explain", "story of", "science")
+
+
+def rules_plan(goal):
+    """A deterministic plan read from the goal's own words, no model.
+
+    Used when no language model is reachable. It invents nothing: the
+    visual and audio concepts are the goal's own scenery and sound words,
+    and everything it cannot read is left to research, which runs for
+    every production regardless.
+    """
+    text = goal.lower()
+    niche = next((n for words, n in _RULE_NICHES if any(w in text for w in words)),
+                 "relaxation")
+    narrated = (any(w in text for w in ("narrat", "voice", "story", "guided", "told"))
+                and not re.search(r"\bno (voice|narration)\b|without (voice|narration)", text))
+    scenery = [w for w in _RULE_SCENERY if re.search(rf"\b{w}", text)]
+    sounds = [w for w in _RULE_SOUNDS if w in text]
+    factual = any(w in text for w in _RULE_FACTUAL)
+    headline = re.sub(r"^(a|an)\s+", "", goal.split(":")[-1].strip(), flags=re.I)
+    headline = headline[:1].upper() + headline[1:]
+    return {
+        "title_pattern": headline[:70],
+        "tagline": goal[:120],
+        "niche": niche,
+        "content_format": goal,
+        "target_audience": f"viewers looking for {niche.replace('_', ' ')} content",
+        "creative_intent": goal,
+        "visual_concept": (f"Slow, calm shots of {', '.join(scenery)}, as described: {goal}"
+                           if scenery else f"Slow, calm imagery for: {goal}"),
+        "audio_concept": (f"{', '.join(sounds)}, mixed softly and continuously"
+                          if sounds else "a soft ambient bed with no sudden sounds"),
+        "shape": "narrated_story" if narrated else (
+            "lullaby" if niche == "kids_sleep" else "ambient_motion"),
+        "narration": "narrated" if narrated else "silent",
+        "needs_depicted_imagery": bool(scenery),
+        "needs_factual_research": factual,
+        "likes": (scenery + sounds)[:5],
+        "dislikes": ["sudden noises", "bright flashes"],
+        "research_topics": list(research_mod.DEFAULT_RESEARCH_TOPICS),
+        "assumptions": ["That the goal's own words describe what its audience wants."],
+    }
 
 
 def _mock_plan(goal):
@@ -450,6 +519,9 @@ def derive_production(goal, video_id=None, minutes=None, llm=None,
         full_seconds or spec_seconds(pdir))
     metadata["experiment"]["is_excerpt"] = bool(
         excerpt_seconds and full_seconds and excerpt_seconds < full_seconds)
+    # The length that exists now, so a reader can tell excerpt from full.
+    metadata["duration_seconds"] = spec_seconds(pdir)
+    metadata["experiment"]["derived_by"] = plan.get("derived_by", "model")
     metadata["tagline"] = plan["tagline"]
     (pdir / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
 

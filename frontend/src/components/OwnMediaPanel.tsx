@@ -24,6 +24,7 @@ import {
   type MediaKind,
   type OwnerMediaEntry,
   type OwnerMediaRole,
+  type OwnerVisualsMode,
 } from "../types/library";
 import styles from "./OwnMediaPanel.module.css";
 
@@ -74,6 +75,13 @@ export function OwnMediaPanel({ videoId, disabled, disabledReason }: Props) {
   const selectionQuery = useQuery({
     queryKey: ["owner-media", videoId],
     queryFn: () => getOwnerMedia(videoId),
+  });
+  const modeMutation = useMutation({
+    mutationFn: (mode: OwnerVisualsMode) => setOwnerMedia(videoId, { visuals_mode: mode }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["owner-media", videoId] });
+      queryClient.invalidateQueries({ queryKey: ["project-status", videoId] });
+    },
   });
 
   if (selectionQuery.isLoading) return <InlineSpinner label="Loading your media…" />;
@@ -129,6 +137,21 @@ export function OwnMediaPanel({ videoId, disabled, disabledReason }: Props) {
             ))}
           </div>
         </div>
+      )}
+
+      {(selection.roles.visuals?.entries.length ?? 0) > 0 && (
+        <label className={styles.field}>
+          <span>How your visuals are used</span>
+          <select
+            aria-label="How your visuals are used"
+            value={selection.visuals_mode ?? "all"}
+            disabled={disabled || modeMutation.isPending}
+            onChange={(e) => modeMutation.mutate(e.target.value as OwnerVisualsMode)}
+          >
+            <option value="all">Every shot uses my visuals</option>
+            <option value="mixed">Mix them in among generated shots</option>
+          </select>
+        </label>
       )}
 
       <div className={styles.roles}>

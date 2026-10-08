@@ -440,3 +440,34 @@ class OwnerMediaProductionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MixedVisualsModeTest(unittest.TestCase):
+    """'mixed' places each chosen picture once, spread out; the rest of the
+    shots stay with the generators. 'all' (the default) cycles them."""
+
+    def scenes(self, n):
+        return [{"scene_id": f"s{i:02d}"} for i in range(1, n + 1)]
+
+    def metadata(self, mode=None, count=2):
+        owner = {"visuals": [{"asset_id": f"a{i}"} for i in range(count)]}
+        if mode:
+            owner["visuals_mode"] = mode
+        return {"owner_media": owner}
+
+    def test_all_is_the_default_and_fills_every_shot(self):
+        assignment = ownermedia.assignment_for_scenes(self.metadata(), self.scenes(10))
+        self.assertEqual(len(assignment), 10)
+
+    def test_mixed_uses_each_picture_once_spread_evenly(self):
+        assignment = ownermedia.assignment_for_scenes(self.metadata("mixed"), self.scenes(10))
+        self.assertEqual(sorted(assignment), ["s03", "s08"])
+        self.assertEqual([e["asset_id"] for e in assignment.values()], ["a0", "a1"])
+
+    def test_unknown_mode_reads_as_all(self):
+        assignment = ownermedia.assignment_for_scenes(self.metadata("bogus"), self.scenes(4))
+        self.assertEqual(len(assignment), 4)
+
+    def test_merge_keeps_the_mode_when_an_update_omits_it(self):
+        merged = ownermedia.merge_selection({"visuals_mode": "mixed"}, {"music": []})
+        self.assertEqual(merged["visuals_mode"], "mixed")

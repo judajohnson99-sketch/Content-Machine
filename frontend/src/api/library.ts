@@ -14,6 +14,7 @@ export function suggestMedia(project: string, role: OwnerMediaRole): Promise<{ q
   return apiGet(`/library/suggestions/?${new URLSearchParams({ project, role })}`);
 }
 import type {
+  OwnerVisualsMode,
   LibraryAsset,
   LibraryListing,
   LibraryScanReport,
@@ -73,7 +74,7 @@ export function getOwnerMedia(videoId: string): Promise<OwnerMediaSelection> {
 // with an empty list hands that stage back to the generators.
 export function setOwnerMedia(
   videoId: string,
-  assignments: Partial<Record<OwnerMediaRole, string[]>>,
+  assignments: Partial<Record<OwnerMediaRole, string[]>> & { visuals_mode?: OwnerVisualsMode },
 ): Promise<OwnerMediaSaveResult> {
   return apiPut<OwnerMediaSaveResult>(`/projects/${videoId}/owner-media/`, assignments);
 }

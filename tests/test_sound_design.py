@@ -275,3 +275,23 @@ class TestDesignPass(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RulesDesignFallbackTest(unittest.TestCase):
+    def test_unreachable_model_designs_layers_from_the_concepts_words(self):
+        concept = {"audio_concept": "rain, soft ambient music",
+                   "visual_concept": "a misty forest cabin at night",
+                   "niche": "adult_sleep", "content_format": "sleep video"}
+        old = os.environ.pop("TEST_MODE", None)
+        try:
+            def broken(prompt):
+                raise RuntimeError("no credit")
+            design = sound_design.design_soundscape(concept, 9000, llm=broken)
+        finally:
+            if old is not None:
+                os.environ["TEST_MODE"] = old
+        elements = [a["element"] for a in design["ambience"]]
+        self.assertIn("rain_on_glass", elements)
+        self.assertIn("cabin_hum", elements)
+        self.assertEqual(design["listening_context"], "background_sleep")
+        self.assertEqual(design["detail"], [])

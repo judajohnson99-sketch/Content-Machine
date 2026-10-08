@@ -821,6 +821,7 @@ AMBIENCE_ELEMENTS = {
     "distant_traffic": ("brown", 0.70, "highpass=f=40,lowpass=f=420",    (0.021, 0.30)),
     "cabin_hum":       ("brown", 0.50, "highpass=f=45,lowpass=f=190",    (0.013, 0.12)),
     "snowfall":        ("pink",  0.40, "highpass=f=900,lowpass=f=5200",  (0.037, 0.35)),
+    "rain_on_glass":   ("pink",  0.55, "highpass=f=500,lowpass=f=7000",  (0.060, 0.20)),
 }
 
 

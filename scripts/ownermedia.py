@@ -40,6 +40,10 @@ ROOT = Path(__file__).resolve().parent.parent
 # audio plan. Deliberately a small closed set: a role is a promise about
 # where the asset ends up, and an open-ended one could not be kept.
 ROLES = ("visuals", "music", "ambience", "sfx")
+# How chosen visuals meet a storyboard: "all" deals them across every shot
+# (cycled); "mixed" places each once, spread evenly, and leaves the other
+# shots to the generators - your photographs among generated scenes.
+VISUAL_MODES = ("all", "mixed")
 ROLE_KINDS = {
     "visuals": ("image", "video"),
     "music": ("audio",),
@@ -287,7 +291,7 @@ def build_selection(pdir, assignments, *, actor, catalog=media.DEFAULT_CATALOG):
     """
     if not isinstance(assignments, dict):
         raise OwnerMediaError("assignments must be an object of role -> asset ids")
-    unknown = sorted(set(assignments) - set(ROLES))
+    unknown = sorted(set(assignments) - set(ROLES) - {"visuals_mode"})
     if unknown:
         raise OwnerMediaError(f"unknown role(s): {', '.join(unknown)}; "
                               f"roles are {', '.join(ROLES)}")
@@ -296,6 +300,10 @@ def build_selection(pdir, assignments, *, actor, catalog=media.DEFAULT_CATALOG):
 
     catalog_assets = media.load(catalog)["assets"]
     selection = {}
+    if "visuals_mode" in assignments:
+        if assignments["visuals_mode"] not in VISUAL_MODES:
+            raise OwnerMediaError(f"visuals_mode must be one of {', '.join(VISUAL_MODES)}")
+        selection["visuals_mode"] = assignments["visuals_mode"]
     for role in ROLES:
         identities = assignments.get(role)
         if identities is None:
@@ -338,6 +346,8 @@ def merge_selection(existing, update):
     for role in ROLES:
         if role in update:
             merged[role] = list(update[role])
+    merged["visuals_mode"] = update.get("visuals_mode") or (existing or {}).get(
+        "visuals_mode") or "all"
     return {**{k: v for k, v in update.items() if k not in ROLES}, **merged}
 
 
@@ -349,6 +359,8 @@ def selection_of(metadata):
         "updated_utc": stored.get("updated_utc"),
         "actor": stored.get("actor"),
         "catalog": stored.get("catalog"),
+        "visuals_mode": stored.get("visuals_mode") if stored.get("visuals_mode")
+        in VISUAL_MODES else "all",
         **{role: list(stored.get(role) or []) for role in ROLES},
     }
 
@@ -391,6 +403,12 @@ def assignment_for_scenes(metadata, scenes):
     if not pool:
         return assignment
     open_scenes = [sid for sid in scene_ids if sid not in assignment]
+    if selection_of(metadata)["visuals_mode"] == "mixed" and len(pool) < len(open_scenes):
+        # Each chosen picture once, spread evenly; the rest are generated.
+        step = len(open_scenes) / len(pool)
+        for index, entry in enumerate(pool):
+            assignment[open_scenes[int(index * step + step / 2)]] = entry
+        return assignment
     for index, scene_id in enumerate(open_scenes):
         assignment[scene_id] = pool[index % len(pool)]
     return assignment
@@ -542,6 +560,7 @@ def summary(metadata):
     return {
         "updated_utc": selection["updated_utc"],
         "actor": selection["actor"],
+        "visuals_mode": selection["visuals_mode"],
         "roles": {
             role: {
                 "label": ROLE_LABELS[role],

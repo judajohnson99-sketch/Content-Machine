@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -517,3 +518,39 @@ class ExtractJsonTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RulesFallbackTest(unittest.TestCase):
+    """No model reachable (no SDK, no credit): un-narrated work still gets a
+    brief and a usable direction; narration is never invented."""
+
+    CONCEPT = {"id": "c", "working_title_pattern": "Rain on a Misty Forest Cabin",
+               "visual_concept": "a misty forest cabin window at night in rain",
+               "audio_concept": "rain, soft pads", "audio_source_requirement":
+               "synthesisable_now", "content_format": "ambient sleep video"}
+
+    def setUp(self):
+        self._mode = os.environ.pop("TEST_MODE", None)
+        self.addCleanup(lambda: self._mode is not None
+                        and os.environ.__setitem__("TEST_MODE", self._mode))
+        patcher = unittest.mock.patch.object(
+            creative, "_call_llm", side_effect=creative.CreativeError("no credit"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_brief_falls_back_to_rules_for_unnarrated_video(self):
+        brief = creative.generate_brief(self.CONCEPT, 9000)
+        self.assertEqual(brief["narration_script"], "")
+        self.assertIn("2.5 Hours", brief["title"])
+        self.assertTrue(brief["written_by"].startswith("rules"))
+
+    def test_narrated_video_still_fails_without_a_model(self):
+        with self.assertRaises(creative.CreativeError):
+            creative.generate_brief(dict(self.CONCEPT, audio_source_requirement="tts_required"), 600)
+
+    def test_direction_falls_back_to_distinct_vantages(self):
+        direction = creative.generate_visual_direction(self.CONCEPT, 20)
+        self.assertTrue(creative.vd.is_usable(direction))
+        descriptions = [e["description"] for e in direction["environments"]]
+        self.assertGreaterEqual(len(set(descriptions)), 4)
+        self.assertTrue(all("cabin" in d and "rain" in d for d in descriptions))

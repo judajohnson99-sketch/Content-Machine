@@ -562,6 +562,8 @@ def set_owner_media(video_id, assignments, actor, catalog=media_mod.DEFAULT_CATA
         # used your footage" when it did not.
         changed = [role for role in ownermedia_mod.ROLES
                    if _role_asset_ids(previous, role) != _role_asset_ids(selection, role)]
+        if previous.get("visuals_mode") != selection.get("visuals_mode") and selection["visuals"]:
+            changed.append("visuals")
         if "visuals" in changed:
             metadata.setdefault("status", {})[_visual_stage(video_id)] = "PENDING"
         if {"music", "ambience", "sfx"} & set(changed):
@@ -1490,8 +1492,11 @@ def run_audio(video_id, duration=None):
             log.error("Providers available: %s", ", ".join(sorted(audio_mod.PROVIDERS)))
             return StageResult(False, 1, "no audio plan to build")
 
-        # Audio length follows the video unless the plan overrides it.
-        plan.setdefault("target_seconds", spec_raw.get("duration_seconds"))
+        # Audio length follows the video. A length stored in the plan was
+        # the video's length when the plan was written; once the video is
+        # re-targeted (an excerpt produced at full length) it is stale, and
+        # a track of the old length under the new timeline fails QC.
+        plan["target_seconds"] = spec_raw.get("duration_seconds") or plan.get("target_seconds")
         if duration:
             plan["target_seconds"] = float(duration)
 
@@ -3702,6 +3707,17 @@ def set_project_duration(video_id, seconds):
         spec_path.write_text(json.dumps(spec, indent=2) + "\n")
         metadata = json.loads((pdir / "metadata.json").read_text())
         metadata["duration_seconds"] = float(seconds)
+        experiment = metadata.get("experiment") or {}
+        if experiment.get("full_length_seconds"):
+            experiment["is_excerpt"] = float(seconds) < float(
+                experiment["full_length_seconds"]) - 1
+        # The audio plan was written for the old runtime; a stored target
+        # would otherwise render a track of the old length under the new
+        # timeline.
+        if isinstance(metadata.get("audio_plan"), dict):
+            metadata["audio_plan"]["target_seconds"] = float(seconds)
+            if isinstance(metadata["audio_plan"].get("composition"), dict):
+                metadata["audio_plan"]["composition"]["target_seconds"] = float(seconds)
         metadata.setdefault("status", {}).pop("storyboard", None)
         save_metadata(pdir, metadata)
         board_path = storyboard_mod.storyboard_path(video_id)

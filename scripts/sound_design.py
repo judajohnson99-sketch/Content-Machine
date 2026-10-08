@@ -204,6 +204,57 @@ def _mock_design(concept, context, target_seconds):
     }
 
 
+# Words in a concept -> the synthesised elements that render them. Used
+# only when no model can be reached; the concept's own words decide.
+_RULE_AMBIENCE = (
+    (("rain", "storm", "drizzle"), "rain_on_glass"),
+    (("cabin", "room", "indoor", "library"), "cabin_hum"),
+    (("fire", "hearth"), "fireplace"),
+    (("ocean", "waves", "sea", "beach", "surf"), "ocean_surf"),
+    (("stream", "river", "creek", "brook"), "stream"),
+    (("wind", "breeze"), "wind_low"),
+    (("snow", "winter"), "snowfall"),
+    (("night", "forest", "crickets"), "night_air"),
+)
+_RULE_EVENTS = (
+    (("rain", "drip"), "drip", 45.0),
+    (("thunder", "storm"), "distant_thunder", 240.0),
+    (("cabin", "wood"), "wood_creak", 180.0),
+    (("bird", "dawn", "morning"), "bird", 90.0),
+)
+
+
+def rules_design(concept, context, target_seconds):
+    """A sound design from the concept's own words, no model."""
+    text = " ".join(str(concept.get(k) or "") for k in (
+        "audio_concept", "visual_concept", "content_format", "goal_text")).lower()
+    ambience = []
+    for words, element in _RULE_AMBIENCE:
+        if any(w in text for w in words) and len(ambience) < MAX_AMBIENCE_LAYERS:
+            ambience.append({"element": element, "gain_db": -16.0 if element == "rain_on_glass" else -22.0,
+                             "reason": f"rules: the concept mentions {words[0]}"})
+    detail = []
+    if context != "background_sleep":   # events must never startle a sleeper awake
+        for words, element, interval in _RULE_EVENTS:
+            if any(w in text for w in words) and len(detail) < MAX_DETAIL_LAYERS:
+                detail.append({"element": element, "gain_db": -26.0,
+                               "every_seconds": interval,
+                               "reason": f"rules: the concept mentions {words[0]}"})
+    seconds = target_seconds or 60
+    return {
+        "intent": "rules: layers read from the concept's own words (no model reachable)",
+        "listening_context": context,
+        "ambience": ambience,
+        "detail": detail,
+        "bed": {"gain_db": 0.0, "lowpass_hz": 4500 if context == "background_sleep" else None,
+                "highpass_hz": None, "width": 1.2,
+                "swell": {"rate_hz": 0.02, "depth": 0.15}},
+        "dynamics": {"fade_in_seconds": min(20.0, seconds / 8),
+                     "fade_out_seconds": min(30.0, seconds / 6)},
+        "wanted_but_unavailable": [],
+    }
+
+
 def _clamp(value, low, high, default):
     try:
         number = float(value)
@@ -339,7 +390,14 @@ def design_soundscape(concept, target_seconds, kind=None, mood=None,
         def llm(text):
             return creative_mod._call_llm(provider, text)
 
-    text = llm(prompt)
+    try:
+        text = llm(prompt)
+    except Exception as exc:  # noqa: BLE001 - no SDK, no credit, quota, network
+        log.warning("sound design model unavailable (%s); designing by rules", exc)
+        design = sanitize_design(rules_design(concept, context, target_seconds),
+                                 target_seconds)
+        design["listening_context"] = design.get("listening_context") or context
+        return design
     try:
         import creative as creative_mod
         reply = creative_mod._extract_json(text)

@@ -592,6 +592,100 @@ def _call_llm(provider, prompt):
     return result.stdout
 
 
+# --------------------------------------------------------------------------
+# rules fallbacks - used only when no language model can be reached
+# --------------------------------------------------------------------------
+# A production must still reach review from the dashboard when the model
+# provider is out of credit. These read the concept's own words and the
+# research findings; they invent no facts and say how they were made.
+
+_SCENERY_VANTAGES = (
+    ("close", "a close, quiet detail of {thing}, {light}"),
+    ("window", "{thing} seen through a rain-streaked window pane, {light}"),
+    ("wide", "a wide, still view of {thing} under {light}"),
+    ("low", "a low vantage near the ground looking across {thing}, {light}"),
+    ("distant", "{thing} far in the distance, soft haze between, {light}"),
+    ("interior", "a warm interior corner looking out toward {thing}, {light}"),
+)
+_NIGHT_WORDS = ("night", "sleep", "moon", "dark", "midnight", "evening", "dusk")
+
+
+def _concept_words(concept):
+    return " ".join(str(concept.get(k) or "") for k in (
+        "visual_concept", "content_format", "creative_intent", "goal_text",
+        "working_title_pattern")).lower()
+
+
+def rules_visual_direction(concept, scene_count):
+    """A visual direction document built from the concept's own words."""
+    text = _concept_words(concept)
+    night = any(w in text for w in _NIGHT_WORDS)
+    rain = "rain" in text or "storm" in text
+    mist = any(w in text for w in ("mist", "fog", "haze"))
+    places = [w for w in ("cabin", "forest", "window", "lake", "ocean", "beach",
+                          "mountain", "garden", "library", "room", "city", "meadow",
+                          "river", "snow", "desert", "nebula", "space", "temple")
+              if w in text] or ["a quiet landscape"]
+    light = ("deep blue moonlight with a faint warm lamp glow" if night
+             else "soft overcast daylight")
+    subject = " and ".join(places[:2])
+    if mist:
+        subject = f"misty {subject}"
+    if rain:
+        subject = f"{subject} in gentle rain"
+    count = max(1, min(len(_SCENERY_VANTAGES), 6, scene_count or 6))
+    environments = [{
+        "slug": slug,
+        "description": template.format(thing=subject, light=light),
+        "focal_point": places[0],
+        "scale": slug,
+    } for slug, template in _SCENERY_VANTAGES[:count]]
+    return {
+        "reasoning": f"rules: {count} vantages on the concept's own setting "
+                     "(no language model was reachable)",
+        "identity": {
+            "palette": (["midnight blue", "slate grey", "amber", "deep pine green"]
+                        if night else ["sage", "stone grey", "pale gold", "soft white"]),
+            "lighting": light,
+            "atmosphere": ("damp, hushed and still" if rain or mist else "calm and still"),
+            "materials": ["weathered wood", "wet glass", "moss", "stone"][:3 if rain else 2],
+            "continuity_anchors": places[:2],
+            "camera": {"lens": "35mm", "perspective": "eye level",
+                       "depth_of_field": "medium"},
+            "render_intent": "natural light photography, gentle film grain",
+        },
+        "environments": environments,
+        "avoid": ["text", "people", "faces", "bright flashes"],
+    }
+
+
+def rules_brief(concept, target_seconds, findings=None, reason=""):
+    """A creative brief for an un-narrated video, from the concept itself."""
+    direction = concept.get("visual_direction") or {}
+    minutes = (target_seconds or 0) / 60.0
+    length = (f"{minutes / 60:.1f} Hours".replace(".0 ", " ") if minutes >= 60
+              else f"{minutes:.0f} Minutes")
+    title = concept.get("working_title_pattern") or concept.get("id", "Untitled")
+    if minutes and length.split()[0] not in title:
+        title = f"{title[:70]} | {length}"
+    description = " ".join(x for x in (
+        concept.get("tagline") or "",
+        concept.get("content_format") or "",
+        f"Sound: {concept['audio_concept']}." if concept.get("audio_concept") else "",
+    ) if x).strip()
+    return {
+        "title": title[:100],
+        "description": description or title,
+        "narration_script": "",
+        "image_prompt": direction.get("prompt_core") or concept.get("visual_concept")
+                        or "calm natural scene",
+        "negative_prompt": direction.get("negative")
+                           or "text, watermark, logo, people, faces",
+        "audio_mood": concept.get("audio_concept") or "calm, steady, unobtrusive",
+        "written_by": f"rules (model unavailable: {reason[:160]})",
+    }
+
+
 def generate_brief(concept, target_seconds, subject_research=None,
                    research_brief=None, findings=None):
     """Title, script, description, image direction and audio mood for one
@@ -647,7 +741,13 @@ def generate_brief(concept, target_seconds, subject_research=None,
     )
 
     provider = os.environ.get("LLM_PROVIDER", "anthropic").lower()
-    text = _call_llm(provider, prompt)
+    try:
+        text = _call_llm(provider, prompt)
+    except CreativeError as e:
+        if concept.get("audio_source_requirement") == "tts_required":
+            raise   # a narration script is the one thing rules cannot write
+        log.warning("creative model unavailable (%s); writing the brief by rules", e)
+        return rules_brief(concept, target_seconds, findings, reason=str(e))
     brief = _extract_json(text)
     required = ("title", "description", "narration_script", "image_prompt", "negative_prompt")
     missing = [k for k in required if k not in brief]
@@ -807,8 +907,14 @@ def generate_scene_environments(concept, scenes, brief=None, research_brief=None
             research_section=research_section(research_brief, findings),
         )
         provider = os.environ.get("LLM_PROVIDER", "anthropic").lower()
-        text = _call_llm(provider, prompt)
-        reply = _extract_json(text)
+        try:
+            text = _call_llm(provider, prompt)
+            reply = _extract_json(text)
+        except CreativeError as e:
+            log.warning("scene environment model unavailable (%s); using rules", e)
+            reply = {"environments": {
+                env["slug"]: env["description"]
+                for env in rules_visual_direction(concept, len(scenes))["environments"]}}
         environments = reply.get("environments") or {}
         if not environments:
             raise CreativeError(f"LLM reply carried no environments: {text[:200]!r}")
@@ -912,7 +1018,13 @@ def generate_visual_direction(concept, scene_count, brief=None,
         def llm(text):
             return _call_llm(provider, text)
 
-    reply = _extract_json(llm(prompt))
+    try:
+        raw_reply = llm(prompt)
+    except CreativeError as e:
+        log.warning("visual direction model unavailable (%s); directing by rules", e)
+        return vd.sanitize_direction(rules_visual_direction(concept, scene_count),
+                                     scene_count)
+    reply = _extract_json(raw_reply)
     direction = vd.sanitize_direction(reply, scene_count)
     if not vd.is_usable(direction):
         raise CreativeError(

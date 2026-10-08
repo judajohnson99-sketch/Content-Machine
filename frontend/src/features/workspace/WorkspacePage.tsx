@@ -141,8 +141,9 @@ export function WorkspacePage() {
   // the length that exists is the one that matters.
   const isExcerpt =
     !!fullLengthSeconds &&
-    (project?.duration_seconds ?? 0) > 0 &&
-    (project?.duration_seconds ?? 0) < fullLengthSeconds - 1;
+    ((project?.duration_seconds ?? 0) > 0
+      ? (project?.duration_seconds ?? 0) < fullLengthSeconds - 1
+      : !!project?.experiment?.is_excerpt);
 
   return (
     <div className={styles.page}>
