@@ -10,44 +10,26 @@ The single resume file.
 
 ## Current Position
 
-Milestone: the dashboard is the product - a production now starts from a
-plain-language goal and runs to a reviewable deliverable without the CLI.
-Done: goal -> concept -> project -> research brief derivation
-(`scripts/goal.py`, POST /api/v1/projects/from-goal/); a piecewise renderer
-that removes the 24-scene ceiling, so a 30-minute video is 120 shots with
-real motion and dissolves instead of a slideshow; sourced findings now
-produce production directives (shot length, movement style, dissolve length,
-audio layers) that the storyboard and sound design actually apply, recorded
-with their evidence in `research_influence.json` and shown in the dashboard;
-procedural plates vary per scene prompt and carry real structure; Kdenlive
-export, permanent deletion and "produce at full length" are dashboard
-actions. Validated through the dashboard: a 90-second 1080p Dreamdrip
-excerpt, QC PASS 15/15, 15 shots across 8 motions, four cleared audio
-layers, editable Kdenlive archive.
+Milestone: autonomous production, proven (branch
+claude/autonomous-production-soxl7z). Done and validated through the
+dashboard with a stand-in PC worker and stand-in ComfyUI: a goal became a
+2.5-hour sleep video (9000s, 1920x1080, QC PASS 15/15) with 36 PC-generated
+scenes plus 2 owner photos mixed in, seven motion types, a 1125s unique cycle
+looped by stream copy, music plus rain/cabin/wind ambience, and a 9000s
+Kdenlive project. The production parked while images were queued for the PC
+and celery beat resumed it when they landed. Job reuse now copies assets into
+the new project; the PC worker route is preferred when its heartbeat is live;
+the 3GB ComfyUI template is two-pass with an out-of-memory fallback. With no
+LLM reachable, goal, brief, visual direction and sound design fall back to
+rules from the concept's own words. Full suite 893 OK, webapp 150, frontend 86.
 
-Validation blockers (needs the owner): real sourced research cannot run on
-this host because the configured providers refuse (Gemini resource exhausted;
-Anthropic has no credit balance). The connected `home-gpu-01` is reachable
-with ComfyUI, but its deployed worker still reports v0.2 and does not include
-the current media-sync/low-VRAM agent; the validated browser generation was
-therefore a real ComfyUI job, but not proof of the updated multi-image/transfer
-path. The canonical suite also exposes an idempotent-job reuse defect: a
-completed job can retain an old project output path, leaving a new production
-without its images.
+Blockers (owner): PC worker checkout/agent must be updated to this branch;
+celery must run with -B on the VPS; research needs a reachable search route
+(SearXNG, or egress to DuckDuckGo/YouTube) or the gate stays blocked;
+visuals and audio need a human grade.
 
-Research for every production (branch research-every-production, on top of
-claude/project-thread-mupl5p): route is SearXNG > Brave > keyless
-DuckDuckGo/Wikipedia > Gemini/Anthropic only when named (SEARCH_KEYLESS=0
-turns keyless off). `run_research` derives a brief from the concept when a
-project has none, and every run includes competitor analysis from YouTube
-(Data API if keyed, else the public results page plus channel RSS feeds for
-cadence). Failure is recorded and keeps the review gate blocked. Not yet
-proven live: this sandbox's egress policy blocks DuckDuckGo, Wikipedia and
-YouTube, so the first real run must happen on the VPS.
-
-Next: update the PC worker checkout/agent, deploy a SearXNG instance and
-set SEARXNG_URL, then repair/revalidate generation-job output ownership before
-claiming the full creator workflow complete.
+Next: merge this branch with the other session's work, deploy to the VPS and
+PC, then a real-GPU run from the dashboard.
 
 ## Standing decisions
 
@@ -74,17 +56,7 @@ and are not restated here.
 
 ## Session Continuity
 
-Latest: research-for-every-production (keyless search + competitor analysis)
-committed on branch research-every-production, not pushed. Next for it: run
-`./content-machine research <id>` on the VPS with no keys and check
-research/findings/<id>.json carries competitor_analysis videos.
-
-Latest request: finish validation only. Creator-step workspace, media library,
-Image Lab save/use, owner-media sync APIs, semantic indexing, rights-aware
-Openverse discovery, safe GTX-1060 generation sizing, provenance and worker
-completion gates are implemented in the shared domain/UI layers. Browser
-validation covered dashboard, new-production direction selection, Image Lab,
-and a real ComfyUI one-image job. Frontend typecheck/tests and Django tests
-pass; the host canonical suite runs 790 tests with 3 failures described above.
-Checkpoint: `/tmp/content-machine-creator-checkpoint-20261007.tar.gz`.
-No commits.
+Latest: branch claude/autonomous-production-soxl7z pushed, unmerged. It
+contains claude/project-thread-mupl5p (research routing) plus GPU routing,
+motion/long-form, research-for-every-production, rules fallbacks and owner
+"mixed" visuals. Next: coordinate the merge with the other session.
