@@ -485,7 +485,8 @@ def concept_readiness(concept, capabilities):
         research = "ok"
     else:
         research = "blocked"
-        notes.append("Needs source-backed subject research; no SEARCH_PROVIDER is configured, "
+        notes.append("Needs source-backed subject research; no search provider is configured "
+                     "(set SEARXNG_URL, or SEARCH_ORDER/SEARCH_PROVIDER), "
                      "so produce fails closed at the research stage.")
 
     return {

@@ -903,7 +903,8 @@ def _seed_findings(video_id, ref, query, provider, youtube, force):
                 for statement in described["statements"]], "youtube"
     results, _ = cached_search(
         provider, query, subject_research.DEFAULT_MAX_RESULTS, force=force)
-    return _observations_from_results(video_id, results, "concept"), provider.name
+    return (_observations_from_results(video_id, results, "concept"),
+            subject_research.served_by(results, provider.name))
 
 
 def research_project(video_id, brief, provider=None, force=False, youtube=None):
@@ -935,8 +936,9 @@ def research_project(video_id, brief, provider=None, force=False, youtube=None):
     provider = provider if provider is not None else subject_research._select_provider()
     if provider is None:
         raise ResearchError(
-            "no search provider selected. Set SEARCH_PROVIDER to a "
-            "configured provider, or TEST_MODE=1 for the fixture stand-in.")
+            "no search provider selected. Set SEARXNG_URL, "
+            "BRAVE_SEARCH_API_KEY or SEARCH_ORDER/SEARCH_PROVIDER, or "
+            "TEST_MODE=1 for the fixture stand-in.")
     if not provider.configured():
         raise ResearchError(f"search provider {provider.name!r} is not configured")
     youtube = youtube if youtube is not None else YouTubeProvider()
@@ -956,7 +958,8 @@ def research_project(video_id, brief, provider=None, force=False, youtube=None):
         found = _observations_from_results(video_id, results, topic)
         if found:
             covered.append(topic)
-            providers_used.add(provider.name)
+            providers_used.update(
+                subject_research.served_by(results, provider.name).split("+"))
             observations.extend(found)
         else:
             uncovered.append(topic)
@@ -981,7 +984,7 @@ def research_project(video_id, brief, provider=None, force=False, youtube=None):
                 f"seed {ref.get('type')} {label!r} produced no sourced "
                 "finding. Refusing to record research that did not actually "
                 "look at a reference the brief named.")
-        providers_used.add(source)
+        providers_used.update(source.split("+"))
         observations.extend(found)
         seed_coverage.append({"type": ref.get("type"), "value": label,
                               "provider": source, "findings": len(found)})

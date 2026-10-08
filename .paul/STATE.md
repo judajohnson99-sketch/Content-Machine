@@ -35,8 +35,12 @@ path. The canonical suite also exposes an idempotent-job reuse defect: a
 completed job can retain an old project output path, leaving a new production
 without its images.
 
-Next: update the PC worker checkout/agent, provide one working search
-provider, then repair/revalidate generation-job output ownership before
+Search routing (branch claude/project-thread-mupl5p): SearXNG primary,
+Brave metered fallback, Wikipedia opt-in, Gemini/Anthropic last and only
+when named; `SearchRouter` in `scripts/subject_research.py`.
+
+Next: update the PC worker checkout/agent, deploy a SearXNG instance and
+set SEARXNG_URL, then repair/revalidate generation-job output ownership before
 claiming the full creator workflow complete.
 
 ## Standing decisions
@@ -63,6 +67,9 @@ and are not restated here.
 | Monetization | After the loop runs unattended and consistently |
 
 ## Session Continuity
+
+Latest: low-cost research routing implemented with tests on branch
+claude/project-thread-mupl5p, not yet pushed; no live search was run.
 
 Latest request: finish validation only. Creator-step workspace, media library,
 Image Lab save/use, owner-media sync APIs, semantic indexing, rights-aware

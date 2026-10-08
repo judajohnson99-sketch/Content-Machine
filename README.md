@@ -888,7 +888,7 @@ A production can be started from scratch in the browser ("New production"):
   concept, ranked as `experiment.py list` ranks them, with a per-concept
   *readiness* derived from configuration alone (procedural plates
   acceptable or a depicted-image provider configured; audio requirement
-  synthesisable; `SEARCH_PROVIDER` set when subject research is required).
+  synthesisable; a search route configured when subject research is required).
   It is honest about what would stop a run here, and never a quality claim.
 - `POST /api/v1/projects/` `{video_id, concept_id, duration?}` — the same
   scaffold `experiment.py scaffold` performs (`scaffold_project()`), 201 with
@@ -898,8 +898,19 @@ A production can be started from scratch in the browser ("New production"):
   stay distinct failures. The Workspace shows the running/last job with its
   message and log tail, and refreshes the deliverable when the job ends.
 
-`./content-machine providers` now also reports the search provider, since
+`./content-machine providers` now also reports the search route, since
 subject research fails closed without one.
+
+Search is routed cheapest-first (`scripts/subject_research.py`,
+`SearchRouter`): a self-hosted SearXNG instance (`SEARXNG_URL`) is the free
+primary, Brave's API (`BRAVE_SEARCH_API_KEY`) a metered fallback, Wikipedia a
+keyless opt-in, and the LLM-grounded `gemini`/`anthropic` providers are
+reordered last and used only when named in `SEARCH_ORDER` (or the older
+single-name `SEARCH_PROVIDER`). A provider that errors is skipped for
+`SEARCH_COOLDOWN` seconds; a thin result is topped up by the next provider;
+the route stops as soon as two adequately-sourced results exist. Each fact
+records the provider that actually returned it, and subject research records
+the route it took. If the whole route stays thin, research still fails closed.
 
 Readiness and the GPU queue are visible through
 `GET /api/v1/system/readiness/` (`experiment.host_capabilities()`, which now

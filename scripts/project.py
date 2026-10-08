@@ -2503,11 +2503,14 @@ def cmd_providers(args):
         print(f"{'OK  ' if entry['healthy'] else 'DOWN'}  "
               f"{entry['provider']:<12} {entry['detail']}{suffix}")
     search = subject_research.provider_status()
+    route = " -> ".join(f"{p['name']}({p['tier']}{'' if p['configured'] else ', unconfigured'})"
+                        for p in search["route"])
     if search["available"]:
-        print(f"OK    {'search':<12} SEARCH_PROVIDER={search['configured']}  [subject research]")
+        print(f"OK    {'search':<12} route {route}  [subject research]")
     else:
-        detail = (f"SEARCH_PROVIDER={search['configured']!r} is not a known provider"
-                  if search["configured"] else "SEARCH_PROVIDER is not set")
+        detail = (f"search route {search['configured']!r} has no known, configured provider"
+                  if search["configured"] else
+                  "no search provider is set (SEARXNG_URL, SEARCH_ORDER or SEARCH_PROVIDER)")
         print(f"DOWN  {'search':<12} {detail}  [subject research fails closed; "
               f"known: {', '.join(search['known'])}]")
     return 0
