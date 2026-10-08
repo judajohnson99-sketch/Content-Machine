@@ -99,13 +99,52 @@ DEFAULT_SECTIONS = (("hook", 0.12), ("body", 0.76), ("outro", 0.12))
 
 # Movement styles a research directive can ask for. "still" is not "no
 # motion at all": a frame that never moves for half an hour reads as a frozen
-# player, so even the stillest style keeps an almost imperceptible push.
+# player, so even the stillest style keeps an almost imperceptible move -
+# mostly ``drift``, which is exactly that. Every cycle is ordered so that no
+# move follows itself, including the wrap from the last entry to the first.
 MOTION_STYLE_CYCLES = {
-    "still": ("static", "zoom_in", "static", "zoom_out"),
-    "drifting": ("zoom_in", "zoom_out", "pan_zoom", "zoom_in", "pan_zoom", "zoom_out"),
-    "travelling": ("pan_right", "zoom_in", "pan_left", "pan_up", "pan_zoom",
-                   "zoom_out", "pan_down", "pan_right"),
+    "still": ("drift", "zoom_in", "drift", "static", "drift", "zoom_out"),
+    "drifting": ("drift", "parallax", "zoom_in", "parallax_in", "drift",
+                 "zoom_out", "parallax", "pan_zoom"),
+    "travelling": ("pan_right", "parallax", "zoom_in", "pan_left", "pan_up",
+                   "pan_zoom", "parallax_in", "zoom_out", "pan_down"),
 }
+
+# Sleep/relaxation content with no research style gets the layered and
+# drifting moves, mixed with plain push-ins so the 2.5D look is a texture
+# rather than the only trick. It is the "drifting" cycle: that is what such
+# content is.
+CALM_MOTION_CYCLE = MOTION_STYLE_CYCLES["drifting"]
+
+# Words in a project's concept/plan that mark it as content meant to be left
+# on and relaxed or slept to. Matched as substrings of lower-cased text.
+CALM_KEYWORDS = ("sleep", "relax", "calm", "ambient", "meditat", "soothing",
+                 "lofi", "lo-fi", "study", "asmr", "dream", "white noise",
+                 "rain", "tranquil", "serene", "peaceful", "unwind")
+# A video with no narration at all and at least this long is calm content
+# whatever its concept says: nobody sits through ten silent minutes of
+# whip pans.
+CALM_SILENT_MIN_SECONDS = 600.0
+
+# A calm concept that is itself about haze gets the slow fog overlay on every
+# third scene - often enough to be part of the look, rarely enough that the
+# overlay never becomes the subject (and it costs render time).
+FOG_KEYWORDS = ("fog", "mist", "haze", "hazy", "cloud", "smoke", "steam",
+                "vapour", "vapor")
+FOG_EVERY = 3
+
+# Long-form looping. A three-hour sleep video does not need three hours of
+# distinct shots, and a CPU host cannot render them: the storyboard plans one
+# *unique cycle* of shots whose last scene dissolves back into its first, and
+# the renderer repeats that cycle by stream copy to the full length. The
+# cycle is full_length / k for the smallest whole k that keeps it at or under
+# this many seconds, so the video ends exactly on a seam rather than
+# mid-shot. Override per project with video_spec.json "unique_cycle_seconds"
+# (0 disables looping and renders every second unique).
+DEFAULT_UNIQUE_CYCLE_SECONDS = 1200.0
+# Below this multiple of the cycle the whole video is rendered unique: a
+# 25-minute piece is better rendered once than presented as a loop.
+LOOP_MIN_RATIO = 1.5
 
 
 class StoryboardError(Exception):
@@ -234,15 +273,89 @@ def _seed_for_prompt(prompt, base_seed, assigned):
 # build
 # --------------------------------------------------------------------------
 
-def motion_cycle_for(style):
+def motion_cycle_for(style, calm=False):
     """The order moves are assigned in, for a named movement style.
 
     A style is a research directive ("sources describe held, motionless
     frames"), not a preference: it decides whether this video breathes, drifts
-    across its images, or holds them still. Unknown or absent -> the default
-    mixed cycle, which is what every project got before directives existed.
+    across its images, or holds them still. Absent a style, calm content
+    (sleep, relaxation, ambient) gets the drift/parallax cycle and anything
+    else the default mixed cycle, which is what every project got before
+    directives existed.
     """
-    return MOTION_STYLE_CYCLES.get(style or "", MOTION_CYCLE)
+    if style in MOTION_STYLE_CYCLES:
+        return MOTION_STYLE_CYCLES[style]
+    return CALM_MOTION_CYCLE if calm else MOTION_CYCLE
+
+
+def _project_text(metadata):
+    plan = metadata.get("visual_plan") or {}
+    return " ".join(str(v) for v in (
+        metadata.get("concept"), metadata.get("niche"),
+        metadata.get("selected_title"), plan.get("prompt"), plan.get("style"),
+    ) if v).lower()
+
+
+def _is_narrated(metadata):
+    return bool((metadata.get("script") or "").strip())
+
+
+def is_calm_content(metadata, target_seconds):
+    """Is this a video meant to be relaxed or slept to?
+
+    True when the concept/plan says so in words, or when it has no narration
+    at all and runs at least CALM_SILENT_MIN_SECONDS.
+    """
+    if any(word in _project_text(metadata) for word in CALM_KEYWORDS):
+        return True
+    return (not _is_narrated(metadata)
+            and float(target_seconds) >= CALM_SILENT_MIN_SECONDS)
+
+
+def loop_plan(target_seconds, spec, narrated):
+    """``(cycle_seconds, repeats)`` when this video should loop a unique
+    cycle of shots, else ``None``.
+
+    Never for narrated video: narration is laid out scene by scene, and
+    repeating the pictures under a script that keeps going would put the
+    wrong shot under every line after the first cycle.
+    """
+    if narrated:
+        return None
+    raw = spec.get("unique_cycle_seconds", DEFAULT_UNIQUE_CYCLE_SECONDS)
+    if (raw is None or isinstance(raw, bool)
+            or not isinstance(raw, (int, float)) or raw <= 0):
+        return None
+    target = float(target_seconds)
+    if target < float(raw) * LOOP_MIN_RATIO:
+        return None
+    # Smallest whole number of repeats that keeps the cycle within the limit;
+    # integer milliseconds so float noise cannot add a repeat.
+    repeats = -(-int(round(target * 1000)) // int(round(float(raw) * 1000)))
+    return round(target / repeats, 3), repeats
+
+
+def _break_repeats(kinds, cycle, circular):
+    """No move directly follows itself - including across the loop seam.
+
+    The cycles never repeat a move on their own; this only matters where the
+    scene count and the cycle length line up so that, in a looped video, the
+    last scene would play the same move as the first one it dissolves into.
+    """
+    kinds = list(kinds)
+    if len(kinds) < 2:
+        return kinds
+    indices = range(len(kinds)) if circular else range(1, len(kinds))
+    for i in indices:
+        prev = kinds[i - 1]
+        if kinds[i] != prev:
+            continue
+        after = kinds[(i + 1) % len(kinds)]
+        for candidate in cycle:
+            if candidate not in (prev, after):
+                kinds[i] = candidate
+                break
+    return kinds
 
 
 def build_storyboard(video_id, metadata, spec, profile=None, scene_count=None,
@@ -274,33 +387,50 @@ def build_storyboard(video_id, metadata, spec, profile=None, scene_count=None,
         applied["seconds_per_scene"] = seconds_per_scene
     seconds_per_scene = max(seconds_per_scene, MIN_SCENE_SECONDS)
 
+    # A long silent video plans one unique cycle of shots and loops it; the
+    # scene count, dissolves and shot lengths are then all about that cycle.
+    narrated = _is_narrated(metadata)
+    loop = loop_plan(target_seconds, spec, narrated)
+    span = loop[0] if loop else target_seconds
+
     if scene_count is None:
-        scene_count = max(int(round(target_seconds / seconds_per_scene)), 1)
+        scene_count = max(int(round(span / seconds_per_scene)), 1)
     scene_count = max(1, min(int(scene_count), MAX_SCENES))
 
     transition_seconds = min(
         DEFAULT_TRANSITION_SECONDS,
-        max(target_seconds / scene_count * 0.2, 0.0))
+        max(span / scene_count * 0.2, 0.0))
     if directives.get("transition_seconds"):
         # Still bounded by the scene it leaves: a dissolve cannot be longer
         # than the shot it dissolves out of, whatever research says.
         transition_seconds = min(float(directives["transition_seconds"]),
-                                 max(target_seconds / scene_count * 0.4, 0.0))
+                                 max(span / scene_count * 0.4, 0.0))
         applied["transition_seconds"] = round(transition_seconds, 3)
 
-    motion_cycle = motion_cycle_for(directives.get("motion_style"))
+    calm = is_calm_content(metadata, target_seconds)
+    motion_cycle = motion_cycle_for(directives.get("motion_style"), calm=calm)
     if directives.get("motion_style") in MOTION_STYLE_CYCLES:
         applied["motion_style"] = directives["motion_style"]
+        motion_profile = directives["motion_style"]
+    else:
+        motion_profile = "calm" if calm else "default"
+    foggy = calm and any(word in _project_text(metadata) for word in FOG_KEYWORDS)
 
     # Solve scene duration so the finished timeline - which is shorter than
-    # the sum of the scenes by one overlap per cut - lands on the target.
-    overlaps = (scene_count - 1) * transition_seconds
-    per_scene = (target_seconds + overlaps) / scene_count
+    # the sum of the scenes by one overlap per cut - lands on the target. A
+    # looped cycle's last scene also dissolves (back into the first), so it
+    # carries one overlap per scene rather than one per cut.
+    overlaps = (scene_count if loop else scene_count - 1) * transition_seconds
+    per_scene = (span + overlaps) / scene_count
     if per_scene < MIN_SCENE_SECONDS:
         raise StoryboardError(
-            f"{scene_count} scenes over {target_seconds}s gives "
+            f"{scene_count} scenes over {span}s gives "
             f"{per_scene:.2f}s each, under the {MIN_SCENE_SECONDS}s minimum. "
             f"Ask for fewer scenes or a longer video.")
+    offset = _stable_offset(video_id, len(motion_cycle))
+    kinds = _break_repeats(
+        [motion_cycle[(i + offset) % len(motion_cycle)] for i in range(scene_count)],
+        motion_cycle, circular=bool(loop))
 
     plan = metadata.get("visual_plan") or {}
     base_prompt = plan.get("prompt") or metadata.get("concept") or ""
@@ -312,7 +442,6 @@ def build_storyboard(video_id, metadata, spec, profile=None, scene_count=None,
     categories = [entry["value"] for entry in (profile or {}).get("visual_categories", [])]
     narration = split_script(metadata.get("script"), scene_count)
     sections = _sections_for(scene_count, profile)
-    offset = _stable_offset(video_id, len(motion_cycle))
 
     src_w = int(source_width or DEFAULT_SOURCE_WIDTH)
     src_h = int(source_height or DEFAULT_SOURCE_HEIGHT)
@@ -322,7 +451,9 @@ def build_storyboard(video_id, metadata, spec, profile=None, scene_count=None,
     for i in range(scene_count):
         section = sections[i]
         prompt = _scene_prompt(base_prompt, categories, i, section)
-        is_last = i == scene_count - 1
+        # In a loop the last scene dissolves back into the first; otherwise
+        # the video simply ends on it.
+        is_last = i == scene_count - 1 and not loop
         scene = {
             "scene_id": f"s{i + 1:02d}",
             "index": i,
@@ -345,7 +476,7 @@ def build_storyboard(video_id, metadata, spec, profile=None, scene_count=None,
                 "request_digest": None,
             },
             "motion": {
-                "kind": motion_cycle[(i + offset) % len(motion_cycle)],
+                "kind": kinds[i],
                 "fit": "cover",
                 "amount": None,
             },
@@ -369,6 +500,8 @@ def build_storyboard(video_id, metadata, spec, profile=None, scene_count=None,
         # from the same request object the router will be handed.
         scene["generation"]["request_digest"] = scene_request(scene).digest()
         scenes.append(scene)
+        if foggy and i % FOG_EVERY == 1:
+            scene["motion"]["ambient"] = "fog"
 
     storyboard = {
         "storyboard_version": STORYBOARD_VERSION,
@@ -397,10 +530,47 @@ def build_storyboard(video_id, metadata, spec, profile=None, scene_count=None,
         # What sourced research changed about this plan, and nothing else:
         # an empty mapping means the defaults stood, not that research ran.
         "research_applied": applied,
+        # Which move cycle was used and why: a research style, "calm"
+        # (sleep/relaxation content: drift and parallax), or "default".
+        "motion_profile": motion_profile,
         "scenes": scenes,
-        "timeline_seconds": motion_mod.timeline_seconds(scenes),
     }
+    if loop:
+        storyboard["loop"] = loop_record(scenes, target_seconds)
+    storyboard["timeline_seconds"] = finished_seconds(storyboard)
     return storyboard
+
+
+def loop_record(scenes, full_seconds):
+    """What a looped video really is, stated where a reviewer will see it.
+
+    A three-hour video built from a twenty-minute cycle is not three hours of
+    distinct shots, and nothing downstream may present it as one: the
+    package and the dashboard carry these numbers, not just the runtime.
+    """
+    cycle = motion_mod.cycle_seconds(scenes)
+    return {
+        "mode": "looped_cycle",
+        "unique_scenes": len(scenes),
+        "cycle_seconds": cycle,
+        "full_seconds": float(full_seconds),
+        "repeats": round(float(full_seconds) / cycle, 3) if cycle else None,
+        "note": ("the video repeats one unique cycle of shots; the last shot "
+                 "dissolves back into the first so the repeat has no seam"),
+    }
+
+
+def finished_seconds(storyboard):
+    """The finished runtime this plan renders to.
+
+    For a looped plan that is the full length the cycle is repeated to; for
+    anything else it is the scenes' own timeline.
+    """
+    scenes = storyboard.get("scenes", [])
+    loop = storyboard.get("loop")
+    if loop and loop.get("full_seconds"):
+        return round(float(loop["full_seconds"]), 3)
+    return motion_mod.timeline_seconds(scenes)
 
 
 def scene_request(scene, require_depicted=False):
@@ -552,7 +722,8 @@ def validate(storyboard, pdir=None):
             f"{where}: {p}" for p in motion_mod.validate_motion(
                 motion_cfg.get("kind", "static"),
                 fit=motion_cfg.get("fit", "cover"),
-                transition=transition_cfg.get("kind", "crossfade")))
+                transition=transition_cfg.get("kind", "crossfade"),
+                ambient=motion_cfg.get("ambient")))
 
         overlap = float(transition_cfg.get("duration_seconds", 0.0) or 0.0)
         if transition_cfg.get("kind") != "cut" and isinstance(duration, (int, float)) \
@@ -632,8 +803,11 @@ def load(video_id):
 def save(video_id, storyboard):
     path = storyboard_path(video_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    storyboard["timeline_seconds"] = motion_mod.timeline_seconds(
-        storyboard.get("scenes", []))
+    if storyboard.get("loop"):
+        # Scenes can be edited after the build; the cycle is what they say.
+        storyboard["loop"] = loop_record(
+            storyboard.get("scenes", []), storyboard["loop"]["full_seconds"])
+    storyboard["timeline_seconds"] = finished_seconds(storyboard)
     path.write_text(json.dumps(storyboard, indent=2) + "\n")
     return path
 

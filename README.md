@@ -26,7 +26,7 @@ project assets ─► validate ─► render ─► thumbnails ─► QC ─► 
 | Format research | `scripts/research.py` | per-niche statistical shape (duration, pacing, visual categories) |
 | Subject research | `scripts/subject_research.py` | search-backed, source-attributed facts for a video's subject, cached once; fails closed rather than falling back to model knowledge |
 | Storyboard | `scripts/storyboard.py` | deterministic per-scene plan (narration slice, prompt, motion, transition) from a video's script and visual/audio plan |
-| Motion | `scripts/motion.py` | pure ffmpeg filter-string arithmetic for Ken Burns motion and scene transitions |
+| Motion | `scripts/motion.py` | pure ffmpeg filter-string arithmetic for scene motion (Ken Burns pans/zooms, `drift`, 2.5D `parallax`/`parallax_in`, optional `fog` overlay) and transitions; long silent videos loop one unique cycle (`render.render_looped`, recorded in `<video>.render.json`) |
 | Renderer | `scripts/render.py` | images + audio + spec → H.264/AAC MP4 (FFmpeg) |
 | Quality control | `scripts/qc.py` | probes a finished MP4 for spec conformance and render faults |
 | Project lifecycle | `scripts/project.py` | `init` / `validate` / `research` / `creative` / `storyboard` / `scenes` / `run` orchestration |
