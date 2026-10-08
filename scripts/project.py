@@ -1120,22 +1120,25 @@ def cmd_validate(args):
 # --------------------------------------------------------------------------
 
 def run_research(video_id, concept_id=None, force=False):
-    """Subject research and brief-driven competitor research for one video,
-    each cached once.
+    """Research for one video - every production, no exemptions - cached once.
 
-    Two independent artifacts, with different failure contracts:
+    Two artifacts, with different failure contracts:
 
-    - Subject research (facts a narration script may state) is required and
-      fails closed for concepts flagged ``requires_subject_research`` - a
-      no-op otherwise, so niches with no factual claims never pay for it.
-    - Competitor/format research is optional and additive: driven by the
-      project's own research brief (``research.load_brief``), which most
-      projects will not have, and by a configured search provider, which
-      this build may not have either. Neither absence is a stage failure -
-      only a search that was actually attempted and came back too thin to
-      say anything sourced is. ``creative`` picks up whatever exists here
-      through ``research.load_brief``/``load_findings``; it never re-runs
-      this stage itself.
+    - Subject research (facts a narration script may state) runs for every
+      concept that narrates facts (``requires_subject_research``) and fails
+      closed there. A concept that states no facts has nothing to source;
+      that skips only this half, never the competitor half below.
+    - Competitor/format research runs for every production. A project with
+      no research brief gets one derived from its concept
+      (``goal.brief_from_concept``), so there is always something to research
+      from. Search routes cheapest-first with keyless fallbacks
+      (``subject_research._select_provider``) and the competitor listing is
+      read from YouTube (``research.competitor_analysis``). If every source
+      fails, the stage records why and continues, and the review gate's
+      ``_research_blockers`` keeps the production out of review until
+      research has actually run; a brief that *named* seeds or topics fails
+      the stage outright. ``creative`` reads whatever exists here through
+      ``research.load_brief``/``load_findings``; it never re-runs research.
     """
     with project_lock(video_id):
         pdir = project_dir(video_id)
@@ -1153,6 +1156,7 @@ def run_research(video_id, concept_id=None, force=False):
                 "metadata.experiment.concept_id).")
             return StageResult(False, 1, "no concept linked")
 
+        status = metadata.setdefault("status", {})
         notes = []
         subject_artifact = None
         if concept.get("requires_subject_research"):
@@ -1162,67 +1166,99 @@ def run_research(video_id, concept_id=None, force=False):
             except subject_research.SubjectResearchError as e:
                 log.error("Subject research failed closed: %s", e)
                 return StageResult(False, 1, str(e))
-            metadata.setdefault("status", {})["subject_research"] = "OK"
+            status["subject_research"] = "OK"
             log.info("Subject research: %d sourced fact(s) from %d source(s) via %s",
                      len(subject_artifact["facts"]), len(subject_artifact["sources"]),
                      subject_artifact["provider"])
             notes.append(f"{len(subject_artifact['facts'])} sourced fact(s)")
         else:
-            log.info("%s does not require subject research; nothing to source", concept_id)
+            status["subject_research"] = "NOT_APPLICABLE"
+            log.info("%s states no facts; subject research has nothing to source "
+                     "(competitor research still runs)", concept_id)
 
+        research_brief, derived = _research_brief_for(video_id, concept)
+        if derived:
+            status["research_brief"] = "DERIVED"
+            notes.append("research brief derived from the concept")
         findings_artifact = None
-        research_brief = research.load_brief(video_id)
-        if research_brief is not None:
-            explicit = _explicitly_requested_research(research_brief)
-            try:
-                findings_artifact = research.research_project(
-                    video_id, research_brief, force=force)
-                metadata.setdefault("status", {})["competitor_research"] = "OK"
-                log.info("Competitor research: %d finding(s) via %s; topics covered: %s",
-                         len(findings_artifact["findings"]), findings_artifact["provider"],
-                         ", ".join(findings_artifact.get("topics_covered") or []) or "none")
-                for topic in findings_artifact.get("topics_uncovered") or []:
-                    log.warning("No sourced findings for requested topic %r", topic)
-                notes.append(f"{len(findings_artifact['findings'])} research finding(s)")
-                # What the findings change about the build, derived now so
-                # the storyboard and audio stages read a decision rather
-                # than re-interpreting prose. Empty is a valid outcome.
-                spec_raw = json.loads((pdir / "video_spec.json").read_text())
-                directives = research.save_directives(
-                    video_id, research.production_directives(
-                        findings_artifact, brief=research_brief,
-                        target_seconds=spec_raw.get("duration_seconds")))
-                if directives["decisions"]:
-                    log.info("Research changes %d production parameter(s): %s",
-                             len(directives["decisions"]),
-                             ", ".join(f"{d['parameter']}={d['value']}"
-                                       for d in directives["decisions"]))
-                    notes.append(f"{len(directives['decisions'])} production directive(s)")
-                else:
-                    log.info("Findings say nothing that changes a production "
-                             "parameter; stage defaults stand.")
-            except research.ResearchError as e:
-                if explicit:
-                    # The brief named something specific to study. Skipping
-                    # that quietly produces a video that looks researched
-                    # and is not, which is the failure this branch exists
-                    # to make impossible.
-                    metadata.setdefault("status", {})["competitor_research"] = "FAILED"
-                    save_metadata(pdir, metadata)
-                    log.error("Requested research could not be performed: %s", e)
-                    log.error("Named in the brief: %s", "; ".join(explicit))
-                    return StageResult(False, 1, f"requested research failed: {e}")
-                metadata.setdefault("status", {})["competitor_research"] = "SKIPPED"
-                log.warning("Competitor research skipped (not a stage failure): %s", e)
+        explicit = [] if derived else _explicitly_requested_research(research_brief)
+        try:
+            findings_artifact = research.research_project(
+                video_id, research_brief, force=force, concept=concept)
+        except research.ResearchError as e:
+            status["competitor_research_reason"] = str(e)[:500]
+            if explicit:
+                # The brief named something specific to study. Skipping
+                # that quietly produces a video that looks researched
+                # and is not, which is the failure this branch exists
+                # to make impossible.
+                status["competitor_research"] = "FAILED"
+                save_metadata(pdir, metadata)
+                log.error("Requested research could not be performed: %s", e)
+                log.error("Named in the brief: %s", "; ".join(explicit))
+                return StageResult(False, 1, f"requested research failed: {e}")
+            status["competitor_research"] = "SKIPPED"
+            log.warning("Competitor research could not run (the review gate stays "
+                        "blocked until it does): %s", e)
+            notes.append("competitor research could not run; review gate blocked")
+        else:
+            status["competitor_research"] = "OK"
+            status.pop("competitor_research_reason", None)
+            notes.extend(_record_findings(video_id, pdir, research_brief, findings_artifact))
 
         save_metadata(pdir, metadata)
-        if not notes:
-            return StageResult(
-                True, 0,
-                f"{concept_id} does not require subject research; no research brief to work from")
         log.info("Now run: ./content-machine creative %s", video_id)
         return StageResult(True, 0, "; ".join(notes),
-                           {"artifact": subject_artifact, "findings": findings_artifact})
+                           {"artifact": subject_artifact, "findings": findings_artifact,
+                            "brief": research_brief, "brief_derived": derived})
+
+
+def _research_brief_for(video_id, concept):
+    """This project's research brief, deriving and saving one from the
+    concept when the project has none. Returns ``(brief, derived)``."""
+    existing = research.load_brief(video_id)
+    if existing is not None:
+        return existing, False
+    brief = research.save_brief(video_id, goal_mod.brief_from_concept(concept))
+    log.info("No research brief: derived one from concept %s (niche %r)",
+             concept.get("id"), brief.get("niche"))
+    return brief, True
+
+
+def _record_findings(video_id, pdir, research_brief, findings_artifact):
+    """Log what research found and turn it into production directives.
+    Returns the short notes for the stage result."""
+    notes = []
+    competitor = findings_artifact.get("competitor_analysis") or {}
+    log.info("Research: %d finding(s) via %s; topics covered: %s",
+             len(findings_artifact["findings"]), findings_artifact["provider"],
+             ", ".join(findings_artifact.get("topics_covered") or []) or "none")
+    for topic in findings_artifact.get("topics_uncovered") or []:
+        log.warning("No sourced findings for requested topic %r", topic)
+    notes.append(f"{len(findings_artifact['findings'])} research finding(s)")
+    if competitor.get("videos"):
+        log.info("Competitor analysis: %d video(s) for %s",
+                 len(competitor["videos"]),
+                 ", ".join(repr(q) for q in competitor.get("queries") or []))
+        notes.append(f"{len(competitor['videos'])} competitor video(s)")
+    # What the findings change about the build, derived now so the
+    # storyboard and audio stages read a decision rather than
+    # re-interpreting prose. Empty is a valid outcome.
+    spec_raw = json.loads((pdir / "video_spec.json").read_text())
+    directives = research.save_directives(
+        video_id, research.production_directives(
+            findings_artifact, brief=research_brief,
+            target_seconds=spec_raw.get("duration_seconds")))
+    if directives["decisions"]:
+        log.info("Research changes %d production parameter(s): %s",
+                 len(directives["decisions"]),
+                 ", ".join(f"{d['parameter']}={d['value']}"
+                           for d in directives["decisions"]))
+        notes.append(f"{len(directives['decisions'])} production directive(s)")
+    else:
+        log.info("Findings say nothing that changes a production "
+                 "parameter; stage defaults stand.")
+    return notes
 
 
 def _explicitly_requested_research(brief):
@@ -2555,11 +2591,14 @@ def cmd_providers(args):
         print(f"{'OK  ' if entry['healthy'] else 'DOWN'}  "
               f"{entry['provider']:<12} {entry['detail']}{suffix}")
     search = subject_research.provider_status()
+    route = " -> ".join(f"{p['name']}({p['tier']}{'' if p['configured'] else ', unconfigured'})"
+                        for p in search["route"])
     if search["available"]:
-        print(f"OK    {'search':<12} SEARCH_PROVIDER={search['configured']}  [subject research]")
+        print(f"OK    {'search':<12} route {route}  [subject research]")
     else:
-        detail = (f"SEARCH_PROVIDER={search['configured']!r} is not a known provider"
-                  if search["configured"] else "SEARCH_PROVIDER is not set")
+        detail = (f"search route {search['configured']!r} has no known, configured provider"
+                  if search["configured"] else
+                  "no search provider is set (SEARXNG_URL, SEARCH_ORDER or SEARCH_PROVIDER)")
         print(f"DOWN  {'search':<12} {detail}  [subject research fails closed; "
               f"known: {', '.join(search['known'])}]")
     return 0

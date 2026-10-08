@@ -451,6 +451,43 @@ class YouTubeProvider(ResearchProvider):
             raise ResearchError(f"youtube knows no channel {value!r}")
         return items[0]["id"]
 
+    # -- competitor videos (keyed route) ----------------------------------
+
+    tier = subject_research.TIER_METERED
+
+    def videos(self, query, limit=20):
+        """Competitor videos for ``query`` in the shared competitor shape.
+
+        Same contract as ``YouTubeSearchPageSource.videos`` so the router
+        cannot tell which one answered, except by the ``source`` field.
+        """
+        if not self.configured():
+            raise ResearchError("youtube data api is not configured (YOUTUBE_API_KEY unset)")
+        ids = self.search_video_ids(query, limit=min(int(limit), 50))
+        videos = []
+        for item in self._video_details(ids):
+            snippet = item.get("snippet") or {}
+            stats = item.get("statistics") or {}
+            thumbs = snippet.get("thumbnails") or {}
+            best = thumbs.get("maxres") or thumbs.get("high") or thumbs.get("default") or {}
+            vid = item.get("id")
+            videos.append(_competitor_video(
+                video_id=vid,
+                title=snippet.get("title"),
+                channel=snippet.get("channelTitle"),
+                channel_id=snippet.get("channelId"),
+                views=_int_or_none(stats.get("viewCount")),
+                duration_seconds=_iso8601_seconds(
+                    (item.get("contentDetails") or {}).get("duration")),
+                published_utc=snippet.get("publishedAt"),
+                thumbnail_url=best.get("url"),
+                source=self.name))
+        return videos
+
+    def search_url(self, query):
+        from urllib.parse import quote_plus
+        return f"https://www.youtube.com/results?search_query={quote_plus(query)}"
+
 
 def _youtube_video_id(value):
     text = value.strip()
@@ -460,6 +497,667 @@ def _youtube_video_id(value):
     if re.fullmatch(r"[A-Za-z0-9_-]{11}", text):
         return text
     return None
+
+
+# --------------------------------------------------------------------------
+# competitor videos - who already makes this, measured from public listings
+# --------------------------------------------------------------------------
+#
+# The web-search sweep says what people *write* about a niche. This says
+# what is actually *published* in it: the top videos for the production's own
+# subject, with their channel, view count, running time and age, read from a
+# public listing. Every competitor video is evidence a directive can cite
+# (its URL is the source), and every synthesis across them is an
+# interpretation that says so. Nothing here downloads a thumbnail or a
+# transcript; a title is kept only as the citation's label.
+#
+# Routing mirrors search: the YouTube Data API when YOUTUBE_API_KEY is set,
+# then the keyless public results page. Each failure is recorded with its
+# reason and the next source is tried; none of them is allowed to stop a
+# production by itself.
+
+COMPETITOR_VIDEO_LIMIT = 20
+COMPETITOR_FINDING_LIMIT = 10
+MIN_COMPETITOR_VIDEOS = 3
+COMPETITOR_FEED_CHANNELS = 3
+
+_COUNT_SUFFIX = {"k": 1e3, "m": 1e6, "b": 1e9}
+_AGE_UNIT_DAYS = {"second": 1 / 86400, "minute": 1 / 1440, "hour": 1 / 24, "day": 1,
+                  "week": 7, "month": 30.44, "year": 365.25}
+
+# Words that describe what is on screen. Counted in competitor titles and
+# badges because that is the only visual evidence a listing carries; the
+# thumbnails themselves are never fetched or judged.
+_VISUAL_CUES = (
+    "black screen", "dark screen", "no ads", "4k", "hd", "fireplace", "window",
+    "cabin", "forest", "ocean", "beach", "space", "night", "moon", "stars",
+    "aquarium", "animation", "animated", "visualizer", "lofi", "nature",
+    "city", "snow", "candle", "library", "cozy",
+)
+
+
+def _int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _competitor_video(video_id, title, channel, channel_id=None, views=None,
+                      duration_seconds=None, published_text=None,
+                      published_utc=None, age_days=None, badges=None,
+                      thumbnail_url=None, animated_thumbnail=False, source=None):
+    if age_days is None and published_utc:
+        try:
+            when = datetime.fromisoformat(published_utc.replace("Z", "+00:00"))
+            age_days = max((datetime.now(timezone.utc) - when).total_seconds() / 86400, 0)
+        except ValueError:
+            age_days = None
+    return {
+        "video_id": video_id,
+        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "title": (title or "").strip(),
+        "channel": (channel or "").strip(),
+        "channel_id": channel_id,
+        "views": views,
+        "duration_seconds": duration_seconds,
+        "published_text": published_text,
+        "published_utc": published_utc,
+        "age_days": round(age_days, 1) if age_days is not None else None,
+        "badges": list(badges or []),
+        "thumbnail_url": thumbnail_url,
+        "animated_thumbnail": bool(animated_thumbnail),
+        "source": source,
+    }
+
+
+def parse_view_count(text):
+    """'1,234,567 views' / '1.2M views' / 'No views' -> int, else None."""
+    t = (text or "").strip().lower().replace(",", "")
+    if not t:
+        return None
+    if t.startswith("no view"):
+        return 0
+    m = re.match(r"([\d.]+)\s*([kmb])?", t)
+    if not m:
+        return None
+    try:
+        return int(round(float(m.group(1)) * _COUNT_SUFFIX.get(m.group(2) or "", 1)))
+    except ValueError:
+        return None
+
+
+def parse_clock_duration(text):
+    """'3:00:00' / '10:05' -> seconds, else None."""
+    parts = (text or "").strip().split(":")
+    if not parts or not all(p.isdigit() for p in parts) or len(parts) > 3:
+        return None
+    seconds = 0
+    for p in parts:
+        seconds = seconds * 60 + int(p)
+    return seconds or None
+
+
+def parse_relative_age_days(text):
+    """'Streamed 2 years ago' / '3 weeks ago' -> approximate age in days."""
+    m = re.search(r"(\d+)\s*(second|minute|hour|day|week|month|year)s?\s+ago",
+                  (text or "").lower())
+    if not m:
+        return None
+    return int(m.group(1)) * _AGE_UNIT_DAYS[m.group(2)]
+
+
+def _yt_text(node):
+    if not isinstance(node, dict):
+        return ""
+    if "simpleText" in node:
+        return node.get("simpleText") or ""
+    return "".join(r.get("text", "") for r in node.get("runs") or [] if isinstance(r, dict))
+
+
+def extract_yt_initial_data(html_text):
+    """The ``ytInitialData`` JSON object embedded in a YouTube page, or None."""
+    for marker in ("var ytInitialData = ", 'window["ytInitialData"] = ',
+                   "ytInitialData = "):
+        start = html_text.find(marker)
+        if start < 0:
+            continue
+        try:
+            data, _end = json.JSONDecoder().raw_decode(html_text, start + len(marker))
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def _walk_video_renderers(node, out):
+    if isinstance(node, dict):
+        renderer = node.get("videoRenderer")
+        if isinstance(renderer, dict) and renderer.get("videoId"):
+            out.append(renderer)
+        for value in node.values():
+            _walk_video_renderers(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            _walk_video_renderers(value, out)
+    return out
+
+
+def videos_from_initial_data(data, source="youtube-keyless"):
+    """Competitor videos from a results page's ``ytInitialData``, in rank order."""
+    videos, seen = [], set()
+    for r in _walk_video_renderers(data, []):
+        vid = r["videoId"]
+        if vid in seen:
+            continue
+        seen.add(vid)
+        owner = (r.get("ownerText") or r.get("longBylineText") or {})
+        runs = owner.get("runs") or [{}]
+        channel_id = (((runs[0].get("navigationEndpoint") or {}).get("browseEndpoint") or {})
+                      .get("browseId"))
+        length = _yt_text(r.get("lengthText"))
+        if not length:
+            for overlay in r.get("thumbnailOverlays") or []:
+                status = (overlay or {}).get("thumbnailOverlayTimeStatusRenderer")
+                if status:
+                    length = _yt_text(status.get("text"))
+                    break
+        published = _yt_text(r.get("publishedTimeText")) or None
+        badges = []
+        for badge in r.get("badges") or []:
+            label = ((badge or {}).get("metadataBadgeRenderer") or {}).get("label")
+            if label:
+                badges.append(label)
+        thumbs = ((r.get("thumbnail") or {}).get("thumbnails")) or []
+        videos.append(_competitor_video(
+            video_id=vid,
+            title=_yt_text(r.get("title")),
+            channel=_yt_text(owner),
+            channel_id=channel_id,
+            views=parse_view_count(_yt_text(r.get("viewCountText"))
+                                   or _yt_text(r.get("shortViewCountText"))),
+            duration_seconds=parse_clock_duration(length),
+            published_text=published,
+            age_days=parse_relative_age_days(published),
+            badges=badges,
+            thumbnail_url=(thumbs[-1].get("url") if thumbs else None),
+            animated_thumbnail=bool(r.get("richThumbnail")),
+            source=source))
+    return videos
+
+
+class YouTubeSearchPageSource:
+    """Keyless competitor listing: YouTube's public search results page.
+
+    Reads the ``ytInitialData`` JSON the page embeds for its own renderer -
+    no key, no quota, standard library only. A consent wall or a layout
+    change shows up as "no ytInitialData" and is a ``ResearchError`` the
+    competitor route records, never an empty "nobody makes this" result.
+    """
+
+    name = "youtube-keyless"
+    tier = subject_research.TIER_KEYLESS
+    endpoint = "https://www.youtube.com/results"
+
+    def configured(self):
+        return subject_research.keyless_enabled()
+
+    def search_url(self, query):
+        from urllib.parse import urlencode
+        return f"{self.endpoint}?{urlencode({'search_query': query, 'hl': 'en', 'gl': 'US'})}"
+
+    def _fetch(self, url):
+        """The one network-touching step, isolated so tests replace it."""
+        try:
+            _status, body = subject_research.http_get(url, label=self.name, headers={
+                "User-Agent": subject_research.BROWSER_USER_AGENT,
+                "Accept": "text/html", "Accept-Language": "en-US,en;q=0.8",
+                # Pre-answers the EU consent interstitial so the results
+                # page itself is served; it records no preference beyond that.
+                "Cookie": "CONSENT=YES+cb; SOCS=CAI"})
+        except subject_research.SearchError as e:
+            raise ResearchError(str(e)) from e
+        return body.decode("utf-8", "replace")
+
+    def videos(self, query, limit=COMPETITOR_VIDEO_LIMIT):
+        data = extract_yt_initial_data(self._fetch(self.search_url(query)))
+        if data is None:
+            raise ResearchError("youtube results page carried no ytInitialData "
+                                "(consent wall, bot check or layout change)")
+        return videos_from_initial_data(data, source=self.name)[:limit]
+
+
+class YouTubeFeedSource:
+    """A channel's public uploads feed (Atom), for publish cadence.
+
+    Keyless; one request per channel and only for the few channels the
+    listing ranked highest. Gives upload dates and, where the feed carries
+    them, view counts - never durations, so it supplements a listing and
+    never replaces one.
+    """
+
+    name = "youtube-rss"
+    endpoint = "https://www.youtube.com/feeds/videos.xml"
+
+    def configured(self):
+        return subject_research.keyless_enabled()
+
+    def feed_url(self, channel_id):
+        return f"{self.endpoint}?channel_id={channel_id}"
+
+    def _fetch(self, url):
+        """The one network-touching step, isolated so tests replace it."""
+        try:
+            _status, body = subject_research.http_get(url, label=self.name, headers={
+                "User-Agent": subject_research.BROWSER_USER_AGENT,
+                "Accept": "application/atom+xml, application/xml"})
+        except subject_research.SearchError as e:
+            raise ResearchError(str(e)) from e
+        return body
+
+    def uploads(self, channel_id):
+        import xml.etree.ElementTree as ET
+        ns = {"a": "http://www.w3.org/2005/Atom",
+              "yt": "http://www.youtube.com/xml/schemas/2015",
+              "media": "http://search.yahoo.com/mrss/"}
+        body = self._fetch(self.feed_url(channel_id))
+        # Standard library only, so no defusedxml: a real uploads feed never
+        # declares a DOCTYPE or entities, so any document that does is
+        # refused before it reaches the parser (no XXE, no entity expansion).
+        if b"<!DOCTYPE" in body[:4096].upper() or b"<!ENTITY" in body.upper():
+            raise ResearchError(f"youtube feed for {channel_id} declares a DOCTYPE/entity; refused")
+        try:
+            root = ET.fromstring(body)
+        except ET.ParseError as e:
+            raise ResearchError(f"youtube feed for {channel_id} is not valid XML: {e}") from e
+        entries = []
+        for entry in root.findall("a:entry", ns):
+            stats = entry.find("media:group/media:community/media:statistics", ns)
+            entries.append({
+                "video_id": entry.findtext("yt:videoId", default="", namespaces=ns),
+                "title": entry.findtext("a:title", default="", namespaces=ns),
+                "published_utc": entry.findtext("a:published", default="", namespaces=ns),
+                "views": _int_or_none(stats.get("views")) if stats is not None else None,
+            })
+        return {"channel": root.findtext("a:title", default="", namespaces=ns),
+                "entries": entries}
+
+
+class FixtureCompetitorSource:
+    """TEST_MODE's deterministic, network-free competitor listing. Marked
+    [MOCK] so nothing downstream can mistake it for a real competitor."""
+
+    name = "fixture-competitors"
+    tier = subject_research.TIER_FREE
+
+    def configured(self):
+        return True
+
+    def search_url(self, query):
+        return f"https://mock.test/results?q={re.sub(r'[^a-z0-9]+', '+', query.lower())}"
+
+    def videos(self, query, limit=COMPETITOR_VIDEO_LIMIT):
+        # Deliberately free of sound/motion vocabulary, so a TEST_MODE run's
+        # directives are not steered by invented competitor titles.
+        rows = [
+            ("mock00000a1", "[MOCK] Competitor Listing One | Long Form", "[MOCK] Channel A", 600, 2_400_000, 400),
+            ("mock00000b2", "[MOCK] Competitor Listing Two", "[MOCK] Channel B", 480, 900_000, 120),
+            ("mock00000c3", "[MOCK] Competitor Listing Three", "[MOCK] Channel A", 600, 350_000, 30),
+        ]
+        return [_competitor_video(
+            video_id=vid, title=title, channel=channel, channel_id=f"UCmock{channel[-1]}",
+            views=views, duration_seconds=minutes * 60,
+            published_text=f"{age} days ago", age_days=age, badges=["4K"],
+            source=self.name) for vid, title, channel, minutes, views, age in rows][:limit]
+
+
+def build_competitor_sources(youtube=None):
+    """The competitor route, keyed API first, keyless page second.
+
+    ``TEST_MODE=1`` selects only the fixture, exactly as search does.
+    """
+    if os.environ.get("TEST_MODE") == "1":
+        return [FixtureCompetitorSource()]
+    youtube = youtube if youtube is not None else YouTubeProvider()
+    sources = [youtube] if youtube.configured() else []
+    keyless = YouTubeSearchPageSource()
+    if keyless.configured():
+        sources.append(keyless)
+    return sources
+
+
+def build_feed_source():
+    if os.environ.get("TEST_MODE") == "1":
+        return None
+    feed = YouTubeFeedSource()
+    return feed if feed.configured() else None
+
+
+def competitor_queries(brief, concept=None):
+    """What a viewer would type to find this production's competitors.
+
+    The concept's own working title (before its first ``|``) is the most
+    specific; the brief's niche is the general fallback. At most two
+    queries - each is one page request - deduplicated, never invented.
+    """
+    queries = []
+    if concept:
+        topic = subject_research.topic_query(concept)
+        if topic and "|" not in topic and len(topic) <= 80:
+            queries.append(topic)
+    niche = (brief.get("niche") or "").strip().replace("_", " ")
+    if niche:
+        queries.append(niche if "video" in niche.lower() else f"{niche} video")
+    seen, out = set(), []
+    for q in queries:
+        key = q.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(q)
+    return out[:2]
+
+
+def _cached_listing(source, query, force=False):
+    path = SEARCH_CACHE_DIR / f"{_cache_key('competitors:' + source.name, query)}.json"
+    if not force and path.is_file():
+        try:
+            cached = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            cached = None
+        if cached and cached.get("query") == query:
+            return cached.get("videos") or [], True
+    videos = source.videos(query, limit=COMPETITOR_VIDEO_LIMIT)
+    SEARCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"source": source.name, "query": query,
+                                "cached_utc": utc_now(), "videos": videos}, indent=2) + "\n")
+    return videos, False
+
+
+def collect_competitor_videos(queries, sources, force=False):
+    """Route each query through the competitor sources, cheapest-capable
+    first; stop at the first source that lists enough videos. Returns
+    ``(videos ranked by views, attempts, listing urls)``. Never raises:
+    every failure is an attempt with its reason."""
+    attempts, videos, seen, urls = [], [], set(), []
+    for query in queries:
+        for source in sources:
+            if not source.configured():
+                attempts.append({"source": source.name, "query": query,
+                                 "outcome": "skipped", "detail": "not configured"})
+                continue
+            try:
+                found, cached = _cached_listing(source, query, force=force)
+            except (ResearchError, subject_research.SearchError) as e:
+                attempts.append({"source": source.name, "query": query,
+                                 "outcome": "error", "detail": str(e)[:300]})
+                log.warning("competitors: %s failed for %r (%s); trying the next source",
+                            source.name, query, e)
+                continue
+            new = [v for v in found if v.get("video_id") and v["video_id"] not in seen]
+            for v in new:
+                seen.add(v["video_id"])
+            videos.extend(new)
+            enough = len(found) >= MIN_COMPETITOR_VIDEOS
+            attempts.append({"source": source.name, "query": query,
+                             "outcome": "ok" if enough else "thin",
+                             "detail": f"{len(found)} video(s), {len(new)} new"
+                                       f"{' (cached)' if cached else ''}"})
+            if found and hasattr(source, "search_url"):
+                urls.append(source.search_url(query))
+            if enough:
+                break
+    videos.sort(key=lambda v: v.get("views") or 0, reverse=True)
+    return videos[:COMPETITOR_VIDEO_LIMIT], attempts, urls
+
+
+def _compact_count(n):
+    if n is None:
+        return "an unknown number of"
+    for div, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if n >= div:
+            return f"{n / div:.1f}".rstrip("0").rstrip(".") + suffix
+    return str(n)
+
+
+def _title_terms(title, limit=8):
+    terms = []
+    for word in re.findall(r"[a-z']{3,}", (title or "").lower()):
+        if word not in _STOPWORDS and word not in ("mock",) and word not in terms:
+            terms.append(word)
+    return terms[:limit]
+
+
+def _published_phrase(video):
+    age = video.get("age_days")
+    if age is None:
+        return None
+    # Never "5 hours ago": an hour or minute figure here would be misread by
+    # the duration directive as a running time.
+    if age < 1:
+        return "within the last day"
+    if age < 60:
+        return f"about {age:.0f} days ago"
+    if age < 730:
+        return f"about {age / 30.44:.0f} months ago"
+    return f"about {age / 365.25:.0f} years ago"
+
+
+def _cue_counts(videos):
+    counts = Counter()
+    for v in videos:
+        text = " ".join([v.get("title") or ""] + list(v.get("badges") or [])).lower()
+        for cue in _VISUAL_CUES:
+            if re.search(r"(?<![a-z0-9])" + re.escape(cue) + r"(?![a-z0-9])", text):
+                counts[cue] += 1
+    return counts
+
+
+def _channel_cadence(feed, channel_id, channel_name):
+    """One sourced observation about how often a competitor channel uploads."""
+    data = feed.uploads(channel_id)
+    dates = []
+    for entry in data["entries"]:
+        try:
+            dates.append(datetime.fromisoformat(entry["published_utc"].replace("Z", "+00:00")))
+        except (ValueError, AttributeError):
+            continue
+    if len(dates) < 2:
+        return None
+    dates.sort()
+    gaps = [(b - a).total_seconds() / 86400 for a, b in zip(dates, dates[1:])]
+    views = [e["views"] for e in data["entries"] if e.get("views") is not None]
+    return {
+        "channel": data.get("channel") or channel_name,
+        "channel_id": channel_id,
+        "feed_url": feed.feed_url(channel_id),
+        "uploads_sampled": len(dates),
+        "first_upload_utc": dates[0].date().isoformat(),
+        "last_upload_utc": dates[-1].date().isoformat(),
+        "median_gap_days": round(_median(gaps), 1),
+        "median_recent_views": int(_median(views)) if views else None,
+    }
+
+
+def competitor_analysis(video_id, brief, concept=None, sources=None, feed=None, force=False):
+    """Who already publishes this, and what their videos are shaped like.
+
+    Returns ``(findings, record)``. ``findings`` are in the same
+    observation/interpretation discipline as the web sweep: one sourced
+    observation per top competitor video (its URL is the source) and per
+    channel cadence (its feed is the source), plus interpretations that
+    count across them and say so. ``record`` keeps the evidence - the
+    ranked videos, channels, route attempts - for the dashboard and for a
+    person to check the claims against.
+    """
+    queries = competitor_queries(brief, concept)
+    sources = sources if sources is not None else build_competitor_sources()
+    record = {"queries": queries, "sources": [s.name for s in sources],
+              "routing": [], "videos": [], "channels": [], "listing_urls": []}
+    if not queries:
+        record["routing"].append({"source": None, "query": None, "outcome": "skipped",
+                                  "detail": "no niche or concept title to search for"})
+        return [], record
+    if not sources:
+        record["routing"].append({"source": None, "query": None, "outcome": "skipped",
+                                  "detail": "no competitor source configured "
+                                            "(SEARCH_KEYLESS=0 and no YOUTUBE_API_KEY)"})
+        return [], record
+
+    videos, attempts, urls = collect_competitor_videos(queries, sources, force=force)
+    record.update(routing=attempts, videos=videos, listing_urls=urls)
+    findings = []
+    top = videos[:COMPETITOR_FINDING_LIMIT]
+    for v in top:
+        parts = []
+        if v.get("duration_seconds"):
+            parts.append(f"runs {v['duration_seconds'] / 60:.0f} minutes")
+        parts.append(f"{_compact_count(v.get('views'))} views")
+        published = _published_phrase(v)
+        if published:
+            parts.append(f"published {published}")
+        terms = _title_terms(v.get("title"))
+        if terms:
+            parts.append(f"title terms: {', '.join(terms)}")
+        cues = list(_cue_counts([v]))
+        if cues:
+            parts.append(f"visual cues: {', '.join(cues)}")
+        if v.get("badges"):
+            parts.append(f"badges: {', '.join(v['badges'][:4])}")
+        channel = _DURATION_PHRASE.sub("", v.get("channel") or "an unnamed channel").strip()
+        findings.append(_make_finding(
+            video_id, "observation", "competitors",
+            f"Competitor video by {channel or 'an unnamed channel'} on YouTube: "
+            + "; ".join(parts),
+            source_url=v["url"], source_title=v.get("title"), confidence="VERIFIED"))
+
+    if feed is None:
+        feed = build_feed_source()
+    if feed is not None and top:
+        ranked_channels = []
+        for v in top:
+            cid = v.get("channel_id")
+            if cid and cid not in [c for c, _ in ranked_channels]:
+                ranked_channels.append((cid, v.get("channel")))
+        for cid, name in ranked_channels[:COMPETITOR_FEED_CHANNELS]:
+            try:
+                cadence = _channel_cadence(feed, cid, name)
+            except (ResearchError, subject_research.SearchError) as e:
+                record["routing"].append({"source": feed.name, "query": cid,
+                                          "outcome": "error", "detail": str(e)[:300]})
+                continue
+            if cadence is None:
+                record["routing"].append({"source": feed.name, "query": cid,
+                                          "outcome": "thin", "detail": "fewer than 2 dated uploads"})
+                continue
+            record["routing"].append({"source": feed.name, "query": cid, "outcome": "ok",
+                                      "detail": f"{cadence['uploads_sampled']} upload(s)"})
+            record["channels"].append(cadence)
+            findings.append(_make_finding(
+                video_id, "observation", "competitors",
+                f"Competitor channel {cadence['channel']} uploaded "
+                f"{cadence['uploads_sampled']} videos between "
+                f"{cadence['first_upload_utc']} and {cadence['last_upload_utc']}, a median "
+                f"gap of {cadence['median_gap_days']} days between uploads",
+                source_url=cadence["feed_url"], source_title=f"{cadence['channel']} uploads feed",
+                confidence="VERIFIED"))
+
+    findings.extend(_competitor_interpretations(video_id, videos, findings))
+    record["summary"] = _competitor_summary(videos)
+    return findings, record
+
+
+def _competitor_summary(videos):
+    durations = [v["duration_seconds"] for v in videos if v.get("duration_seconds")]
+    views = [v["views"] for v in videos if v.get("views") is not None]
+    ages = [v["age_days"] for v in videos if v.get("age_days") is not None]
+    titles = [v.get("title") or "" for v in videos]
+    return {
+        "videos": len(videos),
+        "median_duration_seconds": round(_median(durations)) if durations else None,
+        "duration_range_seconds": [min(durations), max(durations)] if durations else None,
+        "median_views": int(_median(views)) if views else None,
+        "median_age_days": round(_median(ages)) if ages else None,
+        "published_last_12_months": sum(1 for a in ages if a <= 365),
+        "median_title_chars": round(_median([len(t) for t in titles])) if titles else None,
+        "visual_cues": dict(_cue_counts(videos).most_common(8)),
+        "channels": [{"channel": c, "videos": k} for c, k in Counter(
+            v.get("channel") for v in videos if v.get("channel")).most_common(5)],
+        "animated_thumbnails": sum(1 for v in videos if v.get("animated_thumbnail")),
+    }
+
+
+def _competitor_interpretations(video_id, videos, observations):
+    """Counts across the competitor listing, stated as interpretations.
+
+    Each names how many videos it counts over and carries the ids of the
+    per-video observations behind it; none is a directive by itself."""
+    if len(videos) < MIN_OBSERVATIONS_FOR_INTERPRETATION:
+        return []
+    evidence = [o["finding_id"] for o in observations]
+    n = len(videos)
+    out = []
+
+    def add(topic, statement):
+        finding = _make_finding(video_id, "interpretation", topic, statement,
+                                confidence="INFERRED")
+        finding["evidence_finding_ids"] = evidence
+        out.append(finding)
+
+    durations = sorted(v["duration_seconds"] for v in videos if v.get("duration_seconds"))
+    if len(durations) >= 2:
+        long_ones = sum(1 for d in durations if d >= 3600)
+        add("duration",
+            f"{len(durations)} competitor videos run a median of "
+            f"{_median(durations) / 60:.0f} minutes (range {durations[0] / 60:.0f}-"
+            f"{durations[-1] / 60:.0f} minutes); {long_ones} run an hour or longer")
+
+    titles = [v.get("title") or "" for v in videos if v.get("title")]
+    if len(titles) >= 2:
+        stated = sum(1 for t in titles if _DURATION_PHRASE.search(t))
+        separated = sum(1 for t in titles if re.search(r"\s[|\-–—:]\s|\|", t))
+        caps = sum(1 for t in titles if re.search(r"\b[A-Z]{3,}\b", t))
+        emoji = sum(1 for t in titles if re.search(r"[\U0001F300-\U0001FAFF☀-➿]", t))
+        terms = Counter()
+        for t in titles:
+            terms.update(set(_title_terms(t, limit=20)))
+        recurring = [w for w, c in terms.most_common(8) if c >= 2]
+        statement = (f"Across {len(titles)} competitor titles: {stated} state a running "
+                     f"time, {separated} use a separator (| - :), {caps} contain an "
+                     f"all-caps word, {emoji} use an emoji; median length "
+                     f"{_median([len(t) for t in titles]):.0f} characters")
+        if recurring:
+            statement += f"; recurring terms: {', '.join(recurring)}"
+        add("titles", statement)
+
+    cues = _cue_counts(videos)
+    animated = sum(1 for v in videos if v.get("animated_thumbnail"))
+    if cues or animated:
+        parts = []
+        if cues:
+            parts.append(f"visual cues named in competitor titles/badges: " + ", ".join(
+                f"{cue} ({count} of {n})" for cue, count in cues.most_common(6)))
+        if animated:
+            parts.append(f"{animated} of {n} listings carry an animated preview thumbnail")
+        add("thumbnails", "; ".join(parts))
+
+    views = [v["views"] for v in videos if v.get("views") is not None]
+    channels = Counter(v.get("channel") for v in videos if v.get("channel"))
+    if views:
+        statement = (f"Top competitor video has {_compact_count(max(views))} views; median "
+                     f"{_compact_count(int(_median(views)))} across {len(views)} videos from "
+                     f"{len(channels)} channels")
+        repeat = [f"{c} ({k})" for c, k in channels.most_common(3) if k >= 2]
+        if repeat:
+            statement += f"; channels appearing more than once: {', '.join(repeat)}"
+        add("competitors", statement)
+
+    ages = [v["age_days"] for v in videos if v.get("age_days") is not None]
+    if len(ages) >= 2:
+        add("competitors",
+            f"{sum(1 for a in ages if a <= 365)} of {len(ages)} competitor videos were "
+            f"published within the last 12 months; median age {_median(ages):.0f} days")
+    return out
 
 
 def build_providers():
@@ -675,6 +1373,7 @@ def save_brief(video_id, raw):
 FINDING_TOPICS = (
     "concept", "visuals", "audio", "pacing", "titles", "thumbnails",
     "audience", "editing", "duration", "presentation", "business",
+    "competitors",
 )
 
 # Which of those a project researches when its brief does not say. Each is
@@ -901,20 +1600,26 @@ def _seed_findings(video_id, ref, query, provider, youtube, force):
                               source_title=(ref.get("value") or "").strip(),
                               confidence="VERIFIED")
                 for statement in described["statements"]], "youtube"
+    if provider is None:
+        raise ResearchError("no web search provider and no YOUTUBE_API_KEY to study it with")
     results, _ = cached_search(
         provider, query, subject_research.DEFAULT_MAX_RESULTS, force=force)
-    return _observations_from_results(video_id, results, "concept"), provider.name
+    return (_observations_from_results(video_id, results, "concept"),
+            subject_research.served_by(results, provider.name))
 
 
-def research_project(video_id, brief, provider=None, force=False, youtube=None):
+def research_project(video_id, brief, provider=None, force=False, youtube=None,
+                     competitors=None, concept=None):
     """Brief-driven competitor/format findings for one project, cached once.
 
-    Optional and additive, unlike ``subject_research.research_subject``: a
-    project with no brief, or no configured search provider, simply has no
-    findings - callers must not treat that as a pipeline failure the way an
-    unsourced ``requires_subject_research`` concept is. Raises
-    ``ResearchError`` only when a search was attempted and came back too
-    thin to say anything sourced.
+    Every production runs this (``project.run_research`` derives a brief
+    when a project has none). Two halves, each recorded with its route:
+    the web-search topic sweep, and ``competitor_analysis`` - the top
+    published videos for the concept's subject, measured from a listing.
+    A failing source is recorded and the next one tried; ``ResearchError``
+    is raised only when, across both halves, fewer than ``MIN_SOURCES``
+    sourced observations came back. ``competitors=[]`` turns the listing
+    half off (tests); ``None`` builds the default route.
 
     Two contracts, deliberately different:
 
@@ -932,31 +1637,45 @@ def research_project(video_id, brief, provider=None, force=False, youtube=None):
         if cached is not None:
             return cached
 
-    provider = provider if provider is not None else subject_research._select_provider()
-    if provider is None:
-        raise ResearchError(
-            "no search provider selected. Set SEARCH_PROVIDER to a "
-            "configured provider, or TEST_MODE=1 for the fixture stand-in.")
-    if not provider.configured():
-        raise ResearchError(f"search provider {provider.name!r} is not configured")
-    youtube = youtube if youtube is not None else YouTubeProvider()
-
     queries = _search_queries(brief)
     seeds = _seed_queries(brief)
     if not queries and not seeds:
         raise ResearchError("brief has no niche or seed references to research from")
 
+    youtube = youtube if youtube is not None else YouTubeProvider()
+    provider = provider if provider is not None else \
+        subject_research._select_provider(purpose="competitor")
+    search_errors = []
+    if provider is None:
+        search_errors.append("no web search provider selected (SEARCH_KEYLESS=0 and "
+                             "no SEARXNG_URL, BRAVE_SEARCH_API_KEY or SEARCH_ORDER)")
+    elif not provider.configured():
+        search_errors.append(f"search provider {provider.name!r} is not configured")
+        provider = None
+
     observations, covered, uncovered, providers_used = [], [], [], set()
+    consecutive_errors = 0
     for topic, query in queries:
+        if provider is None or consecutive_errors >= 2:
+            # A dead route fails every query the same way; asking it seven
+            # more times only adds timeouts. The topic is still recorded.
+            uncovered.append(topic)
+            continue
         try:
             results, from_cache = cached_search(
                 provider, query, subject_research.DEFAULT_MAX_RESULTS, force=force)
         except subject_research.SearchError as e:
-            raise ResearchError(f"search failed for {query!r}: {e}") from e
+            consecutive_errors += 1
+            search_errors.append(f"{topic}: {e}")
+            log.warning("research: web search failed for %s (%s)", topic, e)
+            uncovered.append(topic)
+            continue
+        consecutive_errors = 0
         found = _observations_from_results(video_id, results, topic)
         if found:
             covered.append(topic)
-            providers_used.add(provider.name)
+            providers_used.update(
+                subject_research.served_by(results, provider.name).split("+"))
             observations.extend(found)
         else:
             uncovered.append(topic)
@@ -981,28 +1700,49 @@ def research_project(video_id, brief, provider=None, force=False, youtube=None):
                 f"seed {ref.get('type')} {label!r} produced no sourced "
                 "finding. Refusing to record research that did not actually "
                 "look at a reference the brief named.")
-        providers_used.add(source)
+        providers_used.update(source.split("+"))
         observations.extend(found)
         seed_coverage.append({"type": ref.get("type"), "value": label,
                               "provider": source, "findings": len(found)})
 
-    if len(observations) < subject_research.MIN_SOURCES:
-        raise ResearchError(
-            f"only {len(observations)} adequately-sourced finding(s) across "
-            f"{len(queries)} quer{'y' if len(queries) == 1 else 'ies'} "
-            f"(need >= {subject_research.MIN_SOURCES}); refusing to record "
-            "competitor research this thin")
+    competitor_findings, competitor_record = competitor_analysis(
+        video_id, brief, concept=concept, sources=competitors, force=force)
+    competitor_obs = [f for f in competitor_findings if f["kind"] == "observation"]
+    if competitor_obs:
+        covered.append("competitors")
+        providers_used.update(
+            {v.get("source") for v in competitor_record["videos"] if v.get("source")})
+        if competitor_record["channels"]:
+            providers_used.add(YouTubeFeedSource.name)
 
-    findings = observations + _interpretations(video_id, observations)
+    sourced = len(observations) + len(competitor_obs)
+    if sourced < subject_research.MIN_SOURCES:
+        reasons = list(search_errors) + [
+            f"{a['source']}: {a['detail']}" for a in competitor_record["routing"]
+            if a["outcome"] in ("error", "skipped")]
+        raise ResearchError(
+            f"only {sourced} adequately-sourced finding(s) across "
+            f"{len(queries)} web quer{'y' if len(queries) == 1 else 'ies'} and "
+            f"{len(competitor_record['videos'])} competitor video(s) "
+            f"(need >= {subject_research.MIN_SOURCES}); refusing to record "
+            "competitor research this thin"
+            + (f". Route: {'; '.join(reasons)[:900]}" if reasons else ""))
+
+    findings = (observations + _interpretations(video_id, observations)
+                + competitor_findings)
     artifact = {
         "video_id": video_id,
         "brief_niche": brief.get("niche"),
-        "provider": "+".join(sorted(providers_used)) or provider.name,
+        "provider": "+".join(sorted(providers_used))
+                    or (provider.name if provider is not None else "none"),
         "researched_utc": utc_now(),
         "topics_requested": requested_topics(brief),
         "topics_covered": sorted(set(covered)),
-        "topics_uncovered": sorted(set(uncovered)),
+        "topics_uncovered": sorted(set(uncovered) - set(covered)),
         "seed_coverage": seed_coverage,
+        "search_errors": search_errors,
+        "search_routing": getattr(provider, "last_attempts", None),
+        "competitor_analysis": competitor_record,
         "findings": findings,
     }
     FINDINGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1087,7 +1827,7 @@ _PACE_SIGNALS = (
 )
 
 _MOTION_SIGNALS = (
-    (("no motion", "static", "still image", "motionless", "dark screen"),
+    (("no motion", "static", "still image", "motionless", "dark screen", "black screen"),
      "still", "sources describe held, motionless frames"),
     (("pan", "ken burns", "parallax", "camera move", "sweep", "travel"),
      "travelling", "sources describe camera movement across the image"),
@@ -1229,7 +1969,7 @@ def production_directives(findings, brief=None, target_seconds=None):
 
     motion = _signal_directive(
         "motion_style", _MOTION_SIGNALS,
-        _observations_for(findings, ("visuals", "editing", "pacing")))
+        _observations_for(findings, ("visuals", "editing", "pacing", "competitors")))
     if motion:
         decisions.append(motion)
 
@@ -1239,19 +1979,24 @@ def production_directives(findings, brief=None, target_seconds=None):
     if transition:
         decisions.append(transition)
 
-    duration_obs = _observations_for(findings, ("duration",))
-    lengths = []
+    # A competitor video's own measured running time is as direct a
+    # statement of "how long these run" as any article about the niche.
+    duration_obs = _observations_for(findings, ("duration", "competitors"))
+    lengths, length_support = [], []
     for obs in duration_obs:
-        lengths.extend(_durations_in(obs["statement"]))
-    lengths = [s for s in lengths if 300.0 <= s <= 12 * 3600.0]
+        stated = [s for s in _durations_in(obs["statement"]) if 300.0 <= s <= 12 * 3600.0]
+        if stated:
+            lengths.extend(stated)
+            length_support.append(obs)
     if lengths:
+        # Cites only the observations that actually stated a length.
         decisions.append(_directive(
             "typical_duration_seconds", round(_median(lengths)),
             f"sources state how long videos in this niche run "
             f"({len(lengths)} stated value(s))",
-            duration_obs, confidence="VERIFIED"))
+            length_support, confidence="VERIFIED"))
 
-    audio_obs = _observations_for(findings, ("audio",))
+    audio_obs = _observations_for(findings, ("audio", "competitors"))
     emphasis, audio_support = [], []
     for layer, keywords in _AUDIO_SIGNALS:
         supporting = [o for o in audio_obs

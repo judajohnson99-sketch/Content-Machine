@@ -250,7 +250,7 @@ class TestConceptCatalog(unittest.TestCase):
     from configuration alone."""
 
     def setUp(self):
-        self._env = {k: os.environ.get(k) for k in ("TEST_MODE", "SEARCH_PROVIDER", "COMFYUI_URL")}
+        self._env = {k: os.environ.get(k) for k in ("TEST_MODE", "SEARCH_PROVIDER", "COMFYUI_URL", "SEARCH_KEYLESS")}
         for key in self._env:
             os.environ.pop(key, None)
         # The real worker registry (jobs/workers) belongs to this host; the
@@ -318,11 +318,19 @@ class TestConceptCatalog(unittest.TestCase):
         self.assertTrue(any("depicted" in n for n in entry["readiness"]["notes"]))
 
     def test_research_required_concept_is_blocked_without_a_search_provider(self):
+        os.environ["SEARCH_KEYLESS"] = "0"   # no keys and keyless fallbacks off
         catalog = experiment.concept_catalog()
         self.assertFalse(catalog["capabilities"]["search_available"])
         entry = next(c for c in catalog["concepts"] if c["id"] == "story-sleepy-history-adult")
         self.assertEqual(entry["readiness"]["research"], "blocked")
         self.assertTrue(any("SEARCH_PROVIDER" in n for n in entry["readiness"]["notes"]))
+
+    def test_a_bare_host_researches_through_the_keyless_fallbacks(self):
+        catalog = experiment.concept_catalog()
+        self.assertTrue(catalog["capabilities"]["search_available"])
+        self.assertEqual(catalog["capabilities"]["search_provider"], "duckduckgo,wikipedia")
+        entry = next(c for c in catalog["concepts"] if c["id"] == "story-sleepy-history-adult")
+        self.assertEqual(entry["readiness"]["research"], "ok")
 
     def test_research_readiness_follows_the_configured_provider(self):
         os.environ["TEST_MODE"] = "1"   # selects the fixture provider
@@ -332,6 +340,7 @@ class TestConceptCatalog(unittest.TestCase):
         self.assertEqual(entry["readiness"]["research"], "ok")
         os.environ.pop("TEST_MODE")
         os.environ["SEARCH_PROVIDER"] = "not-a-real-vendor"
+        os.environ["SEARCH_KEYLESS"] = "0"
         catalog = experiment.concept_catalog()
         self.assertEqual(catalog["capabilities"]["search_provider"], "not-a-real-vendor")
         self.assertFalse(catalog["capabilities"]["search_available"])

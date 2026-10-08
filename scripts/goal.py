@@ -299,6 +299,36 @@ def brief_from_plan(plan, goal):
     }
 
 
+def brief_from_concept(concept):
+    """A research brief for a production that started from a catalogue
+    concept rather than a goal, so no production is exempt from research.
+
+    Deterministic and LLM-free: the concept's own niche and format stand in
+    for the plan ``derive_plan`` would have produced, and the result goes
+    through ``brief_from_plan`` so both entry points carry the same shape
+    (default topic sweep, nothing that research treats as an explicit
+    instruction).
+    """
+    niche = (concept.get("niche") or "").strip() or (concept.get("id") or "").strip()
+    if not niche:
+        raise GoalError("concept has neither a niche nor an id to research from")
+    title = (concept.get("working_title_pattern") or "").split("|")[0].strip()
+    intent = " - ".join(part for part in (
+        title, (concept.get("content_format") or "").strip()) if part)
+    plan = {
+        "niche": niche,
+        "creative_intent": _one_line(intent or concept.get("tagline"), niche)[:240],
+        "likes": [],
+        "dislikes": [],
+        "research_topics": list(research_mod.DEFAULT_RESEARCH_TOPICS),
+    }
+    brief = brief_from_plan(plan, plan["creative_intent"])
+    brief["notes"] = (f"Derived from concept {concept.get('id')!r} because the "
+                      "production had no research brief. Every production is "
+                      "researched; edit this brief to steer it.")
+    return brief
+
+
 def derive_plan(goal, llm=None, minutes=None):
     """One LLM call turning a goal into a sanitised plan."""
     goal = " ".join((goal or "").split())

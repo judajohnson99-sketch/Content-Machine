@@ -29,12 +29,18 @@ separate from creative interpretation: this module writes down only what a
 source said and where it said it - turning that into a narration script or an
 image prompt is ``creative.py``'s job, not this one's.
 
-Search vendors sit behind ``SearchProvider`` so adding a real one later is a
-new subclass, not a change to any caller - the same shape as the image
-generation providers in ``scripts/generation.py``. No production web-search
-vendor is wired in yet: only the local, deterministic ``FixtureSearchProvider``
-exists today, matching the paid-provider rule ("off unless explicitly
-configured, and never on by accident") already applied to image generation.
+Search vendors sit behind ``SearchProvider`` so adding one is a new
+subclass, not a change to any caller - the same shape as the image
+generation providers in ``scripts/generation.py``. ``SearchRouter`` tries
+them cheapest-first: a self-hosted SearXNG instance (``SEARXNG_URL``) is the
+free primary, Brave's API (``BRAVE_SEARCH_API_KEY``) a metered fallback, then
+the keyless public fallbacks (DuckDuckGo's HTML endpoint, Wikipedia's search
+API) so research still runs on a host with no keys at all, and the
+LLM-grounded Gemini/Anthropic providers are always last and only ever reached
+when named in ``SEARCH_ORDER`` (or ``SEARCH_PROVIDER``) - the paid-provider
+rule ("off unless explicitly configured, and never on by accident") already
+applied to image generation. ``SEARCH_KEYLESS=0`` removes the keyless
+fallbacks from every route.
 
     python3 scripts/subject_research.py research <video-id> --concept-id ID
     python3 scripts/subject_research.py show <video-id>
@@ -64,6 +70,27 @@ MIN_SOURCES = 2
 MIN_SNIPPET_CHARS = 40
 DEFAULT_MAX_RESULTS = 5
 
+# Cost/reliability tiers. The router sorts by these so a paid provider is
+# always last, whatever order it was configured in. "keyless" is free but
+# scraped from public endpoints that rate-limit and change shape, so it sits
+# after the operator's own instance and keyed index and before anything paid.
+TIER_FREE, TIER_METERED, TIER_KEYLESS, TIER_PAID = 0, 1, 2, 3
+TIER_NAMES = {TIER_FREE: "free", TIER_METERED: "metered",
+              TIER_KEYLESS: "keyless", TIER_PAID: "paid"}
+
+# The route when neither SEARCH_ORDER nor SEARCH_PROVIDER is set. These two
+# only participate once their own setting exists (SEARXNG_URL,
+# BRAVE_SEARCH_API_KEY). The keyless fallbacks are appended to every route,
+# explicit or default, unless SEARCH_KEYLESS=0 - so a host whose named
+# provider is out of quota, or that has no keys at all, still researches.
+DEFAULT_SEARCH_ORDER = ("searxng", "brave")
+KEYLESS_SEARCH_ORDER = ("duckduckgo", "wikipedia")
+# Providers that answer "what is X" well and "what do videos in this niche
+# look like" badly. Competitor research leaves them off an automatic route.
+SUBJECT_ONLY_PROVIDERS = ("wikipedia",)
+DEFAULT_SEARCH_TIMEOUT = 15.0
+DEFAULT_SEARCH_COOLDOWN = 300.0
+
 
 class SubjectResearchError(Exception):
     """Raised when a subject cannot be adequately, honestly sourced."""
@@ -90,6 +117,7 @@ class SearchProvider:
     """Common provider interface. Subclasses own all vendor specifics."""
 
     name = "base"
+    tier = TIER_FREE
 
     def configured(self):
         raise NotImplementedError
@@ -114,6 +142,7 @@ class FixtureSearchProvider(SearchProvider):
     """
 
     name = "fixture"
+    tier = TIER_FREE
 
     def configured(self):
         return True
@@ -182,6 +211,7 @@ class GeminiSearchProvider(SearchProvider):
     """
 
     name = "gemini"
+    tier = TIER_PAID
 
     def configured(self):
         return bool(_env("GEMINI_API_KEY"))
@@ -280,6 +310,7 @@ class AnthropicSearchProvider(SearchProvider):
     """
 
     name = "anthropic"
+    tier = TIER_PAID
 
     def configured(self):
         return bool(_env("ANTHROPIC_API_KEY"))
@@ -326,45 +357,570 @@ class AnthropicSearchProvider(SearchProvider):
         return results
 
 
+# --------------------------------------------------------------------------
+# low-cost web search providers - plain HTTP, standard library only
+# --------------------------------------------------------------------------
+
+_USER_AGENT = "ContentMachine/1.0 (subject research; +https://github.com/judajohnson99-sketch/Content-Machine)"
+_TAG = re.compile(r"<[^>]+>")
+
+
+def _clean_text(text):
+    """Vendor snippets carry highlight markup and entities; facts must not."""
+    import html
+    return " ".join(html.unescape(_TAG.sub("", text or "")).split())
+
+
+def _search_timeout():
+    try:
+        return float(_env("SEARCH_TIMEOUT", DEFAULT_SEARCH_TIMEOUT))
+    except ValueError:
+        return DEFAULT_SEARCH_TIMEOUT
+
+
+# Public HTML endpoints serve a reduced or challenge page to obvious bots; a
+# browser-shaped agent gets the ordinary markup. TLS is always verified.
+BROWSER_USER_AGENT = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+
+
+def http_get(url, headers=None, timeout=None, label="search", data=None):
+    """GET (or POST ``data``) ``url`` and return ``(status, body_bytes)``.
+
+    Every transport failure becomes ``SearchError`` naming ``label``, so a
+    router can record why a source was skipped. Standard library only; the
+    process's proxy settings and CA store are used as-is.
+    """
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(url, data=data, headers={
+        "User-Agent": _USER_AGENT, **(headers or {})})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout or _search_timeout()) as response:
+            return getattr(response, "status", 200), response.read()
+    except urllib.error.HTTPError as e:
+        raise SearchError(f"{label} returned HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise SearchError(f"{label} unreachable: {getattr(e, 'reason', e)}") from e
+
+
+def _http_get_json(url, headers=None, timeout=None, label="search"):
+    """GET ``url`` and decode JSON, turning every failure into ``SearchError``."""
+    _status, body = http_get(url, headers={"Accept": "application/json", **(headers or {})},
+                             timeout=timeout, label=label)
+    try:
+        return json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as e:
+        raise SearchError(f"{label} returned malformed JSON: {e}") from e
+
+
+class SearXNGSearchProvider(SearchProvider):
+    """A self-hosted SearXNG metasearch instance - the free primary route.
+
+    ``SEARXNG_URL`` is the instance's base URL and has no default: unset
+    means "there is no instance", exactly as an unset ``COMFYUI_URL`` means
+    the PC is off. The instance must allow the JSON output format
+    (``search.formats`` in its ``settings.yml``); one that does not answers
+    403, which is reported as such rather than as "no results".
+    ``SEARXNG_ENGINES`` and ``SEARXNG_LANGUAGE`` are passed through when set.
+    """
+
+    name = "searxng"
+    tier = TIER_FREE
+
+    def configured(self):
+        return bool(_env("SEARXNG_URL"))
+
+    def _fetch(self, url):
+        """The one network-touching step, isolated so tests replace it."""
+        try:
+            return _http_get_json(url, label="searxng")
+        except SearchError as e:
+            if "HTTP 403" in str(e):
+                raise SearchError("searxng refused JSON output (HTTP 403); enable "
+                                  "'json' under search.formats in settings.yml") from e
+            raise
+
+    def search(self, query, max_results=DEFAULT_MAX_RESULTS):
+        from urllib.parse import urlencode
+        base = _env("SEARXNG_URL")
+        if not base:
+            raise SearchError("searxng search provider is not configured (SEARXNG_URL unset)")
+        params = {"q": query, "format": "json", "safesearch": "1"}
+        for key, env in (("engines", "SEARXNG_ENGINES"), ("language", "SEARXNG_LANGUAGE")):
+            if _env(env):
+                params[key] = _env(env)
+        payload = self._fetch(f"{base.rstrip('/')}/search?{urlencode(params)}")
+        items = payload.get("results") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            raise SearchError("searxng response has no 'results' list")
+        results, seen = [], set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            url = (item.get("url") or "").strip()
+            snippet = _clean_text(item.get("content"))
+            if not url.startswith(("http://", "https://")) or not snippet or url in seen:
+                continue
+            seen.add(url)
+            results.append({"title": _clean_text(item.get("title")), "url": url,
+                            "snippet": snippet})
+            if len(results) >= max_results:
+                break
+        return results
+
+
+class BraveSearchProvider(SearchProvider):
+    """Brave's Search API - a keyed, metered web index used as a fallback.
+
+    Setting ``BRAVE_SEARCH_API_KEY`` is the opt-in: the key is used for
+    nothing else, so unlike ``GEMINI_API_KEY`` it cannot have been set for a
+    different reason. It still routes after every free provider, so it is
+    only spent when the free route failed or came back too thin.
+    """
+
+    name = "brave"
+    tier = TIER_METERED
+    endpoint = "https://api.search.brave.com/res/v1/web/search"
+
+    def configured(self):
+        return bool(_env("BRAVE_SEARCH_API_KEY"))
+
+    def _fetch(self, url, key):
+        """The one network-touching step, isolated so tests replace it."""
+        return _http_get_json(url, headers={"X-Subscription-Token": key}, label="brave")
+
+    def search(self, query, max_results=DEFAULT_MAX_RESULTS):
+        from urllib.parse import urlencode
+        key = _env("BRAVE_SEARCH_API_KEY")
+        if not key:
+            raise SearchError("brave search provider is not configured (BRAVE_SEARCH_API_KEY unset)")
+        payload = self._fetch(
+            f"{self.endpoint}?{urlencode({'q': query, 'count': max(1, min(20, max_results))})}", key)
+        web = payload.get("web") if isinstance(payload, dict) else None
+        items = (web or {}).get("results") if isinstance(web, dict) else []
+        results, seen = [], set()
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            url = (item.get("url") or "").strip()
+            snippet = _clean_text(item.get("description"))
+            if not url.startswith(("http://", "https://")) or not snippet or url in seen:
+                continue
+            seen.add(url)
+            results.append({"title": _clean_text(item.get("title")), "url": url,
+                            "snippet": snippet})
+            if len(results) >= max_results:
+                break
+        return results
+
+
+class _DuckDuckGoParser:
+    """Pulls (href, title, snippet) out of DuckDuckGo's no-JS results page.
+
+    Built on ``html.parser`` rather than one regex over the document so a
+    change in attribute order or nesting does not silently drop results.
+    """
+
+    def __init__(self):
+        from html.parser import HTMLParser
+        outer = self
+
+        class _Parser(HTMLParser):
+            def handle_starttag(self, tag, attrs):
+                outer._start(tag, dict(attrs))
+
+            def handle_endtag(self, tag):
+                outer._end(tag)
+
+            def handle_data(self, data):
+                outer._data(data)
+
+        self._parser = _Parser(convert_charrefs=True)
+        self.results = []
+        self._current = None
+        self._capture = None      # "title" | "snippet" while inside one
+        self._depth = 0
+        self._buf = []
+
+    def feed(self, text):
+        self._parser.feed(text)
+        self._parser.close()
+        self._flush()
+        return self.results
+
+    def _flush(self):
+        if self._current and self._current.get("href"):
+            self.results.append(self._current)
+        self._current = None
+
+    def _start(self, tag, attrs):
+        classes = set((attrs.get("class") or "").split())
+        if self._capture:
+            self._depth += 1
+            return
+        if tag == "div" and "result" in classes:
+            self._flush()
+            self._current = {"ad": "result--ad" in classes}
+        elif tag == "a" and "result__a" in classes:
+            if self._current is None:
+                self._current = {"ad": False}
+            self._current["href"] = attrs.get("href") or ""
+            self._capture, self._depth, self._buf = "title", 1, []
+        elif "result__snippet" in classes and self._current is not None:
+            self._capture, self._depth, self._buf = "snippet", 1, []
+
+    def _end(self, tag):
+        if not self._capture:
+            return
+        self._depth -= 1
+        if self._depth <= 0:
+            self._current[self._capture] = " ".join("".join(self._buf).split())
+            self._capture = None
+
+    def _data(self, data):
+        if self._capture:
+            self._buf.append(data)
+
+
+def _ddg_target(href):
+    """The real destination of a DuckDuckGo result link (it wraps them in a
+    ``/l/?uddg=`` redirect), or None for an ad or an unreadable link."""
+    from urllib.parse import parse_qs, urlparse
+    if not href:
+        return None
+    if href.startswith("//"):
+        href = "https:" + href
+    parsed = urlparse(href)
+    if parsed.netloc.endswith("duckduckgo.com"):
+        if parsed.path.startswith("/y.js"):
+            return None           # sponsored result
+        target = parse_qs(parsed.query).get("uddg")
+        if not target:
+            return None
+        href = target[0]
+    return href if href.startswith(("http://", "https://")) else None
+
+
+class DuckDuckGoSearchProvider(SearchProvider):
+    """DuckDuckGo's no-JavaScript HTML results: free, keyless web search.
+
+    The fallback that lets research run on a host with no keys at all. It is
+    a public page, not an API: it rate-limits and sometimes answers with a
+    bot challenge, which is a ``SearchError`` (the router records it and
+    moves on), never parsed as "no results". ``DUCKDUCKGO_HTML_URL`` points
+    it elsewhere; ``SEARCH_KEYLESS=0`` keeps it off every route.
+    """
+
+    name = "duckduckgo"
+    tier = TIER_KEYLESS
+    default_endpoint = "https://html.duckduckgo.com/html/"
+
+    def configured(self):
+        return True
+
+    def _fetch(self, url, data):
+        """The one network-touching step, isolated so tests replace it."""
+        status, body = http_get(url, data=data, label="duckduckgo", headers={
+            "User-Agent": BROWSER_USER_AGENT, "Accept": "text/html",
+            "Accept-Language": "en-US,en;q=0.8",
+            "Content-Type": "application/x-www-form-urlencoded"})
+        return status, body.decode("utf-8", "replace")
+
+    def search(self, query, max_results=DEFAULT_MAX_RESULTS):
+        from urllib.parse import urlencode
+        endpoint = _env("DUCKDUCKGO_HTML_URL", self.default_endpoint)
+        status, text = self._fetch(endpoint, urlencode({"q": query, "kl": "us-en"}).encode())
+        if status == 202 or "anomaly-modal" in text or "challenge-form" in text:
+            raise SearchError("duckduckgo served a bot challenge instead of results")
+        if "result__a" not in text:
+            if "no-results" in text or "No results." in text:
+                return []
+            raise SearchError("duckduckgo page has no recognisable results markup")
+        results, seen = [], set()
+        for item in _DuckDuckGoParser().feed(text):
+            if item.get("ad"):
+                continue
+            url = _ddg_target(item.get("href"))
+            snippet = _clean_text(item.get("snippet"))
+            if not url or not snippet or url in seen:
+                continue
+            seen.add(url)
+            results.append({"title": _clean_text(item.get("title")), "url": url,
+                            "snippet": snippet})
+            if len(results) >= max_results:
+                break
+        return results
+
+
+class WikipediaSearchProvider(SearchProvider):
+    """Wikipedia's public search API: free and keyless.
+
+    Each result is the plain-text lead of one matching article, attributed
+    to that article's URL - well suited to the dry factual subjects
+    ``requires_subject_research`` concepts narrate, poor for competitor or
+    format research, so an automatic competitor route leaves it off
+    (``SUBJECT_ONLY_PROVIDERS``). A keyless fallback, routed after any
+    configured instance or key. ``WIKIPEDIA_API_URL`` selects another
+    language edition.
+    """
+
+    name = "wikipedia"
+    tier = TIER_KEYLESS
+    default_endpoint = "https://en.wikipedia.org/w/api.php"
+
+    def configured(self):
+        return True
+
+    def _fetch(self, url):
+        """The one network-touching step, isolated so tests replace it."""
+        return _http_get_json(url, label="wikipedia")
+
+    def search(self, query, max_results=DEFAULT_MAX_RESULTS):
+        from urllib.parse import urlencode
+        params = {
+            "action": "query", "format": "json", "formatversion": "2",
+            "generator": "search", "gsrsearch": query,
+            "gsrlimit": max(1, min(20, max_results)),
+            "prop": "extracts|info", "inprop": "url", "exintro": "1",
+            "explaintext": "1", "exsentences": "3", "exlimit": "max",
+        }
+        payload = self._fetch(
+            f"{_env('WIKIPEDIA_API_URL', self.default_endpoint)}?{urlencode(params)}")
+        if not isinstance(payload, dict):
+            raise SearchError("wikipedia response is not a JSON object")
+        if payload.get("error"):
+            raise SearchError(f"wikipedia error: {payload['error'].get('info', 'unknown')}")
+        pages = (payload.get("query") or {}).get("pages") or []
+        results = []
+        for page in sorted((p for p in pages if isinstance(p, dict)),
+                           key=lambda p: p.get("index", 0)):
+            url = (page.get("fullurl") or "").strip()
+            snippet = _clean_text(page.get("extract"))
+            if not url.startswith(("http://", "https://")) or not snippet:
+                continue
+            results.append({"title": (page.get("title") or "").strip(), "url": url,
+                            "snippet": snippet})
+            if len(results) >= max_results:
+                break
+        return results
+
+
+# --------------------------------------------------------------------------
+# routing - cheapest capable provider first, fall back cleanly
+# --------------------------------------------------------------------------
+
+class SearchRouter(SearchProvider):
+    """Tries providers cheapest-first and stops as soon as research is adequate.
+
+    Routing rules, all fail-closed:
+
+    - Providers are tried in configured order, but stably re-sorted by cost
+      tier (free, then metered search, then LLM-grounded search), so a paid
+      provider is last however the order was written.
+    - An unconfigured provider is skipped. One that raises ``SearchError``
+      is recorded, put in cooldown for the rest of this router's life (or
+      ``SEARCH_COOLDOWN`` seconds), and the next one is tried.
+    - Results accumulate across providers, de-duplicated by URL, and the
+      route stops once ``MIN_SOURCES`` adequate results exist - a later
+      provider is only reached when the earlier ones failed or were thin.
+    - If every attempted provider errored, the router raises
+      ``SearchError``; otherwise it returns what it has, and the caller's
+      adequacy check decides. It never invents anything to fill the gap.
+
+    Every result carries ``provider`` - the name of the provider that
+    actually returned it - so provenance survives routing and caching.
+    ``last_attempts`` records what happened on the most recent search.
+    """
+
+    name = "routed"
+
+    def __init__(self, providers, cooldown_seconds=None, clock=None):
+        self.providers = sorted(providers, key=lambda p: getattr(p, "tier", TIER_FREE))
+        if cooldown_seconds is None:
+            try:
+                cooldown_seconds = float(_env("SEARCH_COOLDOWN", DEFAULT_SEARCH_COOLDOWN))
+            except ValueError:
+                cooldown_seconds = DEFAULT_SEARCH_COOLDOWN
+        self.cooldown_seconds = cooldown_seconds
+        import time
+        self._clock = clock or time.monotonic
+        self._cooldown_until = {}
+        self.last_attempts = []
+
+    @property
+    def tier(self):
+        return min((getattr(p, "tier", TIER_FREE) for p in self.providers), default=TIER_FREE)
+
+    def configured(self):
+        return any(p.configured() for p in self.providers)
+
+    def search(self, query, max_results=DEFAULT_MAX_RESULTS):
+        attempts, results, seen_urls = [], [], set()
+        tried = errored = 0
+        for provider in self.providers:
+            if not provider.configured():
+                attempts.append({"provider": provider.name, "outcome": "skipped",
+                                 "detail": "not configured"})
+                continue
+            if self._clock() < self._cooldown_until.get(provider.name, float("-inf")):
+                attempts.append({"provider": provider.name, "outcome": "skipped",
+                                 "detail": "cooling down after an earlier failure"})
+                continue
+            tried += 1
+            try:
+                found = provider.search(query, max_results=max_results) or []
+            except SearchError as e:
+                errored += 1
+                self._cooldown_until[provider.name] = self._clock() + self.cooldown_seconds
+                attempts.append({"provider": provider.name, "outcome": "error",
+                                 "detail": str(e)[:300]})
+                log.warning("search: %s failed (%s); trying the next provider",
+                            provider.name, e)
+                continue
+            added = 0
+            for r in found:
+                url = r.get("url")
+                if not url or url in seen_urls or len(results) >= max_results:
+                    continue
+                seen_urls.add(url)
+                results.append({**r, "provider": r.get("provider") or provider.name})
+                added += 1
+            enough = sum(1 for r in results if _adequate(r)) >= MIN_SOURCES
+            attempts.append({"provider": provider.name,
+                             "outcome": "ok" if enough else "thin",
+                             "detail": f"{len(found)} result(s), {added} new"})
+            if enough:
+                break
+        self.last_attempts = attempts
+        if tried == 0:
+            raise SearchError("no configured search provider in the route ("
+                              + ", ".join(p.name for p in self.providers) + ")")
+        if errored == tried:
+            raise SearchError("every search provider failed: " + "; ".join(
+                f"{a['provider']}: {a['detail']}" for a in attempts if a["outcome"] == "error"))
+        return results
+
+
+def _adequate(result):
+    return bool(result.get("url")) and \
+        len((result.get("snippet") or "").strip()) >= MIN_SNIPPET_CHARS
+
+
+def served_by(results, default):
+    """The provider name(s) that actually produced ``results``, for provenance."""
+    names = sorted({r.get("provider") for r in results or [] if r.get("provider")})
+    return "+".join(names) or default
+
+
 def build_search_providers():
     """Every search provider this build knows how to construct.
 
     Adding one is a new ``SearchProvider`` subclass registered here; no
-    caller changes. ``SEARCH_PROVIDER`` pointing at an unknown name resolves
-    to nothing, and subject research fails closed. Nothing is selected by
-    default: the only provider that costs money (``gemini``) is opt-in.
+    caller changes.
     """
     return {"fixture": FixtureSearchProvider(),
+            "searxng": SearXNGSearchProvider(),
+            "brave": BraveSearchProvider(),
+            "duckduckgo": DuckDuckGoSearchProvider(),
+            "wikipedia": WikipediaSearchProvider(),
             "gemini": GeminiSearchProvider(),
             "anthropic": AnthropicSearchProvider()}
 
 
-def _select_provider(providers=None):
+def _route_names():
+    """The route as configured: (names, explicit).
+
+    ``SEARCH_ORDER`` (comma-separated) wins, then ``SEARCH_PROVIDER`` (one
+    name, or a comma list, kept for existing configs). With neither, the
+    default route is ``DEFAULT_SEARCH_ORDER``. The LLM-grounded providers
+    are never in the default route and are reached only when named. The
+    keyless fallbacks are added by ``_select_provider``, not here.
+    """
+    for env in ("SEARCH_ORDER", "SEARCH_PROVIDER"):
+        raw = _env(env)
+        if raw:
+            return [n.strip() for n in raw.split(",") if n.strip()], True
+    return list(DEFAULT_SEARCH_ORDER), False
+
+
+def keyless_enabled():
+    """Whether the keyless public fallbacks may join a route (default yes)."""
+    return str(_env("SEARCH_KEYLESS", "1")).strip().lower() not in ("0", "false", "no", "off")
+
+
+def _select_provider(providers=None, purpose="subject"):
+    """The provider (or router) research should use, or None to fail closed.
+
+    ``TEST_MODE=1`` always selects the fixture. Otherwise the route is the
+    configured one (explicit names, or the configured part of the default)
+    followed by the keyless fallbacks unless ``SEARCH_KEYLESS=0``, so a
+    host with no keys, or whose named provider has no quota left, still
+    researches. ``purpose="competitor"`` leaves subject-only providers
+    (Wikipedia) off the automatic part of the route. One provider comes back
+    as itself; several as a ``SearchRouter``, whose tier sort keeps any paid
+    provider last.
+    """
     providers = providers if providers is not None else build_search_providers()
     if os.environ.get("TEST_MODE") == "1":
         return providers.get("fixture")
-    name = _env("SEARCH_PROVIDER")
-    if not name:
+    names, explicit = _route_names()
+    chosen = []
+    for name in names:
+        provider = providers.get(name)
+        if provider is None:
+            log.warning("unknown search provider in route: %s", name)
+        elif provider not in chosen and (explicit or provider.configured()):
+            chosen.append(provider)
+    if keyless_enabled():
+        for name in KEYLESS_SEARCH_ORDER:
+            provider = providers.get(name)
+            if provider is None or provider in chosen:
+                continue
+            if purpose == "competitor" and name in SUBJECT_ONLY_PROVIDERS:
+                continue
+            chosen.append(provider)
+    if not chosen:
         return None
-    return providers.get(name)
+    if len(chosen) == 1:
+        return chosen[0]
+    return SearchRouter(chosen)
 
 
 def provider_status(providers=None):
     """Whether sourced research can run here, from configuration alone.
 
-    ``configured`` is what SEARCH_PROVIDER names (or "fixture" under
-    TEST_MODE); ``available`` is whether that resolves to a provider this
-    build knows and which reports itself configured. Read by the concept
-    catalogue so the UI can say, before a run, that a research-required
-    concept would fail closed - never a reason to fall back to model memory.
+    ``configured`` names the route (what ``SEARCH_ORDER``/``SEARCH_PROVIDER``
+    say, the configured part of the default route, or "fixture" under
+    TEST_MODE); ``available`` is whether at least one provider on it reports
+    itself configured; ``route`` lists each one with its cost tier. Read by
+    the concept catalogue so the UI can say, before a run, that a
+    research-required concept would fail closed - never a reason to fall
+    back to model memory. No network probe.
     """
     providers = providers if providers is not None else build_search_providers()
     provider = _select_provider(providers)
-    configured = "fixture" if os.environ.get("TEST_MODE") == "1" else _env("SEARCH_PROVIDER")
+    if os.environ.get("TEST_MODE") == "1":
+        configured = "fixture"
+    else:
+        names, explicit = _route_names()
+        if not explicit:
+            names = [n for n in names if providers[n].configured()]
+        if keyless_enabled():
+            names = names + [n for n in KEYLESS_SEARCH_ORDER if n not in names]
+        # In the order the router will actually try them (tier, then as written).
+        names = sorted(names, key=lambda n: getattr(providers.get(n), "tier", TIER_FREE))
+        configured = ",".join(names) or None
+    route = provider.providers if isinstance(provider, SearchRouter) else \
+        ([provider] if provider is not None else [])
     return {
         "configured": configured,
         "available": bool(provider is not None and provider.configured()),
         "known": sorted(providers),
+        "route": [{"name": p.name, "configured": p.configured(),
+                   "tier": TIER_NAMES.get(getattr(p, "tier", TIER_FREE), "free")}
+                  for p in route],
     }
 
 
@@ -434,8 +990,10 @@ def research_subject(video_id, concept, provider=None, force=False):
     provider = provider if provider is not None else _select_provider()
     if provider is None:
         raise SubjectResearchError(
-            "no search provider selected. Set SEARCH_PROVIDER to a "
-            "configured provider, or TEST_MODE=1 for the fixture stand-in. "
+            "no search provider selected (keyless fallbacks disabled by "
+            "SEARCH_KEYLESS=0). Set SEARXNG_URL (free, self-hosted), "
+            "BRAVE_SEARCH_API_KEY, or SEARCH_ORDER/SEARCH_PROVIDER, or "
+            "TEST_MODE=1 for the fixture stand-in. "
             "Refusing to write subject facts from model memory alone.")
     if not provider.configured():
         raise SubjectResearchError(f"search provider {provider.name!r} is not configured")
@@ -456,9 +1014,13 @@ def research_subject(video_id, concept, provider=None, force=False):
         if r.get("url") and len((r.get("snippet") or "").strip()) >= MIN_SNIPPET_CHARS
     ]
     if len(adequate) < MIN_SOURCES:
+        tried = ""
+        if isinstance(provider, SearchRouter) and provider.last_attempts:
+            tried = " (route: " + ", ".join(
+                f"{a['provider']} {a['outcome']}" for a in provider.last_attempts) + ")"
         raise SubjectResearchError(
             f"only {len(adequate)} adequately-sourced result(s) for {query!r} "
-            f"(need >= {MIN_SOURCES}); refusing to research this subject from "
+            f"(need >= {MIN_SOURCES}){tried}; refusing to research this subject from "
             "thin or absent sources rather than fall back to model memory")
 
     facts = [
@@ -466,6 +1028,7 @@ def research_subject(video_id, concept, provider=None, force=False):
             "statement": r["snippet"].strip(),
             "source_url": r["url"],
             "source_title": (r.get("title") or "").strip(),
+            "provider": r.get("provider") or provider.name,
         }
         for r in adequate
     ]
@@ -474,13 +1037,16 @@ def research_subject(video_id, concept, provider=None, force=False):
         "video_id": video_id,
         "concept_id": concept.get("id"),
         "query": query,
-        "provider": provider.name,
+        # The provider(s) that actually returned the facts, not the route.
+        "provider": served_by(adequate, provider.name),
         "researched_utc": utc_now(),
         # Sourced facts only - no creative interpretation. creative.py turns
         # these into narration/prompts; this module never does that itself.
         "facts": facts,
         "sources": [{"url": f["source_url"], "title": f["source_title"]} for f in facts],
     }
+    if isinstance(provider, SearchRouter):
+        artifact["routing"] = provider.last_attempts
     _save(video_id, artifact)
     return artifact
 
