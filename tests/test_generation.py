@@ -229,6 +229,32 @@ class RouterTestCase(unittest.TestCase):
         self.assertEqual(first["job_id"], second["job_id"])
         self.assertTrue(second.get("reused"))
 
+    def test_reused_job_lands_in_the_new_productions_directory(self):
+        """A second production asking for the same picture gets its own copy.
+
+        The defect: the job store is keyed by request digest, so the reused
+        record still pointed into the first project's images/ and the new
+        production rendered (or failed) without images of its own.
+        """
+        comfy = FakeProvider("comfyui")
+        router = self.router([comfy])
+        first = router.generate(self.request(), self.tmp / "project-a" / "images")
+        second = router.generate(self.request(), self.tmp / "project-b" / "images")
+        self.assertEqual(comfy.calls, 1, "a reused picture was rendered twice")
+        self.assertTrue(second.get("reused"))
+        for asset in second["assets"]:
+            self.assertEqual(Path(asset).parent, (self.tmp / "project-b" / "images").resolve())
+            self.assertTrue(Path(asset).is_file())
+        self.assertEqual(Path(second["assets"][0]).read_bytes(),
+                         Path(first["assets"][0]).read_bytes())
+        # The first project keeps its own record and files.
+        stored = generation.load_job(first["job_id"])
+        self.assertEqual(stored["assets"], first["assets"])
+        for asset in first["assets"]:
+            Path(asset).unlink()
+        self.assertTrue(Path(second["assets"][0]).is_file(),
+                        "deleting the first project removed the second's image")
+
     def test_completed_job_regenerates_when_its_assets_are_gone(self):
         """Reuse is conditional on the output still existing."""
         comfy = FakeProvider("comfyui")
@@ -333,7 +359,11 @@ class FakeComfyHandler(BaseHTTPRequestHandler):
                     "messages": [["execution_start", {}], ["execution_error", {
                         "node_type": "VAEDecode", "exception_type": "RuntimeError",
                         "exception_message": "transient decode failure"}]]}}})
-            elif self.behaviour["mode"] == "oom":
+            elif self.behaviour["mode"] == "oom" or (
+                    self.behaviour["mode"] == "oom_two_pass"
+                    and any(isinstance(n, dict) and n.get("class_type") == "LatentUpscale"
+                            for n in ([e for e in self.events if e[0] == "submit"][-1][1]
+                                      ["prompt"].values()))):
                 self._json(200, {prompt_id: {"status": {
                     "status_str": "error", "completed": True,
                     "messages": [["execution_start", {}], ["execution_error", {
@@ -637,9 +667,54 @@ class VramTieredWorkflowTestCase(unittest.TestCase):
             os.environ["COMFYUI_WORKFLOW"] = self._workflow_env
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def test_a_3gb_card_gets_the_two_pass_template(self):
+        """3GB is under the upscale line but over the two-pass floor: the
+        verified 768x432 latent is re-sampled at 1.25x, never decoded at
+        the full requested size."""
+        provider = generation.ComfyUIProvider(url=self.url)
+        request = generation.GenerationRequest(prompt="x", width=1920, height=1080)
+        graph = provider._load_workflow(request)
+        self.assertEqual(graph["5"]["inputs"], {"width": 768, "height": 432, "batch_size": 1})
+        self.assertEqual(graph["10"]["class_type"], "LatentUpscale")
+        self.assertEqual((graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]),
+                         (960, 536))
+        self.assertEqual(graph["11"]["inputs"]["latent_image"], ["10", 0])
+        self.assertLess(graph["11"]["inputs"]["denoise"], 1.0)
+        self.assertEqual(graph["8"]["inputs"]["samples"], ["11", 0])
+        result = provider.generate(
+            generation.GenerationRequest(prompt="x", width=1920, height=1080, count=1),
+            self.tmp, timeout=5)
+        self.assertEqual((result["native_width"], result["native_height"]), (960, 536))
+        self.assert_image_size(result["assets"][0], 1920, 1080)
+
+    def test_two_pass_out_of_memory_falls_back_to_one_pass_for_the_same_request(self):
+        FakeComfyHandler.behaviour["mode"] = "oom_two_pass"
+        provider = generation.ComfyUIProvider(url=self.url)
+        result = provider.generate(
+            generation.GenerationRequest(prompt="x", width=1920, height=1080, count=1),
+            self.tmp, timeout=5)
+        submitted = [payload["prompt"] for kind, payload in FakeComfyHandler.events
+                     if kind == "submit"]
+        self.assertEqual(len(submitted), 2)
+        self.assertIn("10", submitted[0])
+        self.assertNotIn("10", submitted[1])
+        self.assertEqual((result["native_width"], result["native_height"]), (768, 432))
+        self.assertIn("single pass used", result["notes"])
+
+    def test_a_software_failure_on_two_pass_is_not_retried(self):
+        FakeComfyHandler.behaviour["mode"] = "job_error"
+        provider = generation.ComfyUIProvider(url=self.url)
+        with self.assertRaises(generation.GenerationError):
+            provider.generate(generation.GenerationRequest(prompt="x", count=1),
+                              self.tmp, timeout=5)
+        self.assertEqual(len([e for e in FakeComfyHandler.events if e[0] == "submit"]), 1)
+
     def test_a_small_card_gets_the_tiny_no_upscale_template(self):
         """The fake device reports 3GB; the default threshold (4096) puts it
-        below the line, so the deployed default is swapped automatically."""
+        below the line, so the deployed default is swapped automatically
+        (two-pass disabled here, as an operator can with COMFYUI_HIRES=0)."""
+        os.environ["COMFYUI_HIRES"] = "0"
+        self.addCleanup(os.environ.pop, "COMFYUI_HIRES", None)
         provider = generation.ComfyUIProvider(url=self.url)
         request = generation.GenerationRequest(prompt="x", width=1920, height=1080)
         graph = provider._load_workflow(request)
@@ -663,6 +738,8 @@ class VramTieredWorkflowTestCase(unittest.TestCase):
         self.assertIn("10", graph)
 
     def test_generate_finishes_full_size_on_cpu_and_records_native_resolution(self):
+        os.environ["COMFYUI_HIRES"] = "0"
+        self.addCleanup(os.environ.pop, "COMFYUI_HIRES", None)
         provider = generation.ComfyUIProvider(url=self.url)
         result = provider.generate(
             generation.GenerationRequest(prompt="x", width=1920, height=1080, count=1),

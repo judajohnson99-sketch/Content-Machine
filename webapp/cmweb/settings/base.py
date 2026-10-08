@@ -111,6 +111,14 @@ CELERY_TASK_TRACK_STARTED = True
 # concurrency"). One project's mutating stages are already serialized by
 # project_lock regardless of this value.
 CELERY_WORKER_CONCURRENCY = int(os.environ.get("CELERY_WORKER_CONCURRENCY", "2"))
+# A production parked on the GPU queue resumes by itself once its images
+# land. Needs `celery beat` (or `worker -B`) running beside the worker.
+CELERY_BEAT_SCHEDULE = {
+    "resume-waiting-productions": {
+        "task": "apps.engine.tasks.resume_waiting_productions",
+        "schedule": float(os.environ.get("RESUME_POLL_SECONDS", "60")),
+    },
+}
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},

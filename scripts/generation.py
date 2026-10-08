@@ -69,7 +69,11 @@ PROVIDER_STATE_PATH = JOBS_DIR / "_provider_state.json"
 # must never be reached by accident just because something earlier was
 # briefly unhealthy. `gemini` precedes `api` only because it has a working
 # default; both are equally opt-in.
-DEFAULT_ORDER = ("comfyui", "procedural", "gemini", "api")
+# ``gpu_worker`` is the enrolled PC reached through the VPS-owned queue. It
+# sits ahead of procedural so a healthy PC is always preferred over abstract
+# plates, but it is only *healthy* while a capable worker is online - a PC
+# that is off is skipped, never waited on here and never put in cooldown.
+DEFAULT_ORDER = ("comfyui", "gpu_worker", "procedural", "gemini", "api")
 
 DEFAULT_HEALTH_TIMEOUT = 5.0
 DEFAULT_GENERATE_TIMEOUT = 300.0
@@ -88,6 +92,13 @@ DEFAULT_COMFYUI_WORKFLOW = ROOT / "config" / "comfyui_workflow_lowvram_upscale.j
 # Capacity). Never chosen when COMFYUI_WORKFLOW pins a template explicitly.
 DEFAULT_COMFYUI_WORKFLOW_TINY = ROOT / "config" / "comfyui_workflow_lowvram_tiny.json"
 DEFAULT_UPSCALE_MIN_VRAM_MB = 4096
+# Under DEFAULT_UPSCALE_MIN_VRAM_MB but at least this much: the two-pass
+# template (re-sample an upscaled latent) instead of the single tiny pass.
+# A capacity failure on it falls back to the tiny template for the same
+# request, so a card that cannot fit it costs one attempt, not a job.
+DEFAULT_COMFYUI_WORKFLOW_HIRES = ROOT / "config" / "comfyui_workflow_lowvram_hires.json"
+DEFAULT_HIRES_MIN_VRAM_MB = 2560
+HIRES_SCALE = 1.25
 DEFAULT_COOLDOWN_SECONDS = 300.0
 DEFAULT_ATTEMPTS = 2
 
@@ -129,6 +140,20 @@ class GenerationError(Exception):
     def __init__(self, message, attempts=None):
         super().__init__(message)
         self.attempts = attempts or []
+
+
+class GenerationQueued(GenerationError):
+    """The request was handed to the remote GPU queue and will land later.
+
+    Not a failure: the caller records the job as on its way and re-runs once
+    it has landed, when the ordinary digest seam finds the completed job.
+    A subclass of GenerationError only so a caller that predates the queue
+    route still stops instead of treating it as an asset in hand.
+    """
+
+    def __init__(self, message, remote_job, attempts=None):
+        super().__init__(message, attempts)
+        self.remote_job = remote_job
 
 
 def utc_now():
@@ -444,6 +469,10 @@ class ComfyUIProvider(Provider):
         total = self.vram_total_mb(timeout)
         threshold = _env_float("COMFYUI_UPSCALE_MIN_VRAM_MB", DEFAULT_UPSCALE_MIN_VRAM_MB)
         if total is not None and total < threshold:
+            hires_floor = _env_float("COMFYUI_HIRES_MIN_VRAM_MB", DEFAULT_HIRES_MIN_VRAM_MB)
+            if (total >= hires_floor and _env("COMFYUI_HIRES", "1") != "0"
+                    and not getattr(self, "_capacity_fallback", False)):
+                return str(DEFAULT_COMFYUI_WORKFLOW_HIRES)
             return str(DEFAULT_COMFYUI_WORKFLOW_TINY)
         return self.workflow_path
 
@@ -510,6 +539,8 @@ class ComfyUIProvider(Provider):
             "%count%": str(request.count),
             "%latent_width%": str(latent_width),
             "%latent_height%": str(latent_height),
+            "%hires_width%": str(int(latent_width * HIRES_SCALE) // 8 * 8),
+            "%hires_height%": str(int(latent_height * HIRES_SCALE) // 8 * 8),
             "%seed%": str(request.seed),
             "%model%": self.resolve_model(request),
         }
@@ -614,6 +645,22 @@ class ComfyUIProvider(Provider):
                           f"ComfyUI jobs. {(first or {}).get('notes', '')}"),
             }
 
+        try:
+            return self._generate_one(request, out_dir, timeout, progress)
+        except GenerationError as e:
+            selected = (request.params or {}).get("workflow_path") or self._select_workflow_path()
+            if (classify_failure(str(e)) != "capacity"
+                    or Path(selected) != DEFAULT_COMFYUI_WORKFLOW_HIRES):
+                raise
+            log.warning("two-pass template ran out of memory on this card; "
+                        "retrying with the single-pass template: %s", str(e)[:200])
+            self._capacity_fallback = True
+            result = self._generate_one(request, out_dir, timeout, progress)
+            result["notes"] = (result.get("notes") or "") + (
+                "; two-pass template exceeded this card's memory, single pass used")
+            return result
+
+    def _generate_one(self, request, out_dir, timeout, progress):
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         workflow_path = self._select_workflow_path()
@@ -645,6 +692,13 @@ class ComfyUIProvider(Provider):
         if len(latents) == 1:
             latent_width = int(latents[0].get("width", latent_width))
             latent_height = int(latents[0].get("height", latent_height))
+        # A re-sampled latent upscale (two-pass template) is what the decoder
+        # actually renders, so it is the honest native size.
+        resampled = [node.get("inputs", {}) for node in workflow.values()
+                     if isinstance(node, dict) and node.get("class_type") == "LatentUpscale"]
+        if len(resampled) == 1:
+            latent_width = int(resampled[0].get("width", latent_width))
+            latent_height = int(resampled[0].get("height", latent_height))
 
         _notify(progress, "submitted", prompt_id)
         outputs = self._await_outputs(prompt_id, timeout, progress)
@@ -767,6 +821,8 @@ def validate_workflow(path):
         "%prompt%": request.prompt, "%negative%": request.negative_prompt,
         "%width%": str(request.width), "%height%": str(request.height),
         "%latent_width%": str(latent_width), "%latent_height%": str(latent_height),
+        "%hires_width%": str(int(latent_width * HIRES_SCALE) // 8 * 8),
+        "%hires_height%": str(int(latent_height * HIRES_SCALE) // 8 * 8),
         "%count%": str(request.count),
         "%seed%": str(request.seed), "%model%": request.model,
     }
@@ -1100,10 +1156,63 @@ def _summarise_comfy_error(body):
     return body[:300]
 
 
+class GpuWorkerProvider(Provider):
+    """The enrolled PC's ComfyUI, reached through the VPS-owned job queue.
+
+    The VPS never calls the PC; it queues, and the PC's agent dials out to
+    claim the work (knowledge: Remote GPU Work Is a Queue, Not a Provider).
+    So this route is asynchronous: ``enqueue`` returns a queue record and the
+    router raises GenerationQueued. It is healthy only while a capable
+    worker is online, which is what makes a running PC the preferred source
+    of real images and a sleeping one cost nothing - the router simply moves
+    on. Liveness is read from heartbeat age through worker.py, never stored.
+    """
+
+    name = "gpu_worker"
+    produces_depicted = True
+    costs_money = False
+    asynchronous = True
+    READY_STATES = ("worker_ready", "worker_busy")
+
+    def configured(self):
+        import worker  # local import: worker imports this module
+        try:
+            return worker.remote_capable(("comfyui",))
+        except Exception:  # noqa: BLE001 - a broken registry is "not configured"
+            return False
+
+    def health(self, timeout=DEFAULT_HEALTH_TIMEOUT):
+        import worker
+        try:
+            readiness = worker.depicted_readiness()
+        except Exception as e:  # noqa: BLE001 - health must never raise
+            return False, f"worker registry unreadable: {e}"
+        return readiness["state"] in self.READY_STATES, readiness["detail"]
+
+    def enqueue(self, request, out_dir, project_id=None, label=None):
+        import worker
+        try:
+            job = worker.enqueue(request, out_dir, capabilities=("comfyui",),
+                                 project_id=project_id,
+                                 prompt_label=label or request.prompt[:80])
+        except worker.WorkerError as e:
+            raise GenerationError(f"gpu_worker could not queue: {e}") from e
+        view = worker.job_view(job)
+        if view["state"] in worker.REQUEUABLE:
+            raise GenerationError(
+                f"gpu_worker job {view['job_id']} is {view['state']}: "
+                f"{view.get('error') or 'no detail'}; requeue it to try again")
+        return view
+
+    def generate(self, request, out_dir, timeout=DEFAULT_GENERATE_TIMEOUT):
+        raise GenerationError("gpu_worker is asynchronous; use enqueue()")
+
+
 def build_providers():
     """Instantiate every provider. Construction never touches the network."""
-    return {p.name: p for p in (ComfyUIProvider(), ProceduralProvider(),
-                                GeminiProvider(), ApiProvider())}
+    return {p.name: p for p in (ComfyUIProvider(), GpuWorkerProvider(),
+                                ProceduralProvider(), GeminiProvider(),
+                                ApiProvider())}
 
 
 # --- Provider health state (cooldowns) -------------------------------------
@@ -1179,6 +1288,45 @@ def _assets_present(job):
     return bool(job.get("assets")) and all(Path(p).is_file() for p in job["assets"])
 
 
+def materialise_assets(job, out_dir):
+    """The completed ``job`` with its assets present inside ``out_dir``.
+
+    A job is keyed by its request digest, so a second production asking for
+    the same picture finds the first production's record - whose asset paths
+    point into the *first* project's directory. Handing those paths back
+    left the new production pointing at files it does not own (and losing
+    them if the old project was deleted). The bytes are linked or copied
+    into the caller's directory under the same names; the stored record is
+    left alone because the earlier project still owns its own copies.
+    """
+    if out_dir is None:
+        return job
+    target_dir = Path(out_dir).resolve()
+    sources = [Path(p) for p in job["assets"]]
+    if all(p.resolve().parent == target_dir for p in sources):
+        return job
+    target_dir.mkdir(parents=True, exist_ok=True)
+    placed = []
+    for source in sources:
+        target = target_dir / source.name
+        if not target.is_file() or target.stat().st_size != source.stat().st_size:
+            tmp = target.with_name(target.name + ".part")
+            tmp.unlink(missing_ok=True)
+            try:
+                os.link(source, tmp)
+            except OSError:
+                shutil.copy2(source, tmp)
+            tmp.replace(target)
+        placed.append(str(target))
+    view = dict(job)
+    view["assets"] = placed
+    view["out_dir"] = str(target_dir)
+    view["reused_from"] = job.get("out_dir")
+    log.info("job %s: %d asset(s) placed in %s from %s", job["job_id"],
+             len(placed), target_dir, job.get("out_dir"))
+    return view
+
+
 # --- Router ----------------------------------------------------------------
 
 class Router:
@@ -1237,6 +1385,36 @@ class Router:
                 return getattr(provider, "prompt_style", "tag")
         return "tag"
 
+    def route_plan(self, request=None):
+        """Which route the next image would take, without touching the network.
+
+        Each eligible provider in preference order with whether it would be
+        tried right now. Network providers are judged by configuration and
+        cooldown only (a live probe is ``status``'s job); the GPU worker by
+        its heartbeat on disk, which is a file read. Cheap enough for a page
+        load, and the same order ``generate`` walks.
+        """
+        state = _load_provider_state()
+        steps, chosen = [], None
+        for provider in self.candidates(request):
+            cooling, remaining = _in_cooldown(state, provider.name)
+            configured = provider.configured()
+            if getattr(provider, "asynchronous", False) and configured:
+                available, detail = provider.health(self.health_timeout)
+            elif not configured:
+                available, detail = False, "not configured"
+            elif cooling:
+                available, detail = False, f"cooling down after a failure ({remaining:.0f}s left)"
+            else:
+                available, detail = True, "configured"
+            steps.append({"provider": provider.name, "available": available,
+                          "detail": detail, "produces_depicted": provider.produces_depicted,
+                          "costs_money": provider.costs_money,
+                          "asynchronous": getattr(provider, "asynchronous", False)})
+            if available and chosen is None:
+                chosen = provider.name
+        return {"order": [s["provider"] for s in steps], "next": chosen, "steps": steps}
+
     def status(self, request=None):
         """Health of every provider. Read-only; safe to call anytime."""
         state = _load_provider_state()
@@ -1256,17 +1434,21 @@ class Router:
             })
         return report
 
-    def generate(self, request, out_dir, job_id=None):
+    def generate(self, request, out_dir, job_id=None, project_id=None, label=None):
         """Generate, failing over until a provider succeeds.
 
         Idempotent: an already-completed job with its assets still on disk is
-        returned as-is rather than regenerated.
+        returned (placed in ``out_dir``) rather than regenerated. When the
+        first healthy route is the remote GPU queue the request is queued
+        and GenerationQueued is raised; ``project_id``/``label`` describe
+        the queue record.
         """
         job_id = job_id or request.digest()
         existing = load_job(job_id)
         if existing and existing.get("status") == COMPLETED and _assets_present(existing):
             log.info("job %s already completed (%d asset(s)); reusing",
                      job_id, len(existing["assets"]))
+            existing = materialise_assets(existing, out_dir)
             existing["reused"] = True
             return existing
 
@@ -1305,17 +1487,42 @@ class Router:
                 continue
 
             healthy, detail = provider.health(self.health_timeout)
+            asynchronous = getattr(provider, "asynchronous", False)
             if not healthy:
                 log.info("skipping %s: %s", provider.name, detail)
                 job["attempts"].append({
                     "provider": provider.name, "at": utc_now(),
                     "outcome": "unhealthy", "detail": detail})
                 # An unconfigured provider is not a failure, so it gets no
-                # cooldown - there is nothing to recover from.
-                if provider.configured():
+                # cooldown - there is nothing to recover from. Neither is a
+                # PC that is switched off: that is its normal state.
+                if provider.configured() and not asynchronous:
                     _record_failure(state, provider.name, detail, self.cooldown_seconds)
                 save_job(job)
                 continue
+
+            if asynchronous:
+                try:
+                    remote = provider.enqueue(request, out_dir, project_id=project_id,
+                                              label=label)
+                except GenerationError as e:
+                    job["attempts"].append({
+                        "provider": provider.name, "at": utc_now(),
+                        "outcome": "error", "detail": str(e)[:500]})
+                    save_job(job)
+                    continue
+                job["attempts"].append({
+                    "provider": provider.name, "at": utc_now(),
+                    "outcome": "queued", "remote_job_id": remote["job_id"],
+                    "detail": detail})
+                job.update({"status": QUEUED, "provider": provider.name,
+                            "updated_at": utc_now()})
+                save_job(job)
+                log.info("queued for %s: job %s (%s)", provider.name,
+                         remote["job_id"], remote.get("wait_reason") or remote["state"])
+                raise GenerationQueued(
+                    f"queued for the GPU worker as job {remote['job_id']}",
+                    remote, job["attempts"])
 
             for attempt in range(1, self.attempts + 1):
                 started = time.monotonic()

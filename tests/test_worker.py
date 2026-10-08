@@ -1345,3 +1345,67 @@ class AgentTests(ApiTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GpuWorkerRouteTestCase(WorkerTestCase):
+    """The router prefers an online PC through the queue and never waits on
+    an offline one."""
+
+    def router(self, order=("gpu_worker", "procedural")):
+        return generation.Router(order=order, cooldown_seconds=300.0)
+
+    def test_online_worker_is_preferred_over_procedural(self):
+        self.enroll()
+        self.online()
+        request = generation.GenerationRequest(prompt="a moonlit lake", count=1)
+        with self.assertRaises(generation.GenerationQueued) as ctx:
+            self.router().generate(request, self.out_dir, project_id="vid-1",
+                                   label="s01")
+        remote = ctx.exception.remote_job
+        self.assertEqual(remote["state"], worker.QUEUED)
+        queued = worker.load_job(remote["job_id"])
+        self.assertEqual(queued["project_id"], "vid-1")
+        self.assertEqual(Path(queued["out_dir"]), self.out_dir.resolve())
+        self.assertFalse(any(self.out_dir.glob("*.png")) if self.out_dir.exists() else False,
+                         "procedural ran although the PC was online")
+
+    def test_offline_worker_falls_back_without_a_cooldown(self):
+        self.enroll()   # enrolled, never heartbeated: the PC is off
+        request = generation.GenerationRequest(prompt="a moonlit lake", count=1,
+                                               width=320, height=180)
+        job = self.router().generate(request, self.out_dir)
+        self.assertEqual(job["provider"], "procedural")
+        state = generation._load_provider_state()
+        self.assertNotIn("gpu_worker", state,
+                         "a switched-off PC was put in cooldown like a fault")
+
+    def test_offline_worker_and_depicted_request_is_not_queued_by_the_router(self):
+        """The router only queues for a live PC; parking work for an offline
+        one stays the caller's explicit, separately tested decision."""
+        self.enroll()
+        request = self.request()
+        with self.assertRaises(generation.GenerationError) as ctx:
+            self.router().generate(request, self.out_dir)
+        self.assertNotIsInstance(ctx.exception, generation.GenerationQueued)
+        with self.assertRaises(worker.WorkerError):
+            worker.load_job(request.digest())
+
+    def test_queued_then_completed_job_is_reused_by_the_next_run(self):
+        self.enroll()
+        self.online()
+        request = self.request()
+        with self.assertRaises(generation.GenerationQueued):
+            self.router().generate(request, self.out_dir)
+        job_id, lease = self.take()
+        manifest = [self.upload(job_id, lease)]
+        worker.complete(job_id, "home-gpu-01", lease, manifest)
+        job = self.router().generate(request, self.out_dir)
+        self.assertTrue(job.get("reused"))
+        self.assertTrue(all(Path(a).is_file() for a in job["assets"]))
+
+    def test_unhealthy_states_and_registry_errors_never_raise(self):
+        provider = generation.GpuWorkerProvider()
+        self.assertFalse(provider.configured())
+        ok, detail = provider.health()
+        self.assertFalse(ok)
+        self.assertIn("enrolled", detail)

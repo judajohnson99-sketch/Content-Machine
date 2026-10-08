@@ -423,7 +423,10 @@ def host_capabilities():
     job. A future control adapter (or NeuroSpace) reads the same dict.
     """
     router = generation.Router()
-    depicted = [p.name for p in router.candidates() if p.produces_depicted and p.configured()]
+    # Synchronous depicted providers only: the GPU worker route is reported
+    # through ``remote_gpu`` with its own liveness, never as "configured".
+    depicted = [p.name for p in router.candidates() if p.produces_depicted
+                and not getattr(p, "asynchronous", False) and p.configured()]
     search = subject_research.provider_status()
     narration = audio.narration_status()
     gpu = worker.depicted_readiness()
@@ -444,6 +447,7 @@ def host_capabilities():
                              "starts_now": bool(depicted) or gpu["state"] in _GPU_STARTS_NOW,
                              "worker_id": gpu.get("worker_id")},
         "remote_gpu": gpu,
+        "image_routing": router.route_plan(),
     }
 
 

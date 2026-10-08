@@ -81,3 +81,50 @@ class TestRunStageTask:
         worker.py's alone."""
         import apps.engine.tasks as tasks_module
         assert not hasattr(tasks_module, "worker")
+
+
+@pytest.mark.django_db
+class TestResumeWaitingProductions:
+    """A production parked on the GPU queue resumes once its images land."""
+
+    def _parked(self, video_id="vid", stage="produce", params=None, **kwargs):
+        kwargs.setdefault("status", PipelineRun.STATUS_NEEDS_ATTENTION)
+        kwargs.setdefault("data", {"waiting_for_gpu": True})
+        return PipelineRun.objects.create(video_id=video_id, stage=stage,
+                                          params=params or {"image_source": "automatic"},
+                                          **kwargs)
+
+    def _resume(self, resolved=True):
+        from apps.engine.tasks import resume_waiting_productions
+        fake = MagicMock(return_value=project.StageResult(True, 0, "done"))
+        with patch.object(project, "gpu_wait_resolved", return_value=resolved), \
+                patch.dict(STAGE_FUNCS, {"produce": fake}):
+            resumed = resume_waiting_productions()
+        return resumed, fake
+
+    def test_resumes_with_the_same_stage_and_params_once_images_landed(self):
+        self._parked()
+        resumed, fake = self._resume()
+        assert resumed == ["vid"]
+        fake.assert_called_once_with("vid", image_source="automatic")
+        latest = PipelineRun.objects.filter(video_id="vid").first()
+        assert latest.status == PipelineRun.STATUS_SUCCEEDED
+
+    def test_waits_while_gpu_jobs_are_still_pending(self):
+        self._parked()
+        resumed, fake = self._resume(resolved=False)
+        assert resumed == []
+        fake.assert_not_called()
+
+    def test_ignores_a_run_that_needs_attention_for_another_reason(self):
+        self._parked(data={"something": "else"})
+        resumed, fake = self._resume()
+        assert resumed == []
+
+    def test_never_re_resumes_once_a_newer_run_exists(self):
+        self._parked()
+        PipelineRun.objects.create(video_id="vid", stage="produce",
+                                   status=PipelineRun.STATUS_SUCCEEDED)
+        resumed, fake = self._resume()
+        assert resumed == []
+        fake.assert_not_called()

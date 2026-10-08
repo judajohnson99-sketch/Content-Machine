@@ -296,6 +296,28 @@ export function DashboardPage() {
                   <span><strong>{remote.queue.failed}</strong> failed</span>
                 </div>
               )}
+              {readiness.data?.image_routing && (
+                <div aria-label="Image routing">
+                  <p className={styles.muted}>
+                    Next image goes to <strong>{ROUTE_LABEL[readiness.data.image_routing.next ?? ""] ?? "nothing available"}</strong>
+                  </p>
+                  <ol className={styles.runList}>
+                    {readiness.data.image_routing.steps.map((step) => (
+                      <li key={step.provider} title={step.detail}>
+                        <span className={styles.runMain}>
+                          <span className={styles.runTitle}>
+                            {ROUTE_LABEL[step.provider] ?? step.provider}
+                            {step.costs_money ? " · paid" : " · free"}
+                            {step.produces_depicted ? "" : " · abstract only"}
+                          </span>
+                          <span className={styles.runMeta}>{step.detail}</span>
+                        </span>
+                        <StatusBadge status={step.available ? "ONLINE" : "OFFLINE"} />
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
               {readiness.isError && <p className={styles.muted}>Readiness unavailable: {(readiness.error as Error).message}</p>}
             </Card>
           </details>
@@ -304,6 +326,14 @@ export function DashboardPage() {
     </div>
   );
 }
+
+const ROUTE_LABEL: Record<string, string> = {
+  comfyui: "ComfyUI on this host",
+  gpu_worker: "Your PC's GPU (queue)",
+  procedural: "Procedural plates",
+  gemini: "Gemini images",
+  api: "Image API",
+};
 
 function RunRow({ run, title, showMessage = false }: { run: PipelineRun; title: string; showMessage?: boolean }) {
   const at = run.finished_at ?? run.started_at ?? run.created_at;

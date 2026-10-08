@@ -1687,7 +1687,12 @@ def run_visuals(video_id, prompt=None, negative=None, count=None, width=None,
             log.info("concept requires depicted imagery; abstract-only providers excluded")
         router = generation.Router()
         try:
-            job = router.generate(request, pdir / "images")
+            job = router.generate(request, pdir / "images", project_id=video_id,
+                                  label=prompt[:80])
+        except generation.GenerationQueued as q:
+            metadata.setdefault("status", {})["visuals"] = VISUALS_WAITING_FOR_GPU
+            save_metadata(pdir, metadata)
+            return _waiting_for_gpu_result([q.remote_job], "visuals")
         except generation.GenerationError as e:
             for attempt in e.attempts:
                 log.info("  - %s: %s - %s", attempt["provider"], attempt["outcome"],
@@ -2132,8 +2137,16 @@ def run_scenes(video_id, force=False, depicted=False):
                 scene["generation"].update(shared["generation"])
                 reused += 1
                 continue
+            label = f"{scene['scene_id']}: {request.prompt[:60]}"
             try:
-                job = router.generate(request, scene_dir)
+                job = router.generate(request, scene_dir, project_id=video_id, label=label)
+            except generation.GenerationQueued as q:
+                # The PC is online and preferred: the picture is on its way.
+                scene.setdefault("generation", {}).update({
+                    "job_id": q.remote_job["job_id"],
+                    "remote_state": q.remote_job["state"]})
+                queued.append(q.remote_job)
+                continue
             except generation.GenerationError as e:
                 remote = None
                 if require_depicted:
@@ -2171,7 +2184,13 @@ def run_scenes(video_id, force=False, depicted=False):
                                       if f["severity"] == "block"))
                 request.seed = request.seed + _SCENE_RESEED_STEP * attempt
                 try:
-                    job = router.generate(request, scene_dir)
+                    job = router.generate(request, scene_dir, project_id=video_id,
+                                          label=label)
+                except generation.GenerationQueued as q:
+                    # The re-roll went to the GPU queue; judge it when it lands.
+                    assessment["requeued_remote_job"] = q.remote_job["job_id"]
+                    queued.append(q.remote_job)
+                    break
                 except generation.GenerationError as e:
                     log.warning("%s re-roll could not be generated: %s",
                                 scene["scene_id"], e)
@@ -2183,6 +2202,12 @@ def run_scenes(video_id, force=False, depicted=False):
                 assessment = qc.assess_image(asset)
                 attempt += 1
             assessment["attempts"] = attempt
+            if assessment.get("requeued_remote_job"):
+                scene.setdefault("generation", {}).update({
+                    "job_id": assessment["requeued_remote_job"], "remote_state": "QUEUED",
+                    "seed": request.seed})
+                scene.pop("image", None)
+                continue
             if assessment["verdict"] == "BLOCKED":
                 failed.append((scene["scene_id"],
                                "; ".join(f["detail"] for f in assessment["findings"]
@@ -2262,6 +2287,10 @@ def run_scenes(video_id, force=False, depicted=False):
                  generated, reused, len(queued), len(failed))
         for scene_id, detail in failed:
             log.error("  %s: %s", scene_id, detail)
+        status = metadata.setdefault("status", {})
+        status["scenes"] = ("FAILED" if failed else VISUALS_WAITING_FOR_GPU if queued
+                            else "OK")
+        save_metadata(pdir, metadata)
         if failed:
             log.error("Unresolved scenes block the render. A queued GPU job is "
                       "not a failure - it simply has not landed yet.")
@@ -2269,8 +2298,6 @@ def run_scenes(video_id, force=False, depicted=False):
                                 {"generated": generated, "reused": reused,
                                  "failed": len(failed), "queued": len(queued)})
         if queued:
-            metadata.setdefault("status", {})["scenes"] = VISUALS_WAITING_FOR_GPU
-            save_metadata(pdir, metadata)
             return _waiting_for_gpu_result(queued, "scenes",
                                            {"generated": generated, "reused": reused})
         if any_abstract:
@@ -2357,6 +2384,28 @@ def _waiting_for_gpu_result(jobs, stage, extra=None):
             "gpu_state": readiness["state"], "gpu_detail": readiness["detail"]}
     data.update(extra or {})
     return StageResult(False, WAITING_FOR_GPU_EXIT_CODE, message, data)
+
+
+def gpu_wait_resolved(video_id):
+    """True when a production parked on the GPU queue can resume now.
+
+    The project must be parked (scenes or visuals WAITING_FOR_GPU_WORKER)
+    and none of its remote jobs may still be queued, backing off or in
+    flight. Failed or cancelled jobs count as resolved: re-running the stage
+    is what turns them into a visible, named blocker instead of a production
+    that waits forever. A read of metadata and the queue; it changes nothing.
+    """
+    import worker
+
+    meta_path = project_dir(video_id) / "metadata.json"
+    try:
+        status = json.loads(meta_path.read_text()).get("status") or {}
+    except (OSError, ValueError):
+        return False
+    if VISUALS_WAITING_FOR_GPU not in (status.get("scenes"), status.get("visuals")):
+        return False
+    pending = {worker.QUEUED, worker.RETRY_WAIT} | set(worker.LEASED)
+    return not any(job["state"] in pending for job in worker.jobs_for_project(video_id))
 
 
 def record_visual_grade(video_id, reviewer, production_grade, notes=""):

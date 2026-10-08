@@ -86,3 +86,44 @@ def run_stage_task(self, pipeline_run_id, stage, video_id, params):
     run.log_tail = result.message
     run.finished_at = timezone.now()
     run.save(update_fields=["status", "exit_code", "message", "data", "log_tail", "finished_at"])
+
+
+@shared_task
+def resume_waiting_productions():
+    """Re-run a stage that parked on the GPU queue once its images landed.
+
+    Celery beat calls this on a short cadence. It is what turns "queued for
+    the PC" into a one-click production: nobody has to come back and press
+    Produce again when the workstation finishes. Only the latest run of a
+    project is considered, and only when it parked waiting for the GPU
+    (``data.waiting_for_gpu``) and the domain layer says nothing for it is
+    still queued or in flight - so a resumed run that succeeds, fails or
+    parks again is never re-triggered by its predecessor. The remote jobs
+    themselves are only read, through project.gpu_wait_resolved.
+    """
+    import uuid
+
+    from apps.engine.services.pipeline import trigger_stage
+
+    resumed = []
+    parked = (PipelineRun.objects
+              .filter(status=PipelineRun.STATUS_NEEDS_ATTENTION)
+              .values_list("video_id", flat=True).distinct())
+    for video_id in set(parked):
+        latest = PipelineRun.objects.filter(video_id=video_id).first()
+        if latest is None or latest.status != PipelineRun.STATUS_NEEDS_ATTENTION:
+            continue
+        if not (latest.data or {}).get("waiting_for_gpu"):
+            continue
+        if not project.gpu_wait_resolved(video_id):
+            continue
+        params = dict(latest.params or {})
+        try:
+            run, created = trigger_stage(video_id, latest.stage, uuid.uuid4(), params)
+        except project.ProjectBusyError:
+            continue
+        if created:
+            log.info("resuming %s for %s: GPU images landed (run %s)",
+                     latest.stage, video_id, run.pk)
+            resumed.append(video_id)
+    return resumed

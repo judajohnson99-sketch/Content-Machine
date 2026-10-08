@@ -69,6 +69,23 @@ export interface NarrationReadiness {
   detail: string;
 }
 
+export interface ImageRouteStep {
+  provider: string;
+  available: boolean;
+  detail: string;
+  produces_depicted: boolean;
+  costs_money: boolean;
+  asynchronous: boolean;
+}
+
+// scripts.generation.Router.route_plan(): the order the next image walks
+// and which route it would take right now (config + heartbeat, no probes).
+export interface ImageRouting {
+  order: string[];
+  next: string | null;
+  steps: ImageRouteStep[];
+}
+
 export interface HostReadiness {
   depicted_image_providers: string[];
   procedural_images: boolean;
@@ -78,6 +95,7 @@ export interface HostReadiness {
   narration: NarrationReadiness;
   depicted_imagery: DepictedImagery;
   remote_gpu: RemoteGpuReadiness;
+  image_routing?: ImageRouting;
 }
 
 export type GpuJobState =
