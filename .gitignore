@@ -61,3 +61,8 @@ archive-*/
 SYNC_TEST.txt
 # Local browser-QA captures (Playwright screenshots)
 qa/
+
+# Local service state (redis snapshot, celery beat schedule, agent worktrees)
+dump.rdb
+webapp/celerybeat-schedule*
+.claude/worktrees/
