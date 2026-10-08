@@ -328,5 +328,156 @@ class TestSpecValidation(RenderTestCase):
         self.assertIn("Spec file not found", proc.stderr)
 
 
+class TestLoopedLongForm(RenderTestCase):
+    """A long video is one unique cycle of shots, encoded once, repeated by
+    stream copy to the full length - with an honest record that it is."""
+
+    FPS = 12
+
+    def loop_spec(self, to_seconds=20.0, closing=0.5, **overrides):
+        images = sorted(IMAGES.iterdir())
+        kinds = ("drift", "parallax", "zoom_in")
+        scenes = [{
+            "scene_id": f"s{i + 1:02d}",
+            "duration_seconds": 2.0,
+            "image": str(images[i]),
+            "motion": {"kind": kinds[i], "fit": "cover"},
+            "transition": {"kind": "crossfade",
+                           "duration_seconds": closing if i == 2 else 0.5},
+        } for i in range(3)]
+        spec = self.spec(width=160, height=90, fps=self.FPS, duration_seconds=to_seconds,
+                         scenes=scenes, loop={"to_seconds": to_seconds})
+        spec.update(overrides)
+        return spec
+
+    def normalized(self, raw):
+        import render
+        return render.validate_and_normalize(raw, base_dir=ROOT)
+
+    def test_spec_states_the_cycle_and_the_full_length(self):
+        spec = self.normalized(self.loop_spec(to_seconds=10800.0))
+        self.assertEqual(spec["loop"]["unique_scenes"], 3)
+        self.assertAlmostEqual(spec["loop"]["cycle_seconds"], 4.5)
+        self.assertEqual(spec["timeline_seconds"], 10800.0)
+        self.assertAlmostEqual(spec["loop"]["repeats"], 2400.0)
+
+    def test_circular_piece_plan_sums_to_the_cycle(self):
+        import motion
+        import render
+        spec = self.normalized(self.loop_spec())
+        plan = render._scene_piece_plan(spec["scenes"], self.FPS, circular=True)
+        frames = sum(p["body_frames"] + p["tail_frames"] for p in plan)
+        self.assertEqual(frames, round(motion.cycle_seconds(spec["scenes"]) * self.FPS))
+        self.assertEqual(plan[0]["lead_frames"], plan[-1]["tail_frames"])
+        self.assertTrue(all(p["body_frames"] > 0 for p in plan))
+
+    def test_a_cycle_too_short_for_its_closing_dissolve_is_refused(self):
+        import render
+        raw = self.loop_spec()
+        raw["scenes"] = raw["scenes"][:1]
+        raw["scenes"][0]["transition"]["duration_seconds"] = 1.0
+        with self.assertRaises(render.SpecValidationError) as caught:
+            self.normalized(raw)
+        self.assertTrue(any("crossfade" in e for e in caught.exception.errors))
+
+    def test_loop_needs_scenes_and_a_sane_length(self):
+        import render
+        for raw in (self.spec(loop={"to_seconds": 60}),
+                    self.loop_spec(loop={"to_seconds": -1}),
+                    self.loop_spec(loop={"to_seconds": render.MAX_LOOP_SECONDS + 1}),
+                    self.loop_spec(loop="forever")):
+            with self.assertRaises(render.SpecValidationError):
+                self.normalized(raw)
+
+    def test_layout_is_whole_copies_plus_an_exact_remainder(self):
+        import render
+        self.assertEqual(render.loop_layout(54, 20.0, 12), (4, 24))   # 240 frames
+        self.assertEqual(render.loop_layout(120, 30.0, 12), (3, 0))   # exact
+        self.assertEqual(render.loop_layout(500, 10.0, 12), (0, 120))  # under one cycle
+
+    def test_renders_full_length_from_a_stream_copied_cycle(self):
+        import render
+        out, _ = self.render(self.loop_spec(to_seconds=20.0), name="looped.mp4")
+        probed = self.probe(out)
+        self.assertAlmostEqual(float(probed["format"]["duration"]), 20.0, delta=0.05)
+        video = self.stream(probed, "video")
+        self.assertEqual((video["width"], video["height"]), (160, 90))
+        self.stream(probed, "audio")
+        frames = subprocess.run(
+            ["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v",
+             "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", str(out)],
+            capture_output=True, text=True).stdout.strip()
+        self.assertEqual(int(frames), 240)
+
+        record = render.load_render_provenance(out)
+        self.assertEqual(record["mode"], "looped_cycle")
+        self.assertEqual(record["unique_scenes"], 3)
+        self.assertEqual(record["cycle_frames"], 54)
+        self.assertEqual((record["whole_copies"], record["remainder_frames"]), (4, 24))
+        self.assertEqual(record["total_frames"], 240)
+        self.assertEqual(record["motions"], {"drift": 1, "parallax": 1, "zoom_in": 1})
+
+        # The second copy starts on exactly the picture the first did: the
+        # repeat is the same encoded frames, not a re-render.
+        md5 = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(out), "-map", "0:v",
+             "-vf", "select='eq(n\\,0)+eq(n\\,54)+eq(n\\,108)'", "-vsync", "0",
+             "-f", "framemd5", "-"], capture_output=True, text=True).stdout
+        hashes = [line.split(",")[-1].strip() for line in md5.splitlines()
+                  if line and not line.startswith("#")]
+        self.assertEqual(len(hashes), 3)
+        self.assertEqual(len(set(hashes)), 1)
+
+    def test_qc_checks_the_full_length_and_samples_the_black_scan(self):
+        """Duration is checked on the whole file; on a long one the per-frame
+        black scan covers the first cycle, every seam and spread windows.
+        The long-file threshold is lowered so a 20s file stands in for 3h."""
+        import qc
+        out, _ = self.render(self.loop_spec(to_seconds=20.0), name="looped.mp4")
+        saved = (qc.FULL_SCAN_MAX_SECONDS, qc.SAMPLE_WINDOW_SECONDS, qc.SAMPLE_WINDOWS)
+        qc.FULL_SCAN_MAX_SECONDS, qc.SAMPLE_WINDOW_SECONDS, qc.SAMPLE_WINDOWS = 5.0, 1.0, 3
+        self.addCleanup(setattr, qc, "SAMPLE_WINDOWS", saved[2])
+        self.addCleanup(setattr, qc, "SAMPLE_WINDOW_SECONDS", saved[1])
+        self.addCleanup(setattr, qc, "FULL_SCAN_MAX_SECONDS", saved[0])
+        report = qc.qc_video(out, expected={"width": 160, "height": 90, "fps": self.FPS,
+                                            "duration_seconds": 20.0})
+        self.assertEqual(report["status"], "PASS", report["failures"])
+        black = next(c for c in report["checks"] if c["check"] == "no_long_black_segment")
+        self.assertIn("window(s)", black["detail"])
+        self.assertIn("every loop seam", black["detail"])
+
+    def test_scan_windows_are_whole_file_until_long_then_cover_cycle_and_seams(self):
+        import qc
+        self.assertIsNone(qc.black_scan_windows(qc.FULL_SCAN_MAX_SECONDS))
+        windows = qc.black_scan_windows(10800.0, {"cycle_seconds": 1200.0})
+        self.assertEqual(windows[0][0], 0.0)
+        self.assertGreaterEqual(windows[0][1], 1200.0)
+        for seam in range(1200, 10800, 1200):
+            self.assertTrue(any(start <= seam <= start + length
+                                for start, length in windows), seam)
+        self.assertLessEqual(windows[-1][0] + windows[-1][1], 10800.0)
+        self.assertEqual(windows, qc.black_scan_windows(10800.0, {"cycle_seconds": 1200.0}))
+        plain = qc.black_scan_windows(10800.0)
+        self.assertEqual(len(plain), qc.SAMPLE_WINDOWS)
+
+    def test_layered_moves_render_in_one_filter_graph_too(self):
+        """Up to MAX_IMAGE_SLOTS scenes share one graph: the layered and fog
+        chains must not collide on pad names there."""
+        raw = self.loop_spec(to_seconds=5.0)
+        del raw["loop"]
+        raw["scenes"][0]["motion"]["ambient"] = "fog"
+        raw["scenes"][2]["motion"] = {"kind": "parallax_in", "ambient": "fog"}
+        raw["duration_seconds"] = 5.0
+        out, _ = self.render(raw, name="graph.mp4")
+        self.assertAlmostEqual(float(self.probe(out)["format"]["duration"]), 5.0, delta=0.15)
+
+    def test_a_non_looped_render_clears_a_stale_loop_record(self):
+        import render
+        out = self.tmp / "plain.mp4"
+        render.provenance_path(out).write_text("{}")
+        self.render(self.spec(), name="plain.mp4")
+        self.assertFalse(render.provenance_path(out).exists())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

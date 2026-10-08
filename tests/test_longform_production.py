@@ -107,6 +107,52 @@ class PiecewiseRenderTest(unittest.TestCase):
             motion.timeline_seconds(spec["scenes"]), delta=0.2)
 
 
+class LoopedStoryboardRenderTest(unittest.TestCase):
+    """Storyboard -> render contract -> render -> QC for a looped silent
+    video: the storyboard's cycle reaches the renderer through the one
+    place a board becomes a spec, and the finished file is the full length."""
+
+    def setUp(self):
+        self.dir = Path(subprocess.run(
+            ["mktemp", "-d"], capture_output=True, text=True).stdout.strip())
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def test_a_five_minute_video_loops_a_one_minute_cycle(self):
+        for i in range(3):
+            subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+                 "-i", "testsrc2=s=128x128", "-vf", f"hue=h={i * 90}",
+                 "-frames:v", "1", str(self.dir / f"i{i}.png")], check=True)
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+             "-i", "sine=frequency=200:duration=300", "-ac", "2",
+             str(self.dir / "a.wav")], check=True)
+        raw_spec = {"width": 96, "height": 54, "fps": 8, "duration_seconds": 300.0,
+                    "unique_cycle_seconds": 60, "audio": {"file": "a.wav"}}
+        metadata = {"concept": "slow rain for sleep", "script": "",
+                    "visual_plan": {"prompt": "misty lake"}}
+        board = storyboard.build_storyboard("vid-loop", metadata, raw_spec)
+        self.assertEqual(board["loop"]["full_seconds"], 300.0)
+        for index, scene in enumerate(board["scenes"]):
+            scene["image"] = f"i{index % 3}.png"
+
+        spec = project.storyboard_scene_spec(self.dir, raw_spec, board)
+        self.assertEqual(spec["timeline_seconds"], 300.0)
+        self.assertEqual(spec["loop"]["unique_scenes"], len(board["scenes"]))
+
+        out = self.dir / "out.mp4"
+        render.render(spec, out)
+        report = qc.qc_video(out, expected={
+            "width": 96, "height": 54, "fps": 8,
+            "duration_seconds": spec["timeline_seconds"]})
+        self.assertEqual(report["status"], "PASS", report["failures"])
+        record = render.load_render_provenance(out)
+        self.assertEqual(record["whole_copies"], 5)
+        self.assertEqual(record["remainder_frames"], 0)
+        kinds = set(record["motions"])
+        self.assertTrue(kinds & {"drift", "parallax", "parallax_in"}, kinds)
+
+
 class ProductionDirectiveTest(unittest.TestCase):
     """Findings become numbers the build uses - and only where a source
     actually said something."""

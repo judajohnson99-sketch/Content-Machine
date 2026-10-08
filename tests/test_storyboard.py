@@ -202,6 +202,125 @@ class SaveLoadTest(unittest.TestCase):
     def test_load_returns_none_when_nothing_saved(self):
         self.assertIsNone(storyboard.load("no-such-video"))
 
+    def test_a_looped_board_keeps_its_full_length_through_save(self):
+        board = storyboard.build_storyboard(
+            "vid-1", SLEEP_METADATA, spec(duration_seconds=10800.0))
+        storyboard.save("vid-1", board)
+        reloaded = storyboard.load("vid-1")
+        self.assertEqual(reloaded["timeline_seconds"], 10800.0)
+        self.assertEqual(reloaded["loop"]["unique_scenes"], len(reloaded["scenes"]))
+
+
+# A silent sleep video: no script, a calm concept.
+SLEEP_METADATA = {
+    "concept": "rain on a window for sleep",
+    "script": "",
+    "visual_plan": {"prompt": "misty forest lake at night", "style": "deep-night"},
+}
+
+
+class CalmMotionTest(unittest.TestCase):
+    """Sleep/relaxation content gets the drift and parallax moves, mixed
+    with push-ins, never the same move twice in a row."""
+
+    def _kinds(self, board):
+        return [s["motion"]["kind"] for s in board["scenes"]]
+
+    def test_calm_content_uses_drift_and_parallax(self):
+        board = storyboard.build_storyboard(
+            "vid-sleep", SLEEP_METADATA, spec(duration_seconds=1200.0))
+        kinds = set(self._kinds(board))
+        self.assertEqual(board["motion_profile"], "calm")
+        self.assertIn("drift", kinds)
+        self.assertTrue(kinds & {"parallax", "parallax_in"})
+        self.assertTrue(kinds & {"zoom_in", "zoom_out", "pan_zoom"})
+
+    def test_narrated_non_calm_content_keeps_the_default_cycle(self):
+        board = storyboard.build_storyboard(
+            "vid-1", metadata(), spec(duration_seconds=60.0))
+        self.assertEqual(board["motion_profile"], "default")
+        self.assertTrue(set(self._kinds(board)) <= set(storyboard.MOTION_CYCLE))
+
+    def test_no_move_follows_itself(self):
+        for duration in (600.0, 1200.0, 3600.0, 10800.0):
+            for video_id in ("a", "b", "c", "vid-sleep"):
+                kinds = self._kinds(storyboard.build_storyboard(
+                    video_id, SLEEP_METADATA, spec(duration_seconds=duration)))
+                for i in range(1, len(kinds)):
+                    self.assertNotEqual(kinds[i], kinds[i - 1], (duration, video_id, i))
+
+    def test_every_style_cycle_avoids_repeats_across_its_wrap(self):
+        for cycle in list(storyboard.MOTION_STYLE_CYCLES.values()) + [storyboard.MOTION_CYCLE]:
+            for i in range(len(cycle)):
+                self.assertNotEqual(cycle[i], cycle[i - 1], cycle)
+
+    def test_a_board_using_the_new_moves_validates(self):
+        board = storyboard.build_storyboard(
+            "vid-sleep", SLEEP_METADATA, spec(duration_seconds=1200.0))
+        problems = storyboard.validate(board)
+        self.assertTrue(problems)
+        self.assertTrue(all("no image assigned" in p for p in problems), problems)
+
+    def test_hazy_calm_concepts_get_the_fog_overlay_on_some_scenes(self):
+        board = storyboard.build_storyboard(
+            "vid-sleep", SLEEP_METADATA, spec(duration_seconds=1200.0))
+        fogged = [s for s in board["scenes"] if s["motion"].get("ambient") == "fog"]
+        self.assertTrue(fogged)
+        self.assertLess(len(fogged), len(board["scenes"]))
+        clear = dict(SLEEP_METADATA, visual_plan={"prompt": "a quiet beach at dusk"})
+        board = storyboard.build_storyboard("vid-sleep", clear, spec(duration_seconds=1200.0))
+        self.assertFalse(any(s["motion"].get("ambient") for s in board["scenes"]))
+
+
+class LongFormLoopTest(unittest.TestCase):
+    """A three-hour silent video plans one unique cycle and says so."""
+
+    def test_three_hours_plans_a_twenty_minute_cycle_repeated_nine_times(self):
+        board = storyboard.build_storyboard(
+            "vid-sleep", SLEEP_METADATA, spec(duration_seconds=10800.0))
+        loop = board["loop"]
+        self.assertEqual(loop["mode"], "looped_cycle")
+        self.assertEqual(loop["full_seconds"], 10800.0)
+        self.assertAlmostEqual(loop["cycle_seconds"], 1200.0, delta=0.1)
+        self.assertAlmostEqual(loop["repeats"], 9.0, delta=0.01)
+        self.assertEqual(loop["unique_scenes"], len(board["scenes"]))
+        self.assertEqual(board["timeline_seconds"], 10800.0)
+
+    def test_the_last_scene_dissolves_back_into_the_first(self):
+        board = storyboard.build_storyboard(
+            "vid-sleep", SLEEP_METADATA, spec(duration_seconds=10800.0))
+        self.assertEqual(board["scenes"][-1]["transition"]["kind"], "crossfade")
+        self.assertGreater(board["scenes"][-1]["transition"]["duration_seconds"], 0)
+        kinds = [s["motion"]["kind"] for s in board["scenes"]]
+        self.assertNotEqual(kinds[-1], kinds[0])
+
+    def test_the_cycle_length_is_configurable_and_zero_disables_it(self):
+        board = storyboard.build_storyboard(
+            "vid-sleep", SLEEP_METADATA,
+            spec(duration_seconds=9000.0, unique_cycle_seconds=1800))
+        self.assertAlmostEqual(board["loop"]["cycle_seconds"], 1800.0, delta=0.1)
+        board = storyboard.build_storyboard(
+            "vid-sleep", SLEEP_METADATA,
+            spec(duration_seconds=3600.0, unique_cycle_seconds=0))
+        self.assertNotIn("loop", board)
+        self.assertAlmostEqual(board["timeline_seconds"], 3600.0, delta=0.5)
+
+    def test_a_video_shorter_than_one_and_a_half_cycles_is_rendered_unique(self):
+        board = storyboard.build_storyboard(
+            "vid-sleep", SLEEP_METADATA, spec(duration_seconds=1500.0))
+        self.assertNotIn("loop", board)
+
+    def test_narrated_video_never_loops(self):
+        board = storyboard.build_storyboard(
+            "vid-1", metadata(), spec(duration_seconds=10800.0))
+        self.assertNotIn("loop", board)
+        self.assertEqual(board["scenes"][-1]["transition"]["kind"], "cut")
+
+    def test_three_hours_is_not_capped(self):
+        board = storyboard.build_storyboard(
+            "vid-sleep", SLEEP_METADATA, spec(duration_seconds=4 * 3600.0))
+        self.assertEqual(board["timeline_seconds"], 4 * 3600.0)
+
 
 if __name__ == "__main__":
     unittest.main()

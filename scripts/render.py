@@ -70,6 +70,12 @@ MAX_IMAGE_SLOTS = 24
 # almost certainly a bug in whatever produced it.
 MAX_SCENES_PIECEWISE = 1200
 
+# A looped spec renders one unique cycle of scenes and repeats it by stream
+# copy (render_looped), so the cost of the finished length is a file copy,
+# not an encode. This ceiling is a sanity limit on the requested length -
+# twelve hours, the longest a goal may ask for - not a resource limit.
+MAX_LOOP_SECONDS = 12 * 3600.0
+
 # Intermediate clips are concatenated without re-encoding, so they must be
 # encoded identically to the master. One full-quality encode of the timeline
 # is all a long video costs.
@@ -117,7 +123,7 @@ def load_spec(spec_path):
     return raw
 
 
-def _normalize_scenes(raw_scenes, base_dir):
+def _normalize_scenes(raw_scenes, base_dir, circular=False):
     """Validate an explicit scene list. Returns ``(scenes | None, errors)``.
 
     ``None`` means "this spec is not a scene spec" and the cycling path
@@ -179,7 +185,8 @@ def _normalize_scenes(raw_scenes, base_dir):
             f"{where}: {problem}" for problem in motion_mod.validate_motion(
                 motion_cfg.get("kind", "static"),
                 fit=motion_cfg.get("fit", "cover"),
-                transition=transition_cfg.get("kind", "crossfade")))
+                transition=transition_cfg.get("kind", "crossfade"),
+                ambient=motion_cfg.get("ambient")))
 
         scenes.append({
             "scene_id": raw_scene.get("scene_id") or f"s{i + 1:02d}",
@@ -192,9 +199,9 @@ def _normalize_scenes(raw_scenes, base_dir):
         })
     # The same arithmetic guard wherever the piecewise renderer will run -
     # scene count, or a footage scene that forces that path (see render()).
-    if (len(scenes) > MAX_IMAGE_SLOTS
+    if (circular or len(scenes) > MAX_IMAGE_SLOTS
             or any(s.get("media_kind") == "video" for s in scenes)):
-        errors.extend(piecewise_problems(scenes))
+        errors.extend(piecewise_problems(scenes, circular=circular))
     return scenes, errors
 
 
@@ -206,7 +213,7 @@ def _overlap_after(scene):
     return float(transition.get("duration_seconds", 0.0) or 0.0)
 
 
-def piecewise_problems(scenes):
+def piecewise_problems(scenes, circular=False):
     """Why this scene list cannot be rendered piece by piece, if it cannot.
 
     The piecewise renderer cuts each scene into an incoming overlap, a body
@@ -214,11 +221,16 @@ def piecewise_problems(scenes):
     has no body, so the arithmetic that makes the concatenated timeline come
     out exactly right would silently stop holding. Refuse with the numbers
     rather than render something a frame-count check would then reject.
+
+    ``circular``: the scene list is a loop cycle, so the first scene also
+    receives the last one's dissolve and the last one hands it over.
     """
     problems = []
     for index, scene in enumerate(scenes):
-        lead = _overlap_after(scenes[index - 1]) if index else 0.0
-        tail = _overlap_after(scene) if index < len(scenes) - 1 else 0.0
+        lead = (_overlap_after(scenes[index - 1])
+                if index or circular else 0.0)
+        tail = (_overlap_after(scene)
+                if index < len(scenes) - 1 or circular else 0.0)
         if lead + tail >= float(scene["duration_seconds"]):
             problems.append(
                 f"{scene['scene_id']}: {scene['duration_seconds']}s scene is "
@@ -264,7 +276,29 @@ def validate_and_normalize(raw, base_dir):
 
     # A scene list, when present, replaces images/ken_burns/crossfade: it
     # already states per scene what each of those decided globally.
-    scenes, scene_errors = _normalize_scenes(raw.get("scenes"), base_dir)
+    # A looped spec repeats its scene list, as one seamless cycle, to
+    # loop.to_seconds (render_looped).
+    loop_cfg = raw.get("loop")
+    loop_to = None
+    if loop_cfg is not None:
+        if not isinstance(loop_cfg, dict):
+            errors.append("'loop' must be an object like {\"to_seconds\": 10800}")
+        elif raw.get("scenes") is None:
+            errors.append("'loop' needs a 'scenes' list: it repeats a cycle of scenes")
+        else:
+            loop_to = loop_cfg.get("to_seconds", duration_seconds)
+            if (not isinstance(loop_to, (int, float)) or isinstance(loop_to, bool)
+                    or loop_to <= 0):
+                errors.append(f"'loop.to_seconds' must be > 0, got {loop_to!r}")
+                loop_to = None
+            elif loop_to > MAX_LOOP_SECONDS:
+                errors.append(
+                    f"'loop.to_seconds' {loop_to} is over the "
+                    f"{MAX_LOOP_SECONDS:.0f}s ceiling")
+                loop_to = None
+
+    scenes, scene_errors = _normalize_scenes(
+        raw.get("scenes"), base_dir, circular=loop_cfg is not None)
     errors.extend(scene_errors)
 
     images_cfg = raw.get("images")
@@ -393,6 +427,17 @@ def validate_and_normalize(raw, base_dir):
     if not crossfade_enabled:
         crossfade_seconds = 0.0
 
+    loop = None
+    if scenes and loop_to is not None:
+        cycle = motion_mod.cycle_seconds(scenes)
+        loop = {
+            "mode": "looped_cycle",
+            "unique_scenes": len(scenes),
+            "cycle_seconds": cycle,
+            "full_seconds": float(loop_to),
+            "repeats": round(float(loop_to) / cycle, 3) if cycle > 0 else None,
+        }
+
     return {
         "width": int(width),
         "height": int(height),
@@ -408,7 +453,9 @@ def validate_and_normalize(raw, base_dir):
         "crossfade_seconds": float(crossfade_seconds),
         "output_path_raw": output_path_raw,
         "scenes": scenes,
-        "timeline_seconds": (motion_mod.timeline_seconds(scenes)
+        "loop": loop,
+        "timeline_seconds": (loop["full_seconds"] if loop
+                             else motion_mod.timeline_seconds(scenes)
                              if scenes else float(duration_seconds)),
     }
 
@@ -562,7 +609,7 @@ def build_ffmpeg_command(spec, output_path):
     return cmd
 
 
-def _scene_piece_plan(scenes, fps):
+def _scene_piece_plan(scenes, fps, circular=False):
     """Frame counts for each scene's incoming overlap, body and outgoing one.
 
     Every boundary is rounded to a frame *on the finished timeline*, not
@@ -601,6 +648,17 @@ def _scene_piece_plan(scenes, fps):
             "tail_frames": tail,
             "body_frames": total - lead - tail,
         })
+    if circular:
+        # The cycle closes on itself: the last scene hands its dissolve to
+        # the first. Both give up that many frames of body to it, so one
+        # cycle is the linear timeline minus the closing overlap - exactly
+        # motion.cycle_seconds - and a copy of it follows on without a seam.
+        closing = int(round(_overlap_after(scenes[-1]) * fps))
+        if closing:
+            plan[0]["lead_frames"] = closing
+            plan[0]["body_frames"] -= closing
+            plan[-1]["tail_frames"] = closing
+            plan[-1]["body_frames"] -= closing
     return plan
 
 
@@ -689,15 +747,46 @@ def _render_transition(tail_path, head_path, frames, target, out_path):
     return out_path
 
 
-def render_scenes_piecewise(spec, output_path, workdir=None):
-    """Render an arbitrarily long scene plan without an arbitrarily big graph.
+def _render_sequence(scenes, target, workdir, circular=False):
+    """Render every scene and dissolve once; return the clips in play order.
 
     Each scene is rendered once on its own, split into the overlap it hands
     to the previous scene, its own body, and the overlap it hands to the
     next. Each crossfade is rendered once from the two overlaps that meet
-    there. The finished pieces are then concatenated *without re-encoding*
-    and the audio bed is muxed over them, so the whole video is encoded
-    exactly once however many scenes it has.
+    there. In a ``circular`` sequence the last dissolve joins the last scene
+    to the first, so the list ends exactly where its own start begins.
+    """
+    plan = _scene_piece_plan(scenes, target["fps"], circular=circular)
+    pieces = []
+    for index, piece in enumerate(plan):
+        pieces.append(_render_scene_pieces(index, piece, target, workdir))
+        if (index + 1) % 10 == 0 or index + 1 == len(plan):
+            log.info("  scenes rendered: %d/%d", index + 1, len(plan))
+
+    sequence = []
+    for index, (piece, rendered) in enumerate(zip(plan, pieces)):
+        sequence.append(rendered["body"])
+        if piece["tail_frames"] > 0:
+            following = pieces[(index + 1) % len(pieces)]
+            sequence.append(_render_transition(
+                rendered["tail"], following["head"],
+                piece["tail_frames"], target,
+                workdir / f"{index:05d}-xfade.mp4"))
+    return sequence
+
+
+def _write_concat_list(path, files):
+    path.write_text("".join(f"file '{Path(p).as_posix()}'\n" for p in files))
+    return path
+
+
+def render_scenes_piecewise(spec, output_path, workdir=None):
+    """Render an arbitrarily long scene plan without an arbitrarily big graph.
+
+    The scenes and dissolves are rendered one at a time (_render_sequence),
+    then concatenated *without re-encoding* and the audio bed is muxed over
+    them, so the whole video is encoded exactly once however many scenes it
+    has.
 
     The arithmetic is the same one ``motion.timeline_seconds`` states: every
     crossfade overlaps two scenes, so sum(bodies) + sum(crossfades) is the
@@ -705,7 +794,6 @@ def render_scenes_piecewise(spec, output_path, workdir=None):
     """
     scenes = spec["scenes"]
     target = {"width": spec["width"], "height": spec["height"], "fps": spec["fps"]}
-    plan = _scene_piece_plan(scenes, spec["fps"])
 
     owns_workdir = workdir is None
     workdir = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="cm-render-"))
@@ -714,25 +802,8 @@ def render_scenes_piecewise(spec, output_path, workdir=None):
         log.info("Rendering %d scene(s) piecewise at %dx%d (one encode of the "
                  "timeline; memory does not grow with scene count)",
                  len(scenes), target["width"], target["height"])
-        pieces = []
-        for index, piece in enumerate(plan):
-            rendered = _render_scene_pieces(index, piece, target, workdir)
-            pieces.append(rendered)
-            if (index + 1) % 10 == 0 or index + 1 == len(plan):
-                log.info("  scenes rendered: %d/%d", index + 1, len(plan))
-
-        sequence = []
-        for index, (piece, rendered) in enumerate(zip(plan, pieces)):
-            sequence.append(rendered["body"])
-            if piece["tail_frames"] > 0:
-                sequence.append(_render_transition(
-                    rendered["tail"], pieces[index + 1]["head"],
-                    piece["tail_frames"], target,
-                    workdir / f"{index:05d}-xfade.mp4"))
-
-        list_path = workdir / "concat.txt"
-        list_path.write_text("".join(
-            f"file '{p.as_posix()}'\n" for p in sequence))
+        sequence = _render_sequence(scenes, target, workdir)
+        list_path = _write_concat_list(workdir / "concat.txt", sequence)
 
         timeline = motion_mod.timeline_seconds(scenes)
         cmd = [
@@ -751,6 +822,126 @@ def render_scenes_piecewise(spec, output_path, workdir=None):
             shutil.rmtree(workdir, ignore_errors=True)
 
 
+def loop_layout(cycle_frames, full_seconds, fps):
+    """``(whole_copies, remainder_frames)`` that make up the full length.
+
+    Exact to the frame: a stream copy cannot be cut mid-GOP reliably (``-t``
+    on copied H.264 with B-frames overshoots by a frame or two), so a length
+    that is not a whole number of cycles ends on a short re-encoded prefix of
+    the cycle instead - at most one cycle of encoding, and none at all for a
+    storyboard-planned loop, whose cycle divides the length exactly.
+    """
+    full_frames = int(round(float(full_seconds) * float(fps)))
+    return divmod(full_frames, max(int(cycle_frames), 1))
+
+
+def render_looped(spec, output_path, workdir=None):
+    """A long video as one unique cycle of shots, repeated without re-encoding.
+
+    The cycle is rendered exactly like a piecewise timeline, except that it
+    is circular: its last shot dissolves back into the first, so the end of
+    one copy *is* the start of the next and the join has no seam. The cycle
+    is encoded once; the full length is a concat-demuxer stream copy of it
+    (plus, when the length is not a whole number of cycles, a re-encoded
+    prefix of it), with the full-length audio bed muxed over the top. A
+    three-hour video therefore costs one cycle of encoding plus a file copy.
+
+    Writes ``<output>.render.json`` next to the video stating what it is: how
+    many unique shots, how long the cycle, how many times it repeats. A
+    looped video must never be presented as hours of distinct footage.
+    """
+    scenes = spec["scenes"]
+    loop = spec["loop"]
+    fps = spec["fps"]
+    target = {"width": spec["width"], "height": spec["height"], "fps": fps}
+    full_seconds = float(loop["full_seconds"])
+
+    owns_workdir = workdir is None
+    workdir = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="cm-loop-"))
+    workdir.mkdir(parents=True, exist_ok=True)
+    try:
+        log.info("Rendering a %d-shot unique cycle (%.2fs) at %dx%d, looped "
+                 "to %.2fs by stream copy", len(scenes), loop["cycle_seconds"],
+                 target["width"], target["height"], full_seconds)
+        sequence = _render_sequence(scenes, target, workdir, circular=True)
+        cycle_path = workdir / "cycle.mp4"
+        run_ffmpeg([
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", str(_write_concat_list(workdir / "cycle.txt", sequence)),
+            "-map", "0:v", "-c", "copy", str(cycle_path),
+        ])
+        plan = _scene_piece_plan(scenes, fps, circular=True)
+        cycle_frames = sum(p["body_frames"] + p["tail_frames"] for p in plan)
+        copies, remainder = loop_layout(cycle_frames, full_seconds, fps)
+        files = [cycle_path] * copies
+        if remainder:
+            tail_path = workdir / "remainder.mp4"
+            run_ffmpeg([
+                "ffmpeg", "-y", "-i", str(cycle_path),
+                "-vf", f"trim=end_frame={remainder},setpts=PTS-STARTPTS",
+                "-r", f"{fps}", *_PIECEWISE_VIDEO_ARGS, str(tail_path),
+            ])
+            files.append(tail_path)
+        total_frames = copies * cycle_frames + remainder
+        run_ffmpeg([
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", str(_write_concat_list(workdir / "loop.txt", files)),
+            "-stream_loop", "-1", "-i", str(spec["audio_path"]),
+            "-map", "0:v", "-map", "1:a",
+            # Bounds the endlessly looped audio input; the video already
+            # ends on exactly this frame.
+            "-t", f"{total_frames / float(fps):.6f}",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+            "-movflags", "+faststart", str(output_path),
+        ])
+        record = dict(loop, cycle_frames=cycle_frames, whole_copies=copies,
+                      remainder_frames=remainder, total_frames=total_frames,
+                      fps=fps, motions=_motion_counts(scenes),
+                      note=("one unique cycle of shots, encoded once and repeated "
+                            "by stream copy; the last shot dissolves into the "
+                            "first so each repeat joins without a seam"))
+        provenance_path(output_path).write_text(json.dumps(record, indent=2) + "\n")
+        log.info("Looped render complete: %d unique shot(s), %.2fs cycle x %d "
+                 "whole copies + %d frame(s) = %.2fs", len(scenes),
+                 cycle_frames / float(fps), copies, remainder,
+                 total_frames / float(fps))
+        return output_path
+    finally:
+        if owns_workdir and not os.environ.get("CM_KEEP_RENDER_WORKDIR"):
+            shutil.rmtree(workdir, ignore_errors=True)
+
+
+def provenance_path(output_path):
+    """Where a render states how it was made: ``<video>.render.json``."""
+    output_path = Path(output_path)
+    return output_path.with_name(output_path.name + ".render.json")
+
+
+def load_render_provenance(output_path):
+    """The record render_looped wrote next to a video, or None."""
+    path = provenance_path(output_path)
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _motion_counts(scenes):
+    counts = {}
+    for scene in scenes:
+        motion_cfg = scene.get("motion") or {}
+        kind = motion_cfg.get("kind", "static")
+        if scene.get("media_kind") == "video":
+            kind = "footage"
+        counts[kind] = counts.get(kind, 0) + 1
+        if motion_cfg.get("ambient") not in (None, "none"):
+            key = f"ambient:{motion_cfg['ambient']}"
+            counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items()))
+
+
 def render(spec, output_path):
     """Render ``spec`` to ``output_path``, choosing how by scene count.
 
@@ -760,6 +951,13 @@ def render(spec, output_path):
     piecewise renderer takes over.
     """
     scenes = spec.get("scenes") or []
+    if scenes and spec.get("loop"):
+        return render_looped(spec, output_path)
+    # A stale record from an earlier looped render of the same path would
+    # misdescribe this one.
+    stale = provenance_path(output_path)
+    if stale.is_file():
+        stale.unlink()
     # Footage scenes always take the piecewise path: it renders each scene on
     # its own input, which is the only way a looped clip and a still can sit
     # in one timeline without the single filter graph having to special-case
@@ -823,8 +1021,7 @@ def main():
     output_path = determine_output_path(spec, spec_path, args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    cmd = build_ffmpeg_command(spec, output_path)
-    run_ffmpeg(cmd)
+    render(spec, output_path)
 
     if not output_path.is_file():
         log.error("ffmpeg reported success but output file is missing: %s", output_path)

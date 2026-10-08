@@ -644,6 +644,9 @@ def storyboard_scene_spec(pdir, raw_spec, board):
     # pictures are all the owner's own media does not have.
     raw = {k: v for k, v in raw_spec.items() if k != "images"}
     raw["scenes"] = storyboard_raw_scenes(board)
+    if (board.get("loop") or {}).get("full_seconds"):
+        # A long silent video's board is one unique cycle, repeated to length.
+        raw["loop"] = {"to_seconds": board["loop"]["full_seconds"]}
     return render.validate_and_normalize(raw, base_dir=pdir)
 
 
@@ -3489,6 +3492,8 @@ def run_pipeline(video_id):
                     "fps": spec["fps"],
                     "duration_seconds": finished_seconds,
                     "requested_duration_seconds": spec["duration_seconds"],
+                    # None, or how a long video loops one unique cycle of shots.
+                    "loop": render.load_render_provenance(output_path),
                     "video_codec": "h264",
                     "audio_codec": "aac",
                     "pixel_format": "yuv420p",

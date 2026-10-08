@@ -30,6 +30,20 @@ MAX_BLACK_RUN_SECONDS = 1.5
 # failure boundary, not a style target - generators should aim well above it.
 BLACK_FLOOR_MEAN_LUMA = 26.0
 
+# Long-form video. Decoding every frame of a three-hour 1080p file to look
+# for black is most of an hour on a CPU host, for a check whose answer is
+# already known for most of it: a looped render is a stream copy of one
+# cycle. Up to FULL_SCAN_MAX_SECONDS the whole file is scanned, as before.
+# Beyond it the scan covers: the whole first cycle when the renderer's
+# provenance record says the file loops one (every later copy is the same
+# bytes), a window across every seam where copies join, and evenly spaced
+# windows over the full runtime regardless - so a file that is not what its
+# record says is still sampled end to end. The report says what was scanned.
+FULL_SCAN_MAX_SECONDS = 1800.0
+SAMPLE_WINDOWS = 12
+SAMPLE_WINDOW_SECONDS = 60.0
+SEAM_WINDOW_SECONDS = 20.0
+
 
 def _run(cmd):
     return subprocess.run(cmd, capture_output=True, text=True)
@@ -115,9 +129,13 @@ def _parse_rate(rate):
 
 
 def mean_volume_db(path):
-    """Mean dBFS across the whole audio track, or None if unmeasurable."""
+    """Mean dBFS across the whole audio track, or None if unmeasurable.
+
+    ``-vn``: the video is not needed to measure the audio, and decoding it
+    alongside made this the slowest check on a long file.
+    """
     result = _run([
-        "ffmpeg", "-hide_banner", "-i", str(path),
+        "ffmpeg", "-hide_banner", "-i", str(path), "-vn",
         "-af", "volumedetect", "-f", "null", "-",
     ])
     for line in result.stderr.splitlines():
@@ -129,10 +147,59 @@ def mean_volume_db(path):
     return None
 
 
-def longest_black_run_seconds(path):
-    """Longest fully-black stretch in seconds (0.0 if none detected)."""
+def black_scan_windows(duration, loop=None):
+    """``None`` to scan the whole file, else ``[(start, seconds), ...]``.
+
+    See FULL_SCAN_MAX_SECONDS. Windows are merged where they overlap and
+    clipped to the file, and the result is sorted, so it is a pure function
+    of the duration and the loop record.
+    """
+    if duration is None or duration <= FULL_SCAN_MAX_SECONDS:
+        return None
+    windows = []
+    span = SAMPLE_WINDOW_SECONDS
+    step = (duration - span) / max(SAMPLE_WINDOWS - 1, 1)
+    windows.extend((i * step, span) for i in range(SAMPLE_WINDOWS))
+    cycle = float((loop or {}).get("cycle_seconds") or 0)
+    if cycle > 0:
+        windows.append((0.0, min(cycle, FULL_SCAN_MAX_SECONDS)))
+        seam = cycle
+        half = SEAM_WINDOW_SECONDS / 2
+        while seam < duration:
+            windows.append((seam - half, SEAM_WINDOW_SECONDS))
+            seam += cycle
+    clipped = []
+    for start, length in sorted(windows):
+        start = max(0.0, start)
+        end = min(duration, start + length)
+        if end <= start:
+            continue
+        if clipped and start <= clipped[-1][1]:
+            clipped[-1][1] = max(clipped[-1][1], end)
+        else:
+            clipped.append([start, end])
+    return [(round(a, 3), round(b - a, 3)) for a, b in clipped]
+
+
+def longest_black_run_seconds(path, windows=None):
+    """Longest fully-black stretch in seconds (0.0 if none detected).
+
+    ``windows``: ``[(start, seconds), ...]`` to scan instead of the whole
+    file (see black_scan_windows); each is input-seeked, so an unscanned
+    hour costs nothing.
+    """
+    if windows:
+        return max((longest_black_run_seconds_in(path, start, length)
+                    for start, length in windows), default=0.0)
+    return longest_black_run_seconds_in(path)
+
+
+def longest_black_run_seconds_in(path, start=None, length=None):
+    span = []
+    if start is not None:
+        span = ["-ss", f"{start:.3f}", "-t", f"{length:.3f}"]
     result = _run([
-        "ffmpeg", "-hide_banner", "-i", str(path),
+        "ffmpeg", "-hide_banner", *span, "-i", str(path), "-an",
         "-vf", "blackdetect=d=0.5:pic_th=0.98", "-f", "null", "-",
     ])
     longest = 0.0
@@ -147,15 +214,32 @@ def longest_black_run_seconds(path):
     return longest
 
 
+def _render_record(video_path):
+    """The renderer's provenance record next to a video, or None."""
+    path = Path(video_path)
+    path = path.with_name(path.name + ".render.json")
+    if not path.is_file():
+        return None
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
 def check(name, passed, detail):
     return {"check": name, "passed": bool(passed), "detail": detail}
 
 
-def qc_video(video_path, expected=None, source_images=None):
+def qc_video(video_path, expected=None, source_images=None, loop=None):
     """Run every QC check and return a machine-readable report.
 
     expected: dict with width/height/fps/duration_seconds to compare against.
     source_images: iterable of image paths to verify are still decodable.
+    loop: the renderer's loop record for this file; read from the
+    ``<video>.render.json`` it wrote when not given. Only decides which
+    windows a long file's black scan covers - every other check, the
+    duration one included, is made on the full file.
     """
     video_path = Path(video_path)
     checks = []
@@ -237,10 +321,21 @@ def qc_video(video_path, expected=None, source_images=None):
                 f"mean_volume={level} dB (threshold {SILENCE_THRESHOLD_DB} dB)",
             ))
 
-    black = longest_black_run_seconds(video_path)
+    if loop is None:
+        loop = _render_record(video_path)
+    windows = black_scan_windows(duration, loop)
+    black = longest_black_run_seconds(video_path, windows)
+    if windows:
+        covered = sum(length for _, length in windows)
+        scope = (f"; scanned {len(windows)} window(s), {covered:.0f}s of "
+                 f"{duration:.0f}s"
+                 + (f", incl. the first {loop['cycle_seconds']:.0f}s cycle and "
+                    f"every loop seam" if (loop or {}).get("cycle_seconds") else ""))
+    else:
+        scope = "; whole file scanned"
     checks.append(check(
         "no_long_black_segment", black <= MAX_BLACK_RUN_SECONDS,
-        f"longest black run {black:.2f}s (max {MAX_BLACK_RUN_SECONDS}s)",
+        f"longest black run {black:.2f}s (max {MAX_BLACK_RUN_SECONDS}s){scope}",
     ))
 
     if source_images:
