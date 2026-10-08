@@ -35,9 +35,15 @@ path. The canonical suite also exposes an idempotent-job reuse defect: a
 completed job can retain an old project output path, leaving a new production
 without its images.
 
-Search routing (branch claude/project-thread-mupl5p): SearXNG primary,
-Brave metered fallback, Wikipedia opt-in, Gemini/Anthropic last and only
-when named; `SearchRouter` in `scripts/subject_research.py`.
+Research for every production (branch research-every-production, on top of
+claude/project-thread-mupl5p): route is SearXNG > Brave > keyless
+DuckDuckGo/Wikipedia > Gemini/Anthropic only when named (SEARCH_KEYLESS=0
+turns keyless off). `run_research` derives a brief from the concept when a
+project has none, and every run includes competitor analysis from YouTube
+(Data API if keyed, else the public results page plus channel RSS feeds for
+cadence). Failure is recorded and keeps the review gate blocked. Not yet
+proven live: this sandbox's egress policy blocks DuckDuckGo, Wikipedia and
+YouTube, so the first real run must happen on the VPS.
 
 Next: update the PC worker checkout/agent, deploy a SearXNG instance and
 set SEARXNG_URL, then repair/revalidate generation-job output ownership before
@@ -68,8 +74,10 @@ and are not restated here.
 
 ## Session Continuity
 
-Latest: low-cost research routing implemented with tests on branch
-claude/project-thread-mupl5p, not yet pushed; no live search was run.
+Latest: research-for-every-production (keyless search + competitor analysis)
+committed on branch research-every-production, not pushed. Next for it: run
+`./content-machine research <id>` on the VPS with no keys and check
+research/findings/<id>.json carries competitor_analysis videos.
 
 Latest request: finish validation only. Creator-step workspace, media library,
 Image Lab save/use, owner-media sync APIs, semantic indexing, rights-aware

@@ -68,8 +68,11 @@ class ResearchSubjectTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self._prev_dir = subject_research.SUBJECTS_DIR
         subject_research.SUBJECTS_DIR = self.tmp
+        # provider=None must select nothing here, not the live keyless route.
+        self.env = routing_env(SEARCH_KEYLESS="0")
 
     def tearDown(self):
+        self.env.stop()
         subject_research.SUBJECTS_DIR = self._prev_dir
         shutil.rmtree(self.tmp, ignore_errors=True)
 
@@ -188,11 +191,14 @@ class GeminiSearchProviderTest(unittest.TestCase):
     def test_gemini_is_known_but_never_selected_by_default(self):
         with unittest.mock.patch.dict("os.environ", {"GEMINI_API_KEY": "k"}, clear=False):
             os_env = __import__("os").environ
-            os_env.pop("SEARCH_PROVIDER", None); os_env.pop("TEST_MODE", None)
+            for name in _ROUTING_ENV:
+                os_env.pop(name, None)
+            os_env["GEMINI_API_KEY"] = "k"
             status = subject_research.provider_status()
         self.assertIn("gemini", status["known"])
-        self.assertFalse(status["available"])
-        with unittest.mock.patch.dict("os.environ", {"GEMINI_API_KEY": "k", "SEARCH_PROVIDER": "gemini"}):
+        self.assertNotIn("gemini", [p["name"] for p in status["route"]])
+        with unittest.mock.patch.dict("os.environ", {"GEMINI_API_KEY": "k", "SEARCH_PROVIDER": "gemini",
+                                                     "SEARCH_KEYLESS": "0"}):
             selected = subject_research._select_provider()
             self.assertIsInstance(selected, subject_research.GeminiSearchProvider)
             self.assertTrue(selected.configured())
@@ -223,18 +229,25 @@ class FixtureSearchProviderTest(unittest.TestCase):
                 os.environ["TEST_MODE"] = prev
         self.assertEqual(provider.name, "fixture")
 
-    def test_no_provider_configured_in_production_by_default(self):
-        """No SEARCH_PROVIDER set and not TEST_MODE: nothing is selected -
-        the production-unconfigured, fail-closed default."""
-        import os
-        self.assertIsNone(os.environ.get("TEST_MODE"))
-        self.assertIsNone(subject_research._select_provider())
+    def test_no_keys_in_production_selects_only_the_keyless_fallbacks(self):
+        """Nothing configured and not TEST_MODE: the keyless public route,
+        never a paid provider - and nothing at all once SEARCH_KEYLESS=0."""
+        env = routing_env()
+        try:
+            selected = subject_research._select_provider()
+            self.assertEqual([p.name for p in selected.providers], ["duckduckgo", "wikipedia"])
+            import os
+            os.environ["SEARCH_KEYLESS"] = "0"
+            self.assertIsNone(subject_research._select_provider())
+        finally:
+            env.stop()
 
 
 _ROUTING_ENV = ("TEST_MODE", "SEARCH_ORDER", "SEARCH_PROVIDER", "SEARXNG_URL",
                 "SEARXNG_ENGINES", "SEARXNG_LANGUAGE", "BRAVE_SEARCH_API_KEY",
                 "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "WIKIPEDIA_API_URL",
-                "SEARCH_COOLDOWN")
+                "SEARCH_COOLDOWN", "SEARCH_KEYLESS", "DUCKDUCKGO_HTML_URL",
+                "YOUTUBE_API_KEY")
 
 
 def routing_env(**values):
@@ -393,6 +406,125 @@ class BraveAndWikipediaProviderTest(unittest.TestCase):
             provider.search("q")
 
 
+DDG_PAGE = """<html><body>
+<div class="result results_links results_links_deep result--ad">
+  <a rel="nofollow" class="result__a" href="https://duckduckgo.com/y.js?ad_domain=x">Sponsored</a>
+  <a class="result__snippet" href="#">An advert that must never be treated as a source at all.</a>
+</div>
+<div class="result results_links results_links_deep web-result">
+  <h2 class="result__title"><a rel="nofollow" class="result__a"
+     href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.test%2Fsleep%3Fa%3D1&amp;rut=abc">Sleep <b>Sounds</b> Guide</a></h2>
+  <a class="result__snippet" href="#">Most <b>sleep</b> videos run eight hours &amp; use rain or brown noise.</a>
+</div>
+<div class="result results_links results_links_deep web-result">
+  <h2 class="result__title"><a rel="nofollow" class="result__a" href="https://example.test/direct">Direct</a></h2>
+  <a class="result__snippet" href="#">A second organic result linking directly to its page.</a>
+</div>
+<div class="result results_links web-result">
+  <h2 class="result__title"><a rel="nofollow" class="result__a" href="https://example.test/nosnippet">No snippet</a></h2>
+</div>
+</body></html>"""
+
+
+class DuckDuckGoProviderTest(unittest.TestCase):
+    """HTML parsing and failure reporting - the network step is replaced."""
+
+    def setUp(self):
+        self.env = routing_env()
+
+    def tearDown(self):
+        self.env.stop()
+
+    def test_parses_organic_results_unwraps_redirects_and_drops_ads(self):
+        provider = subject_research.DuckDuckGoSearchProvider()
+        seen = {}
+
+        def fetch(url, data):
+            seen.update(url=url, data=data)
+            return 200, DDG_PAGE
+        provider._fetch = fetch
+        results = provider.search("sleep sounds", max_results=5)
+        self.assertEqual(seen["url"], "https://html.duckduckgo.com/html/")
+        self.assertIn(b"q=sleep+sounds", seen["data"])
+        self.assertEqual(results, [
+            {"title": "Sleep Sounds Guide", "url": "https://example.test/sleep?a=1",
+             "snippet": "Most sleep videos run eight hours & use rain or brown noise."},
+            {"title": "Direct", "url": "https://example.test/direct",
+             "snippet": "A second organic result linking directly to its page."},
+        ])
+        self.assertEqual(len(provider.search("q", max_results=1)), 1)
+
+    def test_bot_challenge_or_unknown_markup_is_a_search_error_not_no_results(self):
+        provider = subject_research.DuckDuckGoSearchProvider()
+        provider._fetch = lambda url, data: (202, "<div class='anomaly-modal'>")
+        with self.assertRaises(subject_research.SearchError) as ctx:
+            provider.search("q")
+        self.assertIn("bot challenge", str(ctx.exception))
+        provider._fetch = lambda url, data: (200, "<html>new layout</html>")
+        with self.assertRaises(subject_research.SearchError):
+            provider.search("q")
+        provider._fetch = lambda url, data: (200, "<div class='no-results'>No results.</div>")
+        self.assertEqual(provider.search("q"), [])
+
+    def test_is_keyless_and_tiered_after_metered_before_paid(self):
+        provider = subject_research.DuckDuckGoSearchProvider()
+        self.assertTrue(provider.configured())
+        self.assertGreater(provider.tier, subject_research.TIER_METERED)
+        self.assertLess(provider.tier, subject_research.TIER_PAID)
+
+    def test_transport_failure_is_a_search_error_naming_the_source(self):
+        import urllib.error
+        with unittest.mock.patch("urllib.request.urlopen",
+                                 side_effect=urllib.error.URLError("Tunnel connection failed: 403")):
+            with self.assertRaises(subject_research.SearchError) as ctx:
+                subject_research.DuckDuckGoSearchProvider().search("q")
+        self.assertIn("duckduckgo unreachable", str(ctx.exception))
+
+
+class KeylessFallThroughTest(unittest.TestCase):
+    """The real provider classes on the real default route, every network
+    step replaced: each failure is recorded and the next source answers."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._prev_dir = subject_research.SUBJECTS_DIR
+        subject_research.SUBJECTS_DIR = self.tmp
+
+    def tearDown(self):
+        self.env.stop()
+        subject_research.SUBJECTS_DIR = self._prev_dir
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_searxng_down_brave_quota_ddg_challenge_then_wikipedia_answers(self):
+        self.env = routing_env(SEARXNG_URL="http://searx.invalid", BRAVE_SEARCH_API_KEY="b")
+        providers = subject_research.build_search_providers()
+
+        def searx_down(url):
+            raise subject_research.SearchError("searxng unreachable: refused")
+
+        def brave_quota(url, key):
+            raise subject_research.SearchError("brave returned HTTP 429")
+        providers["searxng"]._fetch = searx_down
+        providers["brave"]._fetch = brave_quota
+        providers["duckduckgo"]._fetch = lambda url, data: (202, "anomaly-modal")
+        providers["wikipedia"]._fetch = lambda url: {"query": {"pages": [
+            {"title": "Suez Canal", "index": 1, "fullurl": "https://en.wikipedia.org/wiki/Suez_Canal",
+             "extract": "The Suez Canal is an artificial sea-level waterway in Egypt."},
+            {"title": "Isthmus of Suez", "index": 2,
+             "fullurl": "https://en.wikipedia.org/wiki/Isthmus_of_Suez",
+             "extract": "The Isthmus of Suez is the land bridge between Africa and Asia."}]}}
+        gemini = providers["gemini"]
+        gemini._run = lambda q: (_ for _ in ()).throw(AssertionError("paid provider reached"))
+
+        router = subject_research._select_provider(providers)
+        artifact = subject_research.research_subject("vid-k", concept(), provider=router)
+        self.assertEqual(artifact["provider"], "wikipedia")
+        self.assertEqual([(a["provider"], a["outcome"]) for a in artifact["routing"]],
+                         [("searxng", "error"), ("brave", "error"),
+                          ("duckduckgo", "error"), ("wikipedia", "ok")])
+        self.assertIn("HTTP 429", artifact["routing"][1]["detail"])
+
+
 class SearchRouterTest(unittest.TestCase):
 
     def test_stops_at_the_primary_when_it_is_adequate(self):
@@ -477,44 +609,72 @@ class RouteSelectionTest(unittest.TestCase):
         self.env = routing_env(**env)
         return subject_research._select_provider()
 
-    def test_nothing_set_selects_nothing(self):
-        self.assertIsNone(self.select())
+    def test_nothing_set_selects_the_keyless_route(self):
+        self.assertEqual([p.name for p in self.select().providers],
+                         ["duckduckgo", "wikipedia"])
+
+    def test_nothing_set_and_keyless_disabled_selects_nothing(self):
+        self.assertIsNone(self.select(SEARCH_KEYLESS="0"))
 
     def test_keys_for_llm_providers_never_join_the_default_route(self):
-        self.assertIsNone(self.select(GEMINI_API_KEY="k", ANTHROPIC_API_KEY="k"))
+        selected = self.select(GEMINI_API_KEY="k", ANTHROPIC_API_KEY="k")
+        self.assertEqual([p.name for p in selected.providers], ["duckduckgo", "wikipedia"])
+        self.env.stop()
+        self.assertIsNone(self.select(GEMINI_API_KEY="k", ANTHROPIC_API_KEY="k",
+                                      SEARCH_KEYLESS="0"))
 
     def test_searxng_url_alone_makes_searxng_the_primary(self):
         selected = self.select(SEARXNG_URL="http://searx.internal:8080")
+        self.assertEqual(selected.providers[0].name, "searxng")
+        self.env.stop()
+        selected = self.select(SEARXNG_URL="http://searx.internal:8080", SEARCH_KEYLESS="0")
         self.assertIsInstance(selected, subject_research.SearXNGSearchProvider)
 
-    def test_searxng_and_brave_route_free_first(self):
+    def test_route_order_is_searxng_brave_keyless(self):
         selected = self.select(SEARXNG_URL="http://searx.internal:8080",
                                BRAVE_SEARCH_API_KEY="b")
         self.assertIsInstance(selected, subject_research.SearchRouter)
-        self.assertEqual([p.name for p in selected.providers], ["searxng", "brave"])
+        self.assertEqual([p.name for p in selected.providers],
+                         ["searxng", "brave", "duckduckgo", "wikipedia"])
+
+    def test_competitor_purpose_leaves_wikipedia_off_the_automatic_route(self):
+        self.env = routing_env(BRAVE_SEARCH_API_KEY="b")
+        selected = subject_research._select_provider(purpose="competitor")
+        self.assertEqual([p.name for p in selected.providers], ["brave", "duckduckgo"])
 
     def test_explicit_order_wins_and_paid_is_reordered_last(self):
         selected = self.select(SEARCH_ORDER="gemini, searxng, unknown-vendor, wikipedia",
                                SEARCH_PROVIDER="anthropic", SEARXNG_URL="http://s",
                                GEMINI_API_KEY="k")
         self.assertEqual([p.name for p in selected.providers],
-                         ["searxng", "wikipedia", "gemini"])
+                         ["searxng", "wikipedia", "duckduckgo", "gemini"])
+
+    def test_an_exhausted_paid_provider_falls_through_to_keyless(self):
+        """The VPS case: SEARCH_PROVIDER=gemini with no quota left must not
+        stop research - keyless sources are tried first, and gemini is only
+        reached if they come back thin."""
+        selected = self.select(SEARCH_PROVIDER="gemini", GEMINI_API_KEY="k")
+        self.assertEqual([p.name for p in selected.providers],
+                         ["duckduckgo", "wikipedia", "gemini"])
 
     def test_legacy_single_search_provider_still_selects_that_provider(self):
-        selected = self.select(SEARCH_PROVIDER="anthropic", ANTHROPIC_API_KEY="k")
+        selected = self.select(SEARCH_PROVIDER="anthropic", ANTHROPIC_API_KEY="k",
+                               SEARCH_KEYLESS="0")
         self.assertIsInstance(selected, subject_research.AnthropicSearchProvider)
 
     def test_status_reports_the_route_with_tiers(self):
         self.env = routing_env(SEARXNG_URL="http://s", SEARCH_ORDER="searxng,brave,gemini")
         status = subject_research.provider_status()
         self.assertTrue(status["available"])
-        self.assertEqual(status["configured"], "searxng,brave,gemini")
+        self.assertEqual(status["configured"], "searxng,brave,duckduckgo,wikipedia,gemini")
         self.assertEqual(status["route"], [
             {"name": "searxng", "configured": True, "tier": "free"},
             {"name": "brave", "configured": False, "tier": "metered"},
+            {"name": "duckduckgo", "configured": True, "tier": "keyless"},
+            {"name": "wikipedia", "configured": True, "tier": "keyless"},
             {"name": "gemini", "configured": False, "tier": "paid"}])
         self.env.stop()
-        self.env = routing_env(SEARXNG_URL="http://s")
+        self.env = routing_env(SEARXNG_URL="http://s", SEARCH_KEYLESS="0")
         self.assertEqual(subject_research.provider_status()["configured"], "searxng")
 
 

@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import uuid
 from pathlib import Path
 
@@ -24,6 +25,7 @@ AUDIO = ROOT / "tests" / "fixtures" / "audio" / "test_tone.wav"
 sys.path.insert(0, str(ROOT / "scripts"))
 import project  # noqa: E402 - direct import for the typed domain functions
 import research  # noqa: E402
+import subject_research  # noqa: E402
 
 # Exit codes from scripts/project.py run.
 EXIT_OK = 0
@@ -622,7 +624,11 @@ class TestResearchCommand(ProduceTestCase):
     def _cleanup_subject_research(self):
         (ROOT / "research" / "subjects" / f"{self.video_id}.json").unlink(missing_ok=True)
 
-    def test_no_op_for_a_concept_that_does_not_require_it(self):
+    def test_no_facts_to_source_still_runs_competitor_research(self):
+        self.addCleanup(self._cleanup_subject_research)
+        self.addCleanup(lambda: [p.unlink(missing_ok=True) for p in (
+            research.brief_path(self.video_id), research.findings_path(self.video_id),
+            research.directives_path(self.video_id))])
         self.init_project()
         self.write_metadata({
             "experiment": {"concept_id": "sleep-brown-noise-dark",
@@ -630,7 +636,10 @@ class TestResearchCommand(ProduceTestCase):
         })
         proc = self.cm("research", self.video_id)
         self.assertEqual(proc.returncode, EXIT_OK, proc.stderr)
-        self.assertNotIn("subject_research", self.metadata().get("status", {}))
+        status = self.metadata().get("status", {})
+        self.assertEqual(status["subject_research"], "NOT_APPLICABLE")
+        self.assertEqual(status["competitor_research"], "OK")
+        self.assertIsNone(subject_research.load_subject_research(self.video_id))
 
     def test_caches_sourced_facts_for_a_concept_that_requires_it(self):
         self.addCleanup(self._cleanup_subject_research)
@@ -1212,17 +1221,71 @@ class ResearchBriefWiringTest(ProjectTestCase):
     def _clean_research_files(self):
         research.brief_path(self.video_id).unlink(missing_ok=True)
         research.findings_path(self.video_id).unlink(missing_ok=True)
+        research.directives_path(self.video_id).unlink(missing_ok=True)
+        subject_research.subject_path(self.video_id).unlink(missing_ok=True)
 
-    def test_no_brief_and_no_subject_research_required_is_a_clean_noop(self):
-        self.init_project()
+    def _link(self, concept_id):
         self.write_metadata({
-            "experiment": {"concept_id": "sleep-brown-noise-dark",
+            "experiment": {"concept_id": concept_id,
                            "generation_cost_usd": 0.0, "generation_seconds": None,
                            "variables": {}},
         })
+
+    def test_no_brief_and_no_facts_still_gets_competitor_research(self):
+        """The old exemption - a non-factual concept with no brief was a
+        research no-op - is gone: a brief is derived from the concept and
+        competitor research runs."""
+        self.init_project()
+        self._link("sleep-brown-noise-dark")
+        self.assertIsNone(research.load_brief(self.video_id))
         result = project.run_research(self.video_id)
-        self.assertTrue(result.ok)
-        self.assertIsNone(result.data.get("findings"))
+        self.assertTrue(result.ok, result.message)
+        self.assertTrue(result.data["brief_derived"])
+        brief = research.load_brief(self.video_id)
+        self.assertEqual(brief["niche"], "adult_sleep")
+        self.assertIn("Brown Noise for Deep Sleep", brief["creative_intent"])
+        findings = result.data["findings"]
+        self.assertIn("competitors", findings["topics_covered"])
+        self.assertTrue(findings["competitor_analysis"]["videos"])
+        self.assertEqual(findings["competitor_analysis"]["queries"][0],
+                         "Brown Noise for Deep Sleep")
+        status = self.metadata()["status"]
+        self.assertEqual(status["competitor_research"], "OK")
+        self.assertEqual(status["subject_research"], "NOT_APPLICABLE")
+        self.assertEqual(status["research_brief"], "DERIVED")
+        self.assertIsNotNone(research.load_directives(self.video_id))
+        self.assertEqual(project._research_blockers(self.pdir), [])
+
+    def test_no_concept_in_the_catalogue_is_exempt_from_research(self):
+        import experiment
+        _, concepts = experiment.load_concepts()
+        self.assertTrue(concepts)
+        self.init_project()
+        for concept in concepts:
+            with self.subTest(concept=concept["id"]):
+                self._clean_research_files()
+                self._link(concept["id"])
+                result = project.run_research(self.video_id, force=True)
+                self.assertTrue(result.ok, result.message)
+                self.assertIsNotNone(research.load_brief(self.video_id))
+                findings = research.load_findings(self.video_id)
+                self.assertIsNotNone(findings, f"{concept['id']} was not researched")
+                self.assertIn("competitors", findings["topics_covered"])
+                if concept.get("requires_subject_research"):
+                    self.assertIsNotNone(subject_research.load_subject_research(self.video_id))
+
+    def test_research_that_cannot_run_is_recorded_and_blocks_the_gate(self):
+        self.init_project()
+        self._link("sleep-brown-noise-dark")
+        with unittest.mock.patch.object(
+                research, "research_project",
+                side_effect=research.ResearchError("every source failed: duckduckgo bot challenge")):
+            result = project.run_research(self.video_id)
+        self.assertTrue(result.ok, result.message)
+        status = self.metadata()["status"]
+        self.assertEqual(status["competitor_research"], "SKIPPED")
+        self.assertIn("bot challenge", status["competitor_research_reason"])
+        self.assertTrue(project._research_blockers(self.pdir))
 
     def test_a_saved_brief_produces_findings_under_the_fixture_provider(self):
         self.init_project()
