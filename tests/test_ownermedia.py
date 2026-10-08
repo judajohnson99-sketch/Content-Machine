@@ -397,6 +397,25 @@ class OwnerMediaProductionTests(unittest.TestCase):
         self.assertIs(self.metadata()["provenance"]["images"]["production_grade"], False,
                       "a procedural fallback is decisively not production-grade")
 
+    def test_a_rebuilt_storyboard_does_not_carry_owner_pictures_into_generated_shots(self):
+        # Switching "all" to "mixed" and re-planning must leave owner media
+        # only where the new assignment puts it. The rebuild matches scenes
+        # by request digest, which an owner's picture shares with the shot
+        # it replaced; carrying it over by digest once kept every shot owned.
+        self.annotate_all()
+        self.scaffold(scene_count=6, duration=18.0)
+        self.select(visuals=[self.identity(i) for i in self.images])
+        self.assertTrue(project.run_scenes(self.video_id).ok)
+        self.select(visuals_mode="mixed")
+        self.assertTrue(project.run_storyboard(self.video_id).ok)
+        self.assertTrue(project.run_scenes(self.video_id).ok)
+        board = storyboard_mod.load(self.video_id)
+        owned = [s for s in board["scenes"]
+                 if s["generation"].get("provider") == "owner-media"]
+        self.assertEqual(len(owned), len(self.images))
+        self.assertTrue(all(ownermedia.is_owner_scene(s) for s in owned))
+        self.assertTrue(all(scene["image"] for scene in board["scenes"]))
+
     def test_without_a_storyboard_the_stills_become_the_cycled_image_set(self):
         self.annotate_all()
         pdir = self.scaffold()

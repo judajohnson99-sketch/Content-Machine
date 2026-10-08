@@ -1942,9 +1942,13 @@ def run_storyboard(video_id, niche=None, scene_count=None, source_width=None,
                             "will reuse this project's base prompt.")
 
         if existing and not force:
+            # Only what a provider generated carries over: an owner's
+            # picture shares the scene's request digest but was a choice,
+            # and the owner-media assignment re-applies it if still wanted.
             by_digest = {
                 (scene.get("generation") or {}).get("request_digest"): scene
-                for scene in existing.get("scenes", []) if scene.get("image")
+                for scene in existing.get("scenes", [])
+                if scene.get("image") and not _is_owner_media_scene(scene)
             }
             reused = 0
             for scene in board["scenes"]:
@@ -2068,6 +2072,13 @@ def cmd_storyboard(args):
 OWNER_MEDIA_PROVIDER = "owner-media"
 
 
+def _is_owner_media_scene(scene):
+    """True for a scene showing the owner's media, including one whose
+    ``source`` was lost but whose generation record still names it."""
+    return (ownermedia_mod.is_owner_scene(scene)
+            or (scene.get("generation") or {}).get("provider") == OWNER_MEDIA_PROVIDER)
+
+
 def _apply_owner_visuals(scenes, assignment):
     """Point each assigned scene at the owner's media. Returns their ids.
 
@@ -2082,7 +2093,7 @@ def _apply_owner_visuals(scenes, assignment):
     for scene in scenes:
         entry = assignment.get(scene["scene_id"])
         if entry is None:
-            if ownermedia_mod.is_owner_scene(scene):
+            if _is_owner_media_scene(scene):
                 # Deselected since the last run: drop the stale picture so
                 # this scene is generated again rather than quietly keeping
                 # media the owner removed.

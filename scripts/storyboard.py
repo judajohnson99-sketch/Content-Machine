@@ -843,7 +843,9 @@ def cmd_build(args):
         # rebuilding a storyboard does not throw away GPU work.
         by_digest = {
             (s.get("generation") or {}).get("request_digest"): s
-            for s in existing.get("scenes", []) if s.get("image")
+            for s in existing.get("scenes", [])
+            if s.get("image") and (s.get("source") or {}).get("kind") != "owner_media"
+            and (s.get("generation") or {}).get("provider") != "owner-media"
         }
         reused = 0
         for scene in storyboard["scenes"]:
