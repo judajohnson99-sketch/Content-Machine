@@ -5,7 +5,8 @@ import { EmptyState, ErrorState, SkeletonRows } from "./ui/States";
 import { EyeIcon } from "./ui/icons";
 import type { Tone } from "../lib/statusTokens";
 import type {
-  EvaluationStatus, FindingSeverity, QualityEvaluation, QualityFinding, QualityReport, QualityVerdict,
+  EvaluationStatus, FindingSeverity, QualityEvaluation, QualityFinding, QualityReport,
+  QualityVerdict, VisionMeasurements,
 } from "../types/quality";
 import styles from "./QualityPanel.module.css";
 
@@ -25,6 +26,7 @@ const VERDICT: Record<QualityVerdict, { label: string; tone: Tone; line: string 
 
 const STATUS: Record<EvaluationStatus, { label: string; tone: Tone }> = {
   PASS: { label: "Nothing found", tone: "success" },
+  PARTIAL: { label: "Partly evaluated", tone: "info" },
   REVIEW: { label: "Review", tone: "warning" },
   DEFECT: { label: "Defect", tone: "danger" },
   UNAVAILABLE: { label: "Not evaluated", tone: "neutral" },
@@ -45,11 +47,21 @@ export function formatTimestamp(seconds: number): string {
   return h ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
 }
 
+const DIMENSION_LABEL: Record<string, string> = {
+  adherence: "prompt match",
+  composition: "composition",
+  artifacts: "artifacts",
+  consistency: "consistency",
+};
+
 function Finding({ finding }: { finding: QualityFinding }) {
   const severity = SEVERITY[finding.severity];
   return (
     <li className={styles.finding} data-severity={finding.severity}>
       <Badge tone={severity.tone}>{severity.label}</Badge>
+      {finding.dimension && (
+        <span className={styles.dimension}>{DIMENSION_LABEL[finding.dimension] ?? finding.dimension}</span>
+      )}
       {finding.at_seconds != null && (
         <span className={styles.time} title="Position in the video">
           {formatTimestamp(finding.at_seconds)}
@@ -57,6 +69,60 @@ function Finding({ finding }: { finding: QualityFinding }) {
       )}
       <span className={styles.detail}>{finding.detail}</span>
     </li>
+  );
+}
+
+// What the local vision model made of the images, dimension by dimension,
+// and how far to trust it. The numbers are the model's scores, not
+// measurements: until a model has been calibrated against labelled examples
+// that is said here, beside the scores, not left to a document.
+function VisionDetails({ measurements }: { measurements: Record<string, unknown> }) {
+  const m = measurements as VisionMeasurements;
+  if (!m.dimensions && !m.coverage) return null;
+  const dims = m.dimensions ?? {};
+  const coverage = m.coverage;
+  const uncalibrated = Object.entries(m.models ?? {}).filter(([, state]) => state.uncalibrated.length > 0);
+  const chips: string[] = [];
+  if (dims.adherence) chips.push(`Prompt match ${dims.adherence.mean.toFixed(1)}/5`);
+  if (dims.composition) chips.push(`Composition ${dims.composition.mean.toFixed(1)}/5`);
+  if (dims.artifacts) {
+    const n = dims.artifacts.images_with_artifacts;
+    chips.push(n === 0 ? "No artifacts named" : `Artifacts in ${n} image${n === 1 ? "" : "s"}`);
+  }
+  if (dims.consistency) {
+    chips.push(dims.consistency.assessed
+      ? (dims.consistency.outliers ? `${dims.consistency.outliers} off-style` : "Consistent style")
+      : "Consistency not assessed");
+  }
+  const sources = Object.entries(coverage?.sources ?? {}).map(([k, n]) => `${n} ${k}`).join(", ");
+  return (
+    <div className={styles.vision} data-testid="vision-details">
+      {chips.length > 0 && (
+        <ul className={styles.chips}>
+          {chips.map((c) => <li key={c} className={styles.chip}>{c}</li>)}
+        </ul>
+      )}
+      {coverage && (
+        <p className={styles.coverageLine}>
+          Judged {coverage.judged} of {coverage.eligible} depicted image{coverage.eligible === 1 ? "" : "s"}
+          {sources && ` (${sources})`}
+          {!!coverage.abstract_plates_not_judged &&
+            ` · ${coverage.abstract_plates_not_judged} abstract plate${coverage.abstract_plates_not_judged === 1 ? "" : "s"} not judged`}
+          .
+        </p>
+      )}
+      {(coverage?.skipped ?? []).map((s) => (
+        <p key={`${s.code}-${s.detail}`} className={styles.skipped}>
+          {s.count} not judged: {s.detail}{s.origin !== "this host" ? ` (${s.origin})` : ""}
+        </p>
+      ))}
+      {uncalibrated.length > 0 && (
+        <p className={styles.uncalibrated}>
+          {uncalibrated.map(([name, state]) => `${name} (${state.uncalibrated.map((d) => DIMENSION_LABEL[d] ?? d).join(", ")})`).join("; ")}
+          {" "}has not been calibrated against labelled examples: treat those scores as a second opinion, not a measurement.
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -73,6 +139,7 @@ function Evaluation({ evaluation }: { evaluation: QualityEvaluation }) {
         <Badge tone={status.tone} data-status={evaluation.status}>{status.label}</Badge>
       </div>
       <p className={quiet ? styles.reason : styles.summary}>{evaluation.summary}</p>
+      {evaluation.id === "scene_vision" && !quiet && <VisionDetails measurements={evaluation.measurements} />}
       {evaluation.findings.length > 0 && (
         <ul className={styles.findings}>
           {evaluation.findings.map((f, i) => <Finding key={`${f.code}-${i}`} finding={f} />)}
@@ -159,6 +226,11 @@ export function QualityPanel({ videoId, assessedAt }: { videoId: string; assesse
       {report.coverage.unavailable.length > 0 && (
         <p className={styles.coverage}>
           Not evaluated: {report.coverage.unavailable.map((u) => u.title).join("; ")}.
+        </p>
+      )}
+      {(report.coverage.partial ?? []).length > 0 && (
+        <p className={styles.coverage} data-testid="partial-coverage">
+          Partly evaluated: {(report.coverage.partial ?? []).map((u) => u.title).join("; ")}.
         </p>
       )}
       <Intent report={report} />

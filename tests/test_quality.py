@@ -19,7 +19,11 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
+import generation  # noqa: E402
 import quality  # noqa: E402
+import vision  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_vision import GOOD, FakeOllama, make_image  # noqa: E402,F401
 
 
 def ffmpeg(*args):
@@ -380,70 +384,284 @@ class SoundtrackTest(unittest.TestCase):
             video, other, intent("sleep"), scan, 2, 2)))
 
 
-class FakeVisionHandler(BaseHTTPRequestHandler):
-    reply = {"score": 5, "defects": [], "explanation": "matches"}
-    hits = 0
-
-    def do_POST(self):  # noqa: N802
-        type(self).hits += 1
-        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        assert body["images"] and body["model"] == "local-vision"
-        payload = json.dumps({"response": json.dumps(type(self).reply)}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(payload)
-
-    def log_message(self, *args):
-        pass
+def _vision_runner(url="", **kwargs):
+    kwargs.setdefault("models", ["qwen3-vl:2b"])
+    kwargs.setdefault("coordination", "off")
+    kwargs.setdefault("settle_seconds", 0)
+    return vision.Runner(provider=vision.OllamaProvider(url=url), **kwargs)
 
 
-class SceneDepictionTest(Fixtures):
+def _vision_item(path, scene_id="s01", prompt="a moonlit glasshouse in deep indigo",
+                 start=0.0, depicted=True, job_id=None):
+    return {"path": Path(path), "scene_ids": [scene_id], "prompt": prompt,
+            "depicted": depicted, "job_id": job_id, "start": start}
+
+
+class SceneVisionTest(Fixtures):
+    """The vision evaluation, with a stand-in Ollama returning scripted replies."""
+
     def setUp(self):
-        FakeVisionHandler.hits = 0
-        self.server = HTTPServer(("127.0.0.1", 0), FakeVisionHandler)
+        FakeOllama.installed = ["qwen3-vl:2b"]
+        FakeOllama.requests = []
+        FakeOllama.delay = 0.0
+        self.reply = dict(GOOD)
+        FakeOllama.handler = staticmethod(lambda body: (200, {"response": json.dumps(self.reply)}))
+        self.server = HTTPServer(("127.0.0.1", 0), FakeOllama)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.judge = quality.VisionJudge(
-            url=f"http://127.0.0.1:{self.server.server_port}", model="local-vision", timeout=10)
-        self.images = [{"path": self.red, "scene_ids": ["s01"],
-                        "prompt": "a moonlit glasshouse in deep indigo"}]
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+        self.work = tempfile.TemporaryDirectory()
+        self.jobs = Path(self.work.name) / "jobs"
+        patch = mock.patch.dict(os.environ, {"CONTENT_MACHINE_JOBS_DIR": str(self.jobs)})
+        patch.start()
+        self.addCleanup(patch.stop)
+        jobs_patch = mock.patch.object(generation, "JOBS_DIR", self.jobs)
+        jobs_patch.start()
+        self.addCleanup(jobs_patch.stop)
 
     def tearDown(self):
         self.server.shutdown()
         self.server.server_close()
+        self.work.cleanup()
 
-    def test_unconfigured_is_unavailable_never_passed(self):
-        result = quality.evaluate_scene_depiction(
-            self.images, quality.VisionJudge(url="", model=""), {})
+    def runner(self, **kwargs):
+        return _vision_runner(self.url, state_path=Path(self.work.name) / "state.json", **kwargs)
+
+    def images(self, *paths):
+        return [_vision_item(p, f"s{i + 1:02d}", start=i * 6.0) for i, p in enumerate(paths)]
+
+    # --- eligibility and honest absence ---------------------------------
+
+    def test_no_images_is_unavailable(self):
+        self.assertEqual(quality.evaluate_scene_vision([], self.runner())["status"], quality.UNAVAILABLE)
+
+    def test_abstract_plates_are_not_judged_for_depiction(self):
+        items = [_vision_item(self.red, depicted=False)]
+        result = quality.evaluate_scene_vision(items, self.runner())
+        self.assertEqual(result["status"], quality.NOT_APPLICABLE)
+        self.assertIn("abstract plates", result["reason"])
+        self.assertEqual(FakeOllama.requests, [])
+
+    def test_without_a_model_or_evidence_it_is_not_evaluated_and_says_why(self):
+        result = quality.evaluate_scene_vision(self.images(self.red, self.indigo), _vision_runner())
         self.assertEqual(result["status"], quality.UNAVAILABLE)
         self.assertIn("QUALITY_VISION_URL", result["reason"])
+        self.assertIn("2 depicted image(s) were not judged", result["reason"])
+        self.assertNotIn("findings", result)
 
-    def test_a_mismatched_image_is_flagged_with_the_models_reason(self):
-        FakeVisionHandler.reply = {"score": 1, "defects": ["watermark"],
-                                   "explanation": "a flat red field, no glasshouse"}
-        result = quality.evaluate_scene_depiction(self.images, self.judge, {})
-        self.assertEqual(sorted(codes(result)),
-                         ["does_not_depict_intent", "visible_generation_defects"])
-        self.assertIn("no glasshouse", result["findings"][0]["detail"])
-
-    def test_a_matching_image_passes_and_the_verdict_is_cached(self):
-        FakeVisionHandler.reply = {"score": 5, "defects": [], "explanation": "matches"}
-        cache = {}
-        self.assertEqual(codes(quality.evaluate_scene_depiction(self.images, self.judge, cache)), [])
-        quality.evaluate_scene_depiction(self.images, self.judge, cache)
-        self.assertEqual(FakeVisionHandler.hits, 1)
-
-    def test_an_unreachable_model_is_unavailable(self):
-        # A port nothing listens on: the server this class started is
-        # deliberately not the one asked.
-        dead = quality.VisionJudge(url="http://127.0.0.1:9", model="local-vision", timeout=2)
-        result = quality.evaluate_scene_depiction(self.images, dead, {})
+    def test_an_unreachable_model_is_not_evaluated(self):
+        runner = _vision_runner("http://127.0.0.1:9", state_path=Path(self.work.name) / "s.json")
+        result = quality.evaluate_scene_vision(self.images(self.red), runner)
         self.assertEqual(result["status"], quality.UNAVAILABLE)
+        self.assertIn("not reachable", result["reason"])
+
+    def test_an_image_with_no_prompt_cannot_be_judged_against_one(self):
+        items = [_vision_item(self.red, prompt="")]
+        result = quality.evaluate_scene_vision(items, self.runner())
+        self.assertEqual(result["status"], quality.UNAVAILABLE)
+        self.assertIn("no prompt", result["reason"])
+        self.assertEqual(FakeOllama.requests, [])
+
+    # --- what a judgement says ------------------------------------------
+
+    def test_a_mismatched_image_is_flagged_with_the_models_reason_and_its_place(self):
+        self.reply = dict(GOOD, adherence=1, adherence_reason="a red field, no glasshouse")
+        result = quality.evaluate_scene_vision(
+            [_vision_item(self.red, "s05", start=29.0)], self.runner())
+        found = [f for f in result["findings"] if f["code"] == "does_not_depict_intent"]
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["severity"], "warn")
+        self.assertEqual(found[0]["scene_ids"], ["s05"])
+        self.assertEqual(found[0]["at_seconds"], 29.0)
+        self.assertEqual(found[0]["dimension"], "adherence")
+        self.assertIn("a red field, no glasshouse", found[0]["detail"])
+        self.assertIn("qwen3-vl:2b", found[0]["detail"])
+        self.assertIn("not yet calibrated", found[0]["detail"])
+
+    def test_vision_findings_are_never_blocking(self):
+        self.reply = dict(GOOD, adherence=1, composition=1,
+                          artifacts=["text_or_watermark", "deformed_anatomy"])
+        result = quality.evaluate_scene_vision(self.images(self.red), self.runner())
+        self.assertTrue(result["findings"])
+        self.assertNotIn("block", {f["severity"] for f in result["findings"]})
+
+    def test_a_clean_image_passes_and_reports_its_dimensions_and_uncertainty(self):
+        result = quality.evaluate_scene_vision(self.images(self.indigo), self.runner())
+        self.assertEqual(result["findings"], [])
+        self.assertFalse(result["partial"])
+        dims = result["measurements"]["dimensions"]
+        self.assertEqual(dims["adherence"], {"mean": 4.0, "min": 4, "flagged": 0})
+        self.assertEqual(dims["consistency"]["assessed"], False)
+        self.assertEqual(result["measurements"]["models"], {"qwen3-vl:2b": {
+            "calibrated": [], "uncalibrated": list(vision.DIMENSIONS)}})
+        self.assertIn("Not yet calibrated", result["method"])
+        self.assertEqual(result["measurements"]["judgements"][0]["model"], "qwen3-vl:2b")
+
+    def test_composition_and_artifacts_are_separate_dimensions(self):
+        self.reply = dict(GOOD, composition=1, composition_reason="subject cut off",
+                          artifacts=["blur"], artifact_reason="soft focus")
+        result = quality.evaluate_scene_vision(self.images(self.indigo), self.runner())
+        by_dim = {f["dimension"]: f for f in result["findings"]}
+        self.assertEqual(set(by_dim), {"composition", "artifacts"})
+        self.assertEqual(by_dim["composition"]["severity"], "info",
+                         "an uncalibrated model may not warn about composition")
+        self.assertEqual(result["measurements"]["dimensions"]["artifacts"]["by_name"], {"blur": 1})
+
+    def test_a_model_calibrated_for_composition_may_warn_about_it(self):
+        self.reply = dict(GOOD, composition=1)
+        lookup = lambda model: dict(vision.thresholds_for(model),  # noqa: E731
+                                    calibrated_dimensions=["composition"])
+        result = quality.evaluate_scene_vision(self.images(self.indigo), self.runner(), lookup)
+        self.assertEqual([f["severity"] for f in result["findings"]], ["warn"])
+        self.assertEqual(result["measurements"]["models"]["qwen3-vl:2b"]["calibrated"], ["composition"])
+        self.assertIn("qwen3-vl:2b for adherence, artifacts, consistency", result["method"])
+
+    def test_a_fully_calibrated_model_says_so(self):
+        lookup = lambda model: dict(vision.thresholds_for(model),  # noqa: E731
+                                    calibrated_dimensions=list(vision.DIMENSIONS))
+        result = quality.evaluate_scene_vision(self.images(self.indigo), self.runner(), lookup)
+        self.assertIn("Every dimension was calibrated", result["method"])
+
+    # --- where judgements come from -------------------------------------
+
+    def test_worker_evidence_is_used_without_calling_a_model(self):
+        sha = vision.sha256_file(self.indigo)
+        judgement = vision.coerce_judgement(
+            dict(GOOD, adherence=2, adherence_reason="wrong room"), model="qwen3-vl:2b",
+            provider="ollama", intent="p", image_sha=sha)
+        evidence = vision.sanitize_evidence(
+            {"judgements": {"gen_01.png": judgement}}, {"gen_01.png": sha}, "home-gpu-01")
+        generation.save_job({"job_id": "deadbeef01", "status": generation.COMPLETED,
+                             "request": {}, "attempts": [], "vision": evidence})
+        items = [_vision_item(self.indigo, job_id="deadbeef01")]
+        result = quality.evaluate_scene_vision(items, _vision_runner())
+        self.assertEqual(codes(result), ["does_not_depict_intent"])
+        self.assertEqual(result["measurements"]["coverage"]["sources"], {"worker": 1})
+        self.assertEqual(FakeOllama.requests, [])
+
+    def test_evidence_for_different_bytes_is_not_used(self):
+        other = vision.coerce_judgement(GOOD, model="m", provider="ollama", intent="p",
+                                        image_sha=vision.sha256_file(self.red))
+        evidence = vision.sanitize_evidence({"judgements": {"gen_01.png": other}},
+                                            {"gen_01.png": vision.sha256_file(self.red)})
+        generation.save_job({"job_id": "deadbeef02", "status": generation.COMPLETED,
+                             "request": {}, "attempts": [], "vision": evidence})
+        result = quality.evaluate_scene_vision(
+            [_vision_item(self.indigo, job_id="deadbeef02")], _vision_runner())
+        self.assertEqual(result["status"], quality.UNAVAILABLE)
+
+    def test_the_workers_reason_beats_no_local_model_when_nothing_was_judged(self):
+        sha = vision.sha256_file(self.indigo)
+        evidence = vision.sanitize_evidence(
+            {"skipped": {"gen_01.png": {"code": vision.GPU_BUSY, "detail": "deferred: ComfyUI busy"}}},
+            {"gen_01.png": sha}, "home-gpu-01")
+        generation.save_job({"job_id": "deadbeef03", "status": generation.COMPLETED,
+                             "request": {}, "attempts": [], "vision": evidence})
+        result = quality.evaluate_scene_vision(
+            [_vision_item(self.indigo, job_id="deadbeef03")], _vision_runner())
+        self.assertEqual(result["status"], quality.UNAVAILABLE)
+        self.assertIn("deferred: ComfyUI busy", result["reason"])
+        self.assertIn("GPU worker", result["reason"])
+
+    def test_a_second_assessment_reuses_the_cache(self):
+        runner = self.runner()
+        quality.evaluate_scene_vision(self.images(self.indigo), runner)
+        calls = len(FakeOllama.requests)
+        again = quality.evaluate_scene_vision(self.images(self.indigo), self.runner())
+        self.assertEqual(len(FakeOllama.requests), calls)
+        self.assertEqual(again["measurements"]["coverage"]["sources"], {"cache": 1})
+
+    # --- partial coverage ------------------------------------------------
+
+    def test_a_partly_judged_set_is_partial_and_says_how_much(self):
+        FakeOllama.delay = 0.35
+        runner = self.runner(budget_seconds=0.3)
+        result = quality.evaluate_scene_vision(
+            self.images(self.indigo, self.violet, self.deep), runner)
+        self.assertTrue(result["partial"])
+        self.assertEqual(result["measurements"]["coverage"]["judged"], 1)
+        self.assertIn("judged 1 of 3", result["coverage_note"])
+        report = quality._run("scene_vision", "t", False, lambda: result)
+        self.assertEqual(report["status"], quality.PARTIAL)
+        self.assertTrue(report["partial"])
+        self.assertIn("partly evaluated", report["summary"])
+        self.assertIn("time budget", report["summary"])
+
+    def test_a_partial_evaluation_with_findings_is_still_review(self):
+        self.reply = dict(GOOD, adherence=1)
+        FakeOllama.delay = 0.35
+        result = quality.evaluate_scene_vision(
+            self.images(self.indigo, self.violet), self.runner(budget_seconds=0.3))
+        report = quality._run("scene_vision", "t", False, lambda: result)
+        self.assertEqual(report["status"], quality.REVIEW)
+        self.assertTrue(report["partial"])
+
+    def test_abstract_plates_in_a_mixed_set_are_counted_not_judged(self):
+        items = [_vision_item(self.indigo), _vision_item(self.red, "s02", depicted=False)]
+        result = quality.evaluate_scene_vision(items, self.runner())
+        self.assertEqual(result["measurements"]["coverage"]["abstract_plates_not_judged"], 1)
+        self.assertEqual(len(FakeOllama.requests), 1)
+
+    # --- consistency -----------------------------------------------------
+
+    def set_styles(self, styles):
+        self.styles = iter(styles)
+
+        def handler(body):
+            return 200, {"response": json.dumps(dict(GOOD, **next(self.styles)))}
+        FakeOllama.handler = staticmethod(handler)
+
+    CALM = {"style_medium": "digital painting", "style_palette": ["indigo", "violet"],
+            "style_lighting": "dim moonlight", "style_mood": "calm"}
+    ODD = {"style_medium": "photograph", "style_palette": ["orange", "yellow"],
+           "style_lighting": "harsh daylight", "style_mood": "busy"}
+
+    def five_images(self):
+        paths = [make_image(Path(self.work.name) / f"c{i}.png", "0x%06x" % (0x202040 + i * 0x101)) for i in range(5)]
+        return [dict(item, prompt=f"a room, view {i}") for i, item in enumerate(self.images(*paths))]
+
+    def test_one_scene_in_a_different_style_is_an_outlier(self):
+        self.set_styles([self.CALM, self.CALM, self.ODD, self.CALM, self.CALM])
+        result = quality.evaluate_scene_vision(self.five_images(), self.runner())
+        off = [f for f in result["findings"] if f["code"] == "off_style_image"]
+        self.assertEqual([f["scene_ids"] for f in off], [["s03"]])
+        self.assertEqual(off[0]["severity"], "info", "uncalibrated consistency is a note")
+        self.assertIn("photograph", off[0]["detail"])
+        self.assertEqual(result["measurements"]["dimensions"]["consistency"]["outliers"], 1)
+
+    def test_a_uniform_set_has_no_outlier(self):
+        self.set_styles([self.CALM] * 5)
+        result = quality.evaluate_scene_vision(self.five_images(), self.runner())
+        self.assertNotIn("off_style_image", codes(result))
+        self.assertTrue(result["measurements"]["dimensions"]["consistency"]["assessed"])
+
+    def test_consistency_is_not_assessed_with_too_few_images(self):
+        self.set_styles([self.CALM, self.ODD])
+        result = quality.evaluate_scene_vision(self.five_images()[:2], self.runner())
+        consistency = result["measurements"]["dimensions"]["consistency"]
+        self.assertFalse(consistency["assessed"])
+        self.assertIn("too few", consistency["reason"])
+
+    def test_descriptors_from_different_models_are_not_compared(self):
+        def lookup(model):
+            return vision.thresholds_for(model)
+        calm = [vision.coerce_judgement(dict(GOOD, **self.CALM), model="a", provider="o",
+                                        intent="x", image_sha="a" * 64) for _ in range(2)]
+        odd = [vision.coerce_judgement(dict(GOOD, **self.ODD), model="b", provider="o",
+                                       intent="x", image_sha="b" * 64) for _ in range(2)]
+        items = [(_vision_item(self.indigo, f"s0{i}"), j) for i, j in enumerate(calm + odd)]
+        findings, measure = quality.consistency_findings(items, lookup)
+        self.assertEqual(findings, [])
+        self.assertFalse(measure["assessed"], "two models' descriptors were pooled")
+
+    def test_style_tokens_resolve_colour_words(self):
+        tokens = quality.style_tokens({"medium": "Digital painting", "palette": ["deep indigo", "silver"],
+                                       "lighting": "dim moonlight", "mood": "calm"})
+        self.assertTrue({"digital", "painting", "indigo", "silver", "dim", "moonlight", "calm"} <= tokens)
 
 
 class ReportTest(Fixtures):
     def project(self):
-        pdir = self.dir / "proj"
+        pdir = self.dir / ("proj-" + self.id().rsplit(".", 1)[-1])
         (pdir / "output").mkdir(parents=True, exist_ok=True)
         video = pdir / "output" / "proj.mp4"
         ffmpeg("-f", "lavfi", "-i", "color=c=0x262058:s=64x36:d=12:r=8",
@@ -457,7 +675,7 @@ class ReportTest(Fixtures):
                                side_effect=RuntimeError("boom")):
             report = quality.assess(pdir, video_path=video, metadata={}, storyboard={},
                                     audio_manifest={}, concept={"niche": "adult_sleep"},
-                                    judge=quality.VisionJudge(url="", model=""))
+                                    vision_runner=_vision_runner())
         by_id = {e["id"]: e for e in report["evaluations"]}
         self.assertEqual(by_id["rendered_continuity"]["status"], quality.UNAVAILABLE)
         self.assertIn("boom", by_id["rendered_continuity"]["summary"])
@@ -465,14 +683,14 @@ class ReportTest(Fixtures):
                       (quality.PASS, quality.REVIEW, quality.UNAVAILABLE))
         self.assertNotEqual(report["verdict"], quality.OK)
         unavailable = {u["id"] for u in report["coverage"]["unavailable"]}
-        self.assertTrue({"rendered_continuity", "scene_depiction", "scene_intent"} <= unavailable)
+        self.assertTrue({"rendered_continuity", "scene_vision", "scene_intent"} <= unavailable)
         self.assertNotIn("rendered_continuity", report["coverage"]["evaluated"])
 
     def test_gate_sees_only_objective_defects_from_a_current_report(self):
         pdir, video = self.project()
         report = quality.assess(pdir, video_path=video, metadata={}, storyboard={},
                                 audio_manifest={}, concept={},
-                                judge=quality.VisionJudge(url="", model=""))
+                                vision_runner=_vision_runner())
         report["evaluations"][0]["findings"] = [
             quality.finding("vivid_for_context", "warn", "taste"),
             quality.finding("sample_clipping", "block", "it clips")]
@@ -489,6 +707,64 @@ class ReportTest(Fixtures):
         self.assertEqual(len(quality.blockers(pdir, video)), 1)
         self.assertIn("stale", quality.blockers(pdir, video)[0])
         self.assertFalse(quality.summary(pdir, video)["current"])
+
+    def vision_project(self, depicted=True):
+        pdir, video = self.project()
+        (pdir / "images").mkdir(exist_ok=True)
+        subprocess.run(["cp", str(self.indigo), str(pdir / "images" / "a.png")], check=True)
+        board = {"scenes": [{
+            "scene_id": "s01", "image": "images/a.png", "image_prompt": "a moonlit glasshouse",
+            "duration_seconds": 6.0, "transition": {"kind": "cut"},
+            "generation": {"produces_depicted": depicted, "job_id": None}}]}
+        return pdir, video, board
+
+    def test_vision_findings_inform_review_but_never_reach_the_gate(self):
+        pdir, video, board = self.vision_project()
+        result = vision.BatchResult()
+        result.judgements[str(pdir / "images" / "a.png")] = vision.coerce_judgement(
+            dict(GOOD, adherence=1, adherence_reason="a flat field", artifacts=["text_or_watermark"]),
+            model="qwen3-vl:2b", provider="ollama", intent="a moonlit glasshouse",
+            image_sha=vision.sha256_file(pdir / "images" / "a.png"))
+        with mock.patch.object(vision.Runner, "judge_images", return_value=result):
+            report = quality.assess(pdir, video_path=video, metadata={}, storyboard=board,
+                                    audio_manifest={}, concept={"niche": "adult_sleep"},
+                                    vision_runner=_vision_runner())
+        by_id = {e["id"]: e for e in report["evaluations"]}
+        evaluation = by_id["scene_vision"]
+        self.assertEqual(evaluation["status"], quality.REVIEW)
+        self.assertEqual({f["severity"] for f in evaluation["findings"]}, {"warn"})
+        self.assertIn("scene_vision", report["coverage"]["evaluated"])
+        quality.write_report(pdir, report)
+        self.assertEqual(quality.blockers(pdir, video), [],
+                         "a subjective vision finding blocked the review gate")
+
+    def test_abstract_plates_make_the_vision_evaluation_not_applicable(self):
+        pdir, video, board = self.vision_project(depicted=False)
+        report = quality.assess(pdir, video_path=video, metadata={}, storyboard=board,
+                                audio_manifest={}, concept={}, vision_runner=_vision_runner())
+        by_id = {e["id"]: e for e in report["evaluations"]}
+        self.assertEqual(by_id["scene_vision"]["status"], quality.NOT_APPLICABLE)
+        self.assertEqual([n["id"] for n in report["coverage"]["not_applicable"]
+                          if n["id"] == "scene_vision"], ["scene_vision"])
+
+    def test_a_partial_vision_evaluation_is_listed_as_partial_in_coverage(self):
+        pdir, video, board = self.vision_project()
+        board["scenes"].append(dict(board["scenes"][0], scene_id="s02", image="images/b.png",
+                                    image_prompt="a pale moon"))
+        subprocess.run(["cp", str(self.violet), str(pdir / "images" / "b.png")], check=True)
+        result = vision.BatchResult()
+        result.judgements[str(pdir / "images" / "a.png")] = vision.coerce_judgement(
+            GOOD, model="qwen3-vl:2b", provider="ollama", intent="x",
+            image_sha=vision.sha256_file(pdir / "images" / "a.png"))
+        result.skipped[str(pdir / "images" / "b.png")] = {"code": vision.GPU_BUSY, "detail": "deferred: ComfyUI busy"}
+        with mock.patch.object(vision.Runner, "judge_images", return_value=result):
+            report = quality.assess(pdir, video_path=video, metadata={}, storyboard=board,
+                                    audio_manifest={}, concept={}, vision_runner=_vision_runner())
+        by_id = {e["id"]: e for e in report["evaluations"]}
+        self.assertEqual(by_id["scene_vision"]["status"], quality.PARTIAL)
+        self.assertEqual([p["id"] for p in report["coverage"]["partial"]], ["scene_vision"])
+        self.assertIn("deferred: ComfyUI busy", report["coverage"]["partial"][0]["reason"])
+        self.assertNotIn("scene_vision", {u["id"] for u in report["coverage"]["unavailable"]})
 
     def test_no_report_is_unassessed_not_passed(self):
         empty = self.dir / "never-assessed"

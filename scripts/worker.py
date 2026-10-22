@@ -54,6 +54,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import generation  # noqa: E402
+import vision  # noqa: E402
 from generation import GenerationRequest, utc_now  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -111,7 +112,7 @@ WAITING_FOR_CAPABLE_WORKER = "WAITING_FOR_CAPABLE_WORKER"
 HEARTBEAT_STATUS_KEYS = frozenset({
     "comfyui", "comfyui_reachable", "gpu", "vram_mb", "vram_total_mb",
     "vram_free_mb", "checkpoints", "model", "workflow", "agent_version",
-    "current_job", "host", "detail"})
+    "current_job", "host", "detail", "vision"})
 
 # Readiness of depicted imagery through the remote GPU, derived on every
 # read from the registry and the queue - never stored, like worker state.
@@ -370,6 +371,20 @@ def authenticate(token):
     raise WorkerError("unrecognised worker token", 401)
 
 
+def _vision_status(raw):
+    """A worker's report of its local vision model, reduced to five facts.
+
+    Anything else in the object is dropped: this is a status line, and the
+    registry must not become a place a worker can store arbitrary data.
+    """
+    raw = raw if isinstance(raw, dict) else {}
+    code = raw.get("code")
+    return {"enabled": bool(raw.get("enabled")), "ready": bool(raw.get("ready")),
+            "model": str(raw.get("model") or "")[:80] or None,
+            "code": code if code in vision.CODES else None,
+            "detail": str(raw.get("detail") or "")[:200] or None}
+
+
 def heartbeat(worker_id, status=None):
     """Record liveness. Deliberately does NOT renew a job lease.
 
@@ -389,6 +404,8 @@ def heartbeat(worker_id, status=None):
         if status:
             record["status"] = {k: v for k, v in status.items()
                                if k in HEARTBEAT_STATUS_KEYS}
+            if "vision" in record["status"]:
+                record["status"]["vision"] = _vision_status(record["status"]["vision"])
         _write_json(path, record)
     return record
 
@@ -1045,8 +1062,16 @@ def _verify_manifest(job_id, manifest):
 
 
 def complete(job_id, worker_id, lease_id, manifest, provider_job_id=None,
-             model=None, notes=None, elapsed_seconds=None):
+             model=None, notes=None, elapsed_seconds=None, vision_evidence=None):
     """Verify the manifest, publish the assets, and record the generation.
+
+    ``vision_evidence`` is the worker's optional report of what its local
+    vision model made of the rendered images. It is evidence, not a verdict:
+    each judgement is bound to the bytes this function verified (never to
+    what the worker claimed), re-validated, and stored on the job record for
+    ``quality.py`` to read. It can neither complete a job nor mark an asset
+    production-grade, and a report that is malformed is dropped rather than
+    allowed to fail an otherwise good render.
 
     The last step is the integration seam: a completed-job record in the
     ordinary generation job store means the next ``visuals`` run reuses this
@@ -1079,6 +1104,10 @@ def complete(job_id, worker_id, lease_id, manifest, provider_job_id=None,
 
         job["assets"] = [str(a) for a in assets]
         job["manifest"] = verified
+        evidence = vision.sanitize_evidence(
+            vision_evidence, {e["filename"]: e["sha256"] for e in verified}, worker_id)
+        if evidence:
+            job["vision"] = evidence
         if provider_job_id:
             job["provider_job_id"] = str(provider_job_id)[:200]
         job["model"] = str(model)[:200] if model else None
@@ -1127,6 +1156,8 @@ def _write_generation_job(job, worker_id, notes, elapsed_seconds):
         "elapsed_seconds": elapsed_seconds,
         "completed_at": job.get("completed_at"),
     })
+    if job.get("vision"):
+        record["vision"] = job["vision"]
     record.setdefault("attempts", []).append({
         "provider": "comfyui", "at": utc_now(), "outcome": "completed",
         "attempt": job.get("attempt"), "worker_id": worker_id,

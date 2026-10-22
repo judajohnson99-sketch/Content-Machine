@@ -194,7 +194,8 @@ class ControlPlaneHandler(BaseHTTPRequestHandler):
                     payload.get("manifest"),
                     provider_job_id=payload.get("provider_job_id"),
                     model=payload.get("model"), notes=payload.get("notes"),
-                    elapsed_seconds=payload.get("elapsed_seconds"))
+                    elapsed_seconds=payload.get("elapsed_seconds"),
+                    vision_evidence=payload.get("vision"))
                 return 200, {"state": job["state"], "assets": job["assets"],
                              "manifest": job["manifest"]}
             if action == "fail":

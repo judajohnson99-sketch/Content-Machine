@@ -15,8 +15,10 @@ Seven evaluations, each reported separately with how it was done:
 - ``scene_intent`` - does each distinct scene image use the direction's
   palette, sit in the lighting key the direction asks for, and stay within
   the brightness and vividness the viewing context tolerates;
-- ``scene_depiction`` - does the image depict its prompt, judged by a local
-  vision model. Optional, off unless configured, and never a paid call;
+- ``scene_vision`` - prompt adherence, composition, visible artifacts and
+  style consistency, judged by a local vision model (``vision.py``).
+  Optional, inert unless a judgement is on hand or ``QUALITY_VISION_URL`` is
+  set, and never a paid call;
 - ``visual_continuity`` - do consecutive scenes change look gently enough
   for the transition between them, and does any scene look unlike the rest;
 - ``rendered_continuity`` - does the delivered MP4 contain flash frames or
@@ -46,7 +48,6 @@ for this intent. Whether the video is worth publishing stays a human's call.
 
 Standard library plus ffmpeg, like the rest of the render path.
 """
-import base64
 import cmath
 import hashlib
 import json
@@ -58,23 +59,24 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audio as audio_mod  # noqa: E402
+import generation  # noqa: E402
 import motion as motion_mod  # noqa: E402
+import vision  # noqa: E402
 
 log = logging.getLogger("quality")
 
 QUALITY_VERSION = 1
 REPORT_FILENAME = "quality_report.json"
-CACHE_FILENAME = "quality_cache.json"
 
 OK, REVIEW, DEFECT, INCOMPLETE = "OK", "REVIEW", "DEFECT", "INCOMPLETE"
 PASS, UNAVAILABLE, NOT_APPLICABLE = "PASS", "UNAVAILABLE", "NOT_APPLICABLE"
+# Evaluated, but only some of what it covers could be (e.g. 5 of 8 images judged).
+PARTIAL = "PARTIAL"
 
 PASS_NOTE = ("An OK verdict means nothing measurable is wrong for this "
              "production's intent. It is not a judgement that the video is "
@@ -481,8 +483,11 @@ def _resolve(pdir, rel):
     return path if path.is_absolute() else Path(pdir) / path
 
 
-def timeline(pdir, storyboard, spec):
-    """Scenes in playback order: image path, start time, outgoing transition."""
+def timeline(pdir, storyboard, spec, depicted_default=None):
+    """Scenes in playback order: image path, start time, outgoing transition,
+    and what is known about how the picture was made (``depicted``, the
+    generation ``job_id``) so depiction can be judged only where it means
+    something."""
     scenes = (storyboard or {}).get("scenes") or []
     if scenes:
         starts = motion_mod.scene_start_times(scenes)
@@ -490,10 +495,13 @@ def timeline(pdir, storyboard, spec):
         for scene, start in zip(scenes, starts):
             transition = scene.get("transition") or {}
             kind = transition.get("kind", "crossfade")
+            generation_info = scene.get("generation") or {}
             out.append({
                 "scene_id": scene.get("scene_id"),
                 "image": _resolve(pdir, scene["image"]) if scene.get("image") else None,
                 "prompt": scene.get("image_prompt") or "",
+                "depicted": generation_info.get("produces_depicted"),
+                "job_id": generation_info.get("job_id"),
                 "start": float(start),
                 "duration": float(scene.get("duration_seconds") or 0.0),
                 "transition": kind,
@@ -518,6 +526,7 @@ def timeline(pdir, storyboard, spec):
     out, t, i = [], 0.0, 0
     while t < total and i < 2000:
         out.append({"scene_id": None, "image": paths[i % len(paths)], "prompt": "",
+                    "depicted": depicted_default, "job_id": None,
                     "start": t, "duration": per,
                     "transition": "crossfade" if d else "cut", "transition_seconds": d})
         t += per - d
@@ -537,7 +546,9 @@ def _distinct_images(entries):
             continue
         key = str(entry["image"])
         if key not in seen:
-            seen[key] = {"path": entry["image"], "scene_ids": [], "prompt": entry["prompt"]}
+            seen[key] = {"path": entry["image"], "scene_ids": [], "prompt": entry["prompt"],
+                         "depicted": entry.get("depicted"), "job_id": entry.get("job_id"),
+                         "start": entry.get("start")}
         if entry["scene_id"]:
             seen[key]["scene_ids"].append(entry["scene_id"])
     return list(seen.values())
@@ -624,67 +635,6 @@ def evaluate_scene_intent(images, intent, measured):
     return {"findings": findings, "measurements": {"images": rows}, "method": method}
 
 
-# --------------------------------------------------------------------------
-# evaluation: scene depiction (optional local vision model)
-# --------------------------------------------------------------------------
-
-class VisionJudge:
-    """A local vision-language model reached over the Ollama HTTP API.
-
-    Optional and inert by default: QUALITY_VISION_URL and
-    QUALITY_VISION_MODEL must both be set, there is no default endpoint and
-    no default model name, and the adapter speaks only Ollama's local API -
-    so it cannot quietly become a metered call.
-    """
-
-    name = "ollama"
-
-    def __init__(self, url=None, model=None, timeout=None):
-        self.url = (url if url is not None else _env("QUALITY_VISION_URL") or "").rstrip("/")
-        self.model = model if model is not None else _env("QUALITY_VISION_MODEL")
-        self.timeout = timeout if timeout is not None else _env_float("QUALITY_VISION_TIMEOUT", 90)
-
-    def configured(self):
-        return bool(self.url and self.model)
-
-    def unavailable_reason(self):
-        return ("no local vision model configured (set QUALITY_VISION_URL and "
-                "QUALITY_VISION_MODEL to an Ollama vision model); scene depiction "
-                "was not checked")
-
-    PROMPT = (
-        "You are checking one still from a video against what it was meant to "
-        "show. Intended picture: \"{intent}\".\n"
-        "Reply with ONLY a JSON object: {{\"score\": 1-5 (5 = clearly depicts the "
-        "intended picture, 1 = shows something else), \"defects\": [visible "
-        "generation defects such as text, watermarks, deformed or duplicated "
-        "objects, melted edges; empty if none], \"explanation\": one sentence}}")
-
-    def judge(self, image_path, intent):
-        with tempfile.TemporaryDirectory(prefix="cm-vision-") as tmp:
-            small = Path(tmp) / "frame.jpg"
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(image_path),
-                            "-frames:v", "1", "-vf", "scale=640:-2", str(small)],
-                           capture_output=True)
-            data = (small if small.is_file() else Path(image_path)).read_bytes()
-        body = json.dumps({
-            "model": self.model, "stream": False, "format": "json",
-            "prompt": self.PROMPT.format(intent=intent[:600]),
-            "images": [base64.b64encode(data).decode("ascii")],
-        }).encode("utf-8")
-        req = urllib.request.Request(f"{self.url}/api/generate", data=body,
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=self.timeout) as response:
-            reply = json.loads(response.read().decode("utf-8"))
-        parsed = json.loads(reply.get("response") or "{}")
-        score = parsed.get("score")
-        if not isinstance(score, (int, float)) or not 1 <= score <= 5:
-            raise ValueError(f"vision model returned no usable score: {parsed!r}")
-        defects = [str(d) for d in (parsed.get("defects") or []) if str(d).strip()]
-        return {"score": float(score), "defects": defects[:6],
-                "explanation": str(parsed.get("explanation") or "")[:300]}
-
-
 def _sha256(path):
     h = hashlib.sha256()
     with Path(path).open("rb") as stream:
@@ -700,55 +650,218 @@ def _sample_evenly(items, limit):
     return [items[int(i * step)] for i in range(limit)]
 
 
-def evaluate_scene_depiction(images, judge, cache):
-    if judge is None or not judge.configured():
-        return {"status": UNAVAILABLE,
-                "reason": (judge or VisionJudge()).unavailable_reason()}
-    candidates = [i for i in images if i["prompt"] and i["path"].is_file()]
-    if not candidates:
-        return {"status": UNAVAILABLE, "reason": "no scene images carry a prompt to judge against"}
-    limit = int(_env_float("QUALITY_VISION_MAX_IMAGES", 8))
-    sample = _sample_evenly(candidates, max(1, limit))
-    findings, rows, errors = [], [], []
-    for item in sample:
-        key = hashlib.sha256(f"{judge.model}|{item['prompt']}|{_sha256(item['path'])}".encode()).hexdigest()
-        result = cache.get(key)
-        if result is None:
-            try:
-                result = judge.judge(item["path"], item["prompt"])
-            except (urllib.error.URLError, OSError, ValueError) as e:
-                errors.append(f"{_label(item)}: {e}")
-                if isinstance(e, urllib.error.URLError) or isinstance(e, ConnectionError):
-                    break  # the endpoint is down; do not wait out every timeout
-                continue
-            cache[key] = result
-        label = _label(item)
-        rows.append({"image": item["path"].name, "scene_ids": item["scene_ids"], **result})
-        if result["score"] <= 2:
-            findings.append(finding(
-                "does_not_depict_intent", "warn",
-                f"{label}: the vision model scores it {result['score']:.0f}/5 against its "
-                f"prompt - {result['explanation'] or 'no explanation given'}",
-                scene_ids=item["scene_ids"] or None))
-        elif result["score"] < 4:
-            findings.append(finding(
-                "weak_depiction", "info",
-                f"{label}: scored {result['score']:.0f}/5 - {result['explanation']}",
-                scene_ids=item["scene_ids"] or None))
-        if result["defects"]:
-            findings.append(finding(
-                "visible_generation_defects", "warn",
-                f"{label}: {', '.join(result['defects'])}",
-                scene_ids=item["scene_ids"] or None))
+# --------------------------------------------------------------------------
+# evaluation: what a local vision model makes of the images
+# --------------------------------------------------------------------------
+#
+# One call per distinct image (vision.py) returns prompt adherence,
+# composition, named artifacts and a style descriptor. Judgements come from
+# three places, in this order: evidence the GPU worker attached to the
+# generation job (judged while it still held the GPU), the content-addressed
+# cache, and - if QUALITY_VISION_URL is set on this host - a fresh call.
+# Whatever cannot be had is reported as not evaluated, with its reason.
+
+_STYLE_STOP = frozenset(("the", "and", "with", "of", "light", "lighting", "style",
+                         "very", "a", "an", "in", "on", "soft", "slightly"))
+
+
+def style_tokens(style):
+    """Comparable words from a style descriptor: medium, lighting, mood, and
+    palette colours (resolved to a colour name where one is recognised)."""
+    words = []
+    for field in ("medium", "lighting", "mood"):
+        words += re.findall(r"[a-z]+", str(style.get(field) or "").lower())
+    for term in style.get("palette") or []:
+        resolved, _ = resolve_palette([term])
+        words += [resolved[0]["colour"]] if resolved else re.findall(r"[a-z]+", str(term).lower())
+    return {w for w in words if len(w) > 2 and w not in _STYLE_STOP}
+
+
+def _jaccard(a, b):
+    return len(a & b) / len(a | b) if (a | b) else 0.0
+
+
+def consistency_findings(judged, thresholds_for):
+    """Images whose style descriptor is unlike the rest of the video's.
+
+    Descriptors from different models are not comparable, so only the model
+    that judged the most images takes part. Needs enough images for "the
+    rest" to mean something; fewer is reported as not assessed, not as
+    consistent.
+    """
+    rows = [(item, j) for item, j in judged if style_tokens(j["style"]) and len(style_tokens(j["style"])) >= 2]
     if not rows:
+        return [], {"assessed": False, "reason": "the model gave no usable style descriptors"}
+    by_model = {}
+    for item, j in rows:
+        by_model.setdefault(j["model"], []).append((item, j))
+    model = max(by_model, key=lambda m: len(by_model[m]))
+    group = by_model[model]
+    thresholds = thresholds_for(model)
+    rule = thresholds["consistency"]
+    if len(group) < int(rule["min_images"]):
+        return [], {"assessed": False, "model": model,
+                    "reason": f"{len(group)} judged image(s) is too few to say what is typical "
+                              f"(needs {rule['min_images']})"}
+    tokens = [style_tokens(j["style"]) for _, j in group]
+    means = []
+    for i in range(len(group)):
+        others = [_jaccard(tokens[i], tokens[k]) for k in range(len(group)) if k != i]
+        means.append(sum(others) / len(others))
+    typical = _median(means)
+    findings, outliers = [], 0
+    for (item, j), mean, tok in zip(group, means, tokens):
+        if mean < rule["outlier_similarity"] and mean < typical - rule["margin"]:
+            outliers += 1
+            common = sorted(set.intersection(*[set(t) for t in tokens])) if tokens else []
+            style = j["style"]
+            findings.append(finding(
+                "off_style_image", vision.cap_severity("warn", "consistency", thresholds),
+                f"{_label(item)} reads as a different look from the rest of the video "
+                f"({style.get('medium') or 'unspecified medium'}, "
+                f"{', '.join(style.get('palette') or []) or 'no palette named'}, "
+                f"{style.get('lighting') or 'unspecified light'}; style similarity {mean:.2f} "
+                f"against a typical {typical:.2f}, {model}"
+                f"{'' if vision.is_calibrated(thresholds, 'consistency') else ', not yet calibrated'})",
+                scene_ids=item["scene_ids"] or None,
+                at_seconds=round(item["start"], 2) if item.get("start") is not None else None,
+                dimension="consistency"))
+    return findings, {"assessed": True, "model": model, "compared": len(group),
+                      "outliers": outliers, "typical_similarity": round(typical, 3)}
+
+
+def _skip_reasons(skipped):
+    counts = {}
+    for entry in skipped.values():
+        key = (entry["code"], entry["detail"], entry.get("origin") or "this host")
+        counts[key] = counts.get(key, 0) + 1
+    return [{"code": c, "detail": d, "origin": o, "count": n}
+            for (c, d, o), n in sorted(counts.items(), key=lambda kv: -kv[1])]
+
+
+def evaluate_scene_vision(images, runner=None, thresholds_for=None):
+    """Prompt adherence, composition, artifacts and style consistency."""
+    thresholds_for = thresholds_for or vision.thresholds_for
+    runner = runner if runner is not None else vision.Runner()
+    if not images:
+        return {"status": UNAVAILABLE, "reason": "no scene images to evaluate"}
+    abstract = [i for i in images if i.get("depicted") is False]
+    candidates = [i for i in images if i.get("depicted") is not False]
+    if not candidates:
+        return {"status": NOT_APPLICABLE,
+                "reason": f"all {len(abstract)} scene image(s) are abstract plates, not depictions "
+                          "of their prompts, so there is nothing for a vision model to compare"}
+    eligible, skipped = [], {}
+    for item in candidates:
+        key = str(item["path"])
+        if not item["path"].is_file():
+            skipped[key] = {"code": vision.UNREADABLE_IMAGE, "detail": "the image file is missing"}
+        elif not item.get("prompt"):
+            skipped[key] = {"code": "no_prompt", "detail": "no prompt records what this image was meant to show"}
+        else:
+            eligible.append(item)
+
+    judged, worker_skips, pending = {}, {}, []
+    for item in eligible:
+        key = str(item["path"])
+        job = generation.load_job(item["job_id"]) if item.get("job_id") else None
+        judgement, skip = vision.evidence_for(job, vision.sha256_file(item["path"]))
+        if judgement is not None:
+            judged[key] = (item, judgement)
+            continue
+        if skip:
+            worker_skips[key] = dict(skip, origin="the GPU worker")
+        pending.append({"key": key, "path": item["path"], "intent": item["prompt"]})
+    if pending:
+        result = runner.judge_images(pending)
+        by_key = {str(i["path"]): i for i in eligible}
+        for key, judgement in result.judgements.items():
+            judged[key] = (by_key[key], judgement)
+        for key, entry in result.skipped.items():
+            # "no local model here" is a weaker explanation than the worker's
+            # own account of why it could not judge.
+            if entry["code"] == vision.NOT_CONFIGURED and key in worker_skips:
+                entry = worker_skips[key]
+            skipped[key] = entry
+    for key in list(skipped):
+        if key in judged:
+            del skipped[key]
+
+    if not judged:
+        reasons = _skip_reasons(skipped)
+        lead = reasons[0] if reasons else {"detail": "no judgement was produced", "origin": "this host"}
+        origin = "" if lead["origin"] == "this host" else f" ({lead['origin']} reported it)"
         return {"status": UNAVAILABLE,
-                "reason": "the vision model could not be reached or gave no usable answer: "
-                          + "; ".join(errors[:3])}
-    method = (f"{judge.model} via {judge.name} judged {len(rows)} of {len(candidates)} "
-              f"distinct prompted image(s) against their prompts"
-              + (" (evenly sampled)" if len(candidates) > len(sample) else "")
-              + (f"; {len(errors)} could not be judged" if errors else "") + ".")
-    return {"findings": findings, "measurements": {"judgements": rows}, "method": method}
+                "reason": f"{lead['detail']}{origin}; {len(candidates)} depicted image(s) were not judged",
+                "measurements": {"coverage": {"eligible": len(eligible), "judged": 0,
+                                              "skipped": reasons}}}
+
+    ordered = [judged[k] for k in sorted(judged, key=lambda k: (judged[k][0].get("start") or 0.0, k))]
+    findings = []
+    for item, j in ordered:
+        for f in vision.per_image_findings(j, _label(item), thresholds_for(j["model"])):
+            findings.append(finding(
+                f["code"], f["severity"], f["detail"],
+                scene_ids=item["scene_ids"] or None,
+                at_seconds=round(item["start"], 2) if item.get("start") is not None else None,
+                dimension=f["dimension"]))
+    consistency, consistency_m = consistency_findings(ordered, thresholds_for)
+    findings += consistency
+
+    def stats(dimension):
+        scores = [j[dimension]["score"] for _, j in ordered]
+        flagged = sum(1 for f in findings if f.get("dimension") == dimension)
+        return {"mean": round(sum(scores) / len(scores), 2), "min": min(scores), "flagged": flagged}
+
+    named = {}
+    for _, j in ordered:
+        for artifact in j["artifacts"]["found"]:
+            named[artifact] = named.get(artifact, 0) + 1
+    sources = {}
+    for _, j in ordered:
+        origin = "worker" if str(j.get("source", "")).startswith("worker") else (
+            "cache" if j.get("source") == "cache" else "direct")
+        sources[origin] = sources.get(origin, 0) + 1
+    models = {}
+    for _, j in ordered:
+        done = thresholds_for(j["model"]).get("calibrated_dimensions") or []
+        models[j["model"]] = {"calibrated": [d for d in vision.DIMENSIONS if d in done],
+                              "uncalibrated": [d for d in vision.DIMENSIONS if d not in done]}
+    partial = len(judged) < len(candidates)
+    reasons = _skip_reasons(skipped)
+    note = None
+    if partial:
+        lead = reasons[0] if reasons else None
+        note = (f"judged {len(judged)} of {len(candidates)} depicted image(s)"
+                + (f"; the rest were not: {lead['detail']}" if lead else ""))
+    uncalibrated = sorted(m for m, state in models.items() if state["uncalibrated"])
+    method = (f"{', '.join(sorted(models))} judged {len(judged)} distinct depicted image(s) against "
+              f"their prompts, one call each, for prompt match, composition and visible artifacts, "
+              f"and style descriptors were compared across images for consistency "
+              f"(judgements from: {', '.join(f'{n} {o}' for o, n in sorted(sources.items()))}). "
+              + (f"Not yet calibrated against labelled examples: "
+                 + "; ".join(f"{m} for {', '.join(models[m]['uncalibrated'])}" for m in uncalibrated)
+                 + " - those scores inform review and are not measurements."
+                 if uncalibrated else "Every dimension was calibrated for the model used."))
+    return {
+        "findings": findings, "partial": partial, "coverage_note": note, "method": method,
+        "measurements": {
+            "dimensions": {
+                "adherence": stats("adherence"), "composition": stats("composition"),
+                "artifacts": {"images_with_artifacts": sum(
+                    1 for _, j in ordered if j["artifacts"]["found"]), "by_name": named},
+                "consistency": consistency_m},
+            "coverage": {"eligible": len(eligible), "judged": len(judged),
+                         "abstract_plates_not_judged": len(abstract),
+                         "sources": sources, "skipped": reasons},
+            "models": models,
+            "judgements": [{
+                "image": item["path"].name, "scene_ids": item["scene_ids"],
+                "model": j["model"], "source": j.get("source"),
+                "adherence": j["adherence"]["score"], "composition": j["composition"]["score"],
+                "artifacts": j["artifacts"]["found"], "style": j["style"]}
+                for item, j in ordered],
+        }}
 
 
 # --------------------------------------------------------------------------
@@ -1395,7 +1508,7 @@ def evaluate_soundtrack_delivery(video, audio_manifest, intent, scan, head, tail
 
 EVALUATIONS = (
     ("scene_intent", "Scene imagery vs creative intent", True),
-    ("scene_depiction", "Scene depiction (local vision model)", False),
+    ("scene_vision", "Scene imagery: depiction, composition, artifacts (local vision model)", False),
     ("visual_continuity", "Scene-to-scene continuity", True),
     ("rendered_continuity", "Rendered frames: flashes and seams", True),
     ("soundtrack_delivery", "Delivered soundtrack", True),
@@ -1438,6 +1551,9 @@ def _run(evaluation_id, title, required, fn):
                    "reason": f"the evaluation raised {type(e).__name__}: {str(e)[:200]}"}
     findings = cap_findings(outcome.get("findings") or [])
     status = outcome.get("status") or _status(findings)
+    partial = bool(outcome.get("partial"))
+    if partial and status == PASS:
+        status = PARTIAL
     summary = outcome.get("reason")
     if summary is None:
         counts = {s: sum(f.get("unlisted") or 1 for f in findings if f["severity"] == s)
@@ -1446,10 +1562,12 @@ def _run(evaluation_id, title, required, fn):
                    ", ".join(f"{n} {word}" for n, word in (
                        (counts["block"], "defect(s)"), (counts["warn"], "to review"),
                        (counts["info"], "note(s)")) if n))
-        if status == PASS and counts["info"]:
+        if status in (PASS, PARTIAL) and counts["info"]:
             summary += f" ({counts['info']} note(s))"
+        if outcome.get("coverage_note"):
+            summary = f"{summary} - partly evaluated: {outcome['coverage_note']}"
     return {"id": evaluation_id, "title": title, "required": required, "status": status,
-            "summary": summary, "method": outcome.get("method"),
+            "partial": partial, "summary": summary, "method": outcome.get("method"),
             "findings": findings, "measurements": outcome.get("measurements") or {}}
 
 
@@ -1462,29 +1580,21 @@ def _video_fingerprint(video):
             "sha256": _sha256(video)}
 
 
-def _load_cache(pdir):
-    path = Path(pdir) / "output" / CACHE_FILENAME
-    try:
-        return json.loads(path.read_text())
-    except (OSError, ValueError):
-        return {}
-
-
-def _save_cache(pdir, cache):
-    if not cache:
-        return
-    path = Path(pdir) / "output" / CACHE_FILENAME
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cache, indent=2) + "\n")
-
-
 def assess(pdir, *, video_path=None, metadata=None, storyboard=None, audio_manifest=None,
-           concept=None, spec=None, holds_one_frame=False, judge=None):
+           concept=None, spec=None, holds_one_frame=False, vision_runner=None):
     """Every perceptual evaluation for one production. Never raises for a
-    failed evaluation - that evaluation is UNAVAILABLE and says why."""
+    failed evaluation - that evaluation is UNAVAILABLE and says why.
+
+    ``vision_runner`` is the ``vision.Runner`` used when a judgement is not
+    already on hand; the default is built from the environment and is inert
+    unless ``QUALITY_VISION_URL`` is set.
+    """
     pdir = Path(pdir)
     intent = intent_profile(metadata, storyboard, audio_manifest, concept, holds_one_frame)
-    entries = timeline(pdir, storyboard, spec)
+    images_provenance = ((metadata or {}).get("provenance") or {}).get("images") or {}
+    provider = str(images_provenance.get("provider") or "")
+    entries = timeline(pdir, storyboard, spec,
+                       depicted_default=(None if not provider else "procedural" not in provider))
     images = _distinct_images(entries)
     measured = {str(i["path"]): measure_image(i["path"]) for i in images if i["path"].is_file()}
     master = (audio_manifest or {}).get("master") or {}
@@ -1508,11 +1618,9 @@ def assess(pdir, *, video_path=None, metadata=None, storyboard=None, audio_manif
             return fn(scan, duration)
         return run
 
-    cache = _load_cache(pdir)
     plans = {
         "scene_intent": lambda: evaluate_scene_intent(images, intent, measured),
-        "scene_depiction": lambda: evaluate_scene_depiction(
-            images, judge if judge is not None else VisionJudge(), cache),
+        "scene_vision": lambda: evaluate_scene_vision(images, vision_runner),
         "visual_continuity": lambda: evaluate_visual_continuity(entries, intent, measured),
         "rendered_continuity": lambda: evaluate_rendered_continuity(video, entries, intent),
         "soundtrack_delivery": lambda: evaluate_soundtrack_delivery(
@@ -1523,7 +1631,6 @@ def assess(pdir, *, video_path=None, metadata=None, storyboard=None, audio_manif
             lambda scan, d: evaluate_soundtrack_repetition(scan, head, tail, d)),
     }
     evaluations = [_run(eid, title, required, plans[eid]) for eid, title, required in EVALUATIONS]
-    _save_cache(pdir, cache)
 
     counts = {s: sum(f.get("unlisted") or 1 for e in evaluations for f in e["findings"]
                      if f["severity"] == s)
@@ -1547,7 +1654,10 @@ def assess(pdir, *, video_path=None, metadata=None, storyboard=None, audio_manif
         "verdict": verdict,
         "counts": counts,
         "coverage": {
-            "evaluated": [e["id"] for e in evaluations if e["status"] in (PASS, REVIEW, DEFECT)],
+            "evaluated": [e["id"] for e in evaluations
+                          if e["status"] in (PASS, PARTIAL, REVIEW, DEFECT)],
+            "partial": [{"id": e["id"], "title": e["title"], "reason": e["summary"]}
+                        for e in evaluations if e.get("partial")],
             "unavailable": unavailable,
             "not_applicable": [{"id": e["id"], "title": e["title"], "reason": e["summary"]}
                                for e in evaluations if e["status"] == NOT_APPLICABLE],

@@ -146,6 +146,45 @@ request renders at 680x384 and is upscaled to 1920x1080 inside the graph
 reported as a permanent failure - lower COMFYUI_LATENT_MAX_PIXELS on the PC
 rather than re-queueing.
 
+## Vision on the GPU worker (optional, not yet validated on hardware)
+
+A local vision model can judge each rendered image (prompt adherence,
+composition, artifacts, consistency) and attach advisory findings to the
+review. It is off until you do the steps below, and nothing in the pipeline
+depends on it. Findings never block; the human review gate is unchanged.
+
+Minimum steps once the PC is on (all on the PC, in the worker checkout):
+
+1. `python3 scripts/vision_setup.py doctor` - reports what is missing
+   (Ollama, GPU, models, ComfyUI, free VRAM, `.env`).
+2. Install Ollama (https://ollama.com/download) if the doctor says so.
+3. `python3 scripts/vision_setup.py env --write` - appends the vision keys to
+   `.env` without touching existing ones.
+4. `python3 scripts/vision_setup.py pull` - downloads `qwen3-vl:2b` and the
+   fallback. Model tags were not checked against the registry from the dev
+   environment; if one is rejected, change `QUALITY_VISION_MODELS`.
+5. Run `doctor` again, then `python3 scripts/vision_setup.py smoke` (judges
+   two test images through the real GPU lease; it defers if ComfyUI is busy).
+6. `python3 scripts/vision_calibration.py run --model qwen3-vl:2b --apply`
+   to measure the model. Until this passes per dimension the findings stay
+   labelled "not yet calibrated" and composition/consistency stay at info.
+   Then label some real renders (`label-template`, `import-real`) and re-run.
+7. Add `WORKER_VISION=1` to `.env` (step 3 does) and restart the agent.
+   Optionally `python3 scripts/vision_setup.py service` prints systemd units
+   for the agent and the outbound SSH tunnel.
+
+Things to watch, because they could not be tested without the hardware:
+
+- The GTX 1060 3GB is tight for `qwen3-vl:2b`. Vision and ComfyUI never run
+  together (file lease), and ComfyUI's models are freed first via its `/free`
+  endpoint - that call's effect on VRAM is unverified. If loading still fails
+  with out-of-memory, the job records `oom` and "Not evaluated"; try the
+  fallback model or a smaller `QUALITY_VISION_IMAGE_MAX_PX`.
+- Some Qwen3-VL builds emit "thinking" text before the answer. Answers that
+  are not the requested JSON are rejected as `unparseable`, not guessed at.
+- A busy ComfyUI defers judging (`gpu_busy`); the render itself is never
+  delayed or failed by vision.
+
 ## Automatic queueing from the pipeline
 
 `visuals`/`scenes` (and therefore Produce) queue depicted-imagery work here

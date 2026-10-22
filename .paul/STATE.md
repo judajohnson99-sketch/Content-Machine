@@ -10,26 +10,28 @@ The single resume file.
 
 ## Current Position
 
-Milestone: Perceptual Quality System, phase 1 - done. Every render now gets
-`output/quality_report.json` from `scripts/quality.py`: scene imagery vs the
-direction's palette/lighting and the viewing profile, scene-to-scene
-continuity, rendered flashes/seams, the delivered soundtrack, dynamics
-(spikes, dropouts, drift) and loop repetition, all judged against the
-production's intent. Findings inform review (Workspace card with Re-assess,
-Review Center evidence); only objective delivered-video defects and a stale
-report reach the gate. `./content-machine quality <id>` and the `quality`
-web stage re-assess without re-rendering. Validated on a real 3-minute
-Dreamdrip production and a degraded copy that old QC passes everywhere.
+Milestone: Perceptual Quality System, phase 1.5 - vision layer prepared,
+NOT validated on hardware. Built and mock-tested: a local Ollama vision
+provider with model chain, schema validation and judgement cache
+(`scripts/vision.py`); GPU lease/ComfyUI coordination so vision never blocks a
+render (`scripts/gpu_coordination.py`); the GPU worker judges images after
+rendering and ships sha-bound advisory evidence that the control plane
+re-validates; `quality.py` reports adherence/composition/artifacts/consistency
+with PARTIAL and Not-evaluated states; Workspace and Review Center show them.
+Calibration harness plus a constructed 82-case dataset
+(`calibration/vision`); `scripts/vision_setup.py` for doctor/env/pull/smoke/
+systemd. No model is calibrated; the dataset labels are constructed, not
+human-reviewed. Steps for the GPU PC are in WORKER_RUNBOOK.md.
 
 Blockers unchanged (need the owner): no working search provider for sourced
-research; no depicted-image provider, so plates are abstracts. Scene
-depiction (vision model) reports "not evaluated" until QUALITY_VISION_URL and
-QUALITY_VISION_MODEL point at a local Ollama vision model.
+research; no depicted-image provider, so plates are abstracts. The GPU PC was
+not reachable in this phase, so nothing ran against real Ollama or ComfyUI.
 
-Next: point the depiction check at a local vision model on the GPU PC and
-calibrate it on depicted renders; validate a narrated production (needs the
-piper voice installed); then the earlier next steps (top up a search
-provider, owner-media selection from `library/`).
+Next, when the GPU PC is on: run the runbook's vision steps, then
+`vision_calibration.py run --model qwen3-vl:2b --apply`, label some real
+renders (`label-template`, `import-real`) and re-run; verify ComfyUI `/free`
+and VRAM fit on the GTX 1060 3GB. Then the earlier next steps (search
+provider, narrated production, owner-media selection).
 
 ## Standing decisions
 
@@ -56,12 +58,10 @@ and are not restated here.
 
 ## Session Continuity
 
-Latest request: Phase 1 of the Perceptual Quality System - evaluate creative
-quality, not just technical validity. Built `scripts/quality.py`, wired into
-`project.run_pipeline` (stage 4b), the gate (`quality.blockers`),
-`status_report`, the package, a `quality` CLI/web stage, a
-`/quality-report/` endpoint and a dashboard QualityPanel. Thresholds were
-calibrated on the real production (vividness instead of raw chroma; sleep
-spike 6 LU; loop detection on masked spectral shape). Validation projects
-`dreamdrip-qa-01` and `dreamdrip-qa-bad` are local, untracked. `graphify` is
-not installed here, so the code and knowledge graphs were not refreshed.
+Latest request: Phase 1.5 - prepare the vision-model layer for the GPU worker
+without GPU access. Delivered the provider, coordination, worker evidence,
+quality integration, UI, calibration dataset and harness, setup tooling and
+docs; two knowledge notes captured (decision: evidence travels with the
+completed job; insight: tiny calibration sets reward rule search). `graphify`
+is not installed here, so graphs and `knowledge refresh` were not run.
+Validation projects `dreamdrip-*` are local and untracked.

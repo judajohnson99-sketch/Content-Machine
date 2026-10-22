@@ -216,7 +216,7 @@ class TestProjectRun(ProjectTestCase):
             (self.pdir / "output" / "quality_report.json").read_text())
         self.assertIn(quality_report["verdict"], ("OK", "REVIEW", "INCOMPLETE"))
         self.assertEqual(package["perceptual_quality"]["verdict"], quality_report["verdict"])
-        self.assertIn("scene_depiction", package["perceptual_quality"]["unavailable"])
+        self.assertIn("scene_vision", package["perceptual_quality"]["unavailable"])
         self.assertEqual(self.metadata()["status"]["quality"], quality_report["verdict"])
 
     def test_withholds_review_status_when_metadata_incomplete(self):

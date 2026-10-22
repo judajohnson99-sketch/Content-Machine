@@ -695,7 +695,7 @@ runs on every `run`, and can be re-run without re-rendering:
 | Evaluation | What it measures |
 |---|---|
 | Scene imagery vs creative intent | each distinct scene image's lighting key, brightness and vividness against the viewing profile, and its colour against the direction's palette |
-| Scene depiction *(optional)* | a local vision model scores each image against its prompt (`QUALITY_VISION_URL` + `QUALITY_VISION_MODEL`, Ollama API; off by default, never a paid call) |
+| Scene imagery: depiction, composition, artifacts *(optional)* | a local vision model (Ollama) scores each *depicted* image for prompt adherence, composition and visible artifacts, and compares scene styles for consistency; off by default, never a paid call - see "Vision model" below |
 | Scene-to-scene continuity | lightness and colour change between consecutive scenes, with tolerance that widens with dissolve length; scenes unlike the rest of the video |
 | Rendered frames | flash frames and frame-to-frame steps where the edit planned no cut, in the delivered MP4 |
 | Delivered soundtrack | the MP4's own audio re-measured against the composed track's criteria (only new problems are reported) |
@@ -714,6 +714,50 @@ the gate, as does a report that no longer describes the video on disk; and an
 OK verdict means nothing measurable is wrong, not that the video is good.
 The report is shown in the Workspace (with a Re-assess action) and in the
 Review Center, ahead of the human grades.
+
+#### Vision model (prepared, not yet run on real hardware)
+
+`scripts/vision.py` is a provider seam like `generation.py`: a `VisionProvider`
+(Ollama today) behind a `Runner` that tries an ordered model chain
+(`QUALITY_VISION_MODELS`, default `qwen3-vl:2b` then `moondream`), validates
+every answer against a strict schema (integer 1-5 scores, artifacts from a
+closed vocabulary), caches judgements by image hash + model + rubric + intent,
+and honours a per-job time budget. Only *depicted* images are judged: abstract
+plates are "not applicable", never scored. Each dimension reports one of
+evaluated / partly evaluated / **Not evaluated**, with the reason (no model
+configured, model not installed, GPU busy, timeout, unparseable answer ...).
+
+- **Where it runs.** The VPS has no GPU, so the GPU worker judges each image
+  right after rendering it, while it already holds the GPU
+  (`WORKER_VISION=1`), and ships the judgements with the completed job as
+  *advisory evidence* bound to the image hashes. The control plane
+  re-validates them; `quality.py` reads evidence, then the cache, then a
+  direct provider. A worker still cannot declare success or set
+  `production_grade`.
+- **GPU coordination.** Renders win. Vision takes a file lease
+  (`jobs/_gpu.lock`, `GPU_LOCK_PATH`) the render also holds, defers
+  (`gpu_busy`) when ComfyUI has queued work, frees ComfyUI's models before
+  loading its own, and unloads (`keep_alive: 0`) after every image.
+  `QUALITY_VISION_GPU_COORDINATION=auto|on|off`.
+- **Findings are advisory and honest about calibration.** A finding never
+  blocks. Until a model is measured against `calibration/vision`, thresholds
+  come from `config/vision_thresholds.json` `default`, composition and
+  consistency findings are capped at *info*, and every finding says "not yet
+  calibrated". No model ships calibrated.
+- **Calibration.** `calibration/vision` holds a labelled dataset built from
+  the repo's own procedural plates with labels known by construction
+  (prompt/image matches and mismatches, injected blur/noise/duplicated
+  objects/text, off-centre compositions, same-style sets with one odd image).
+  It exercises the harness; it is not a human-reviewed ground truth and a
+  passing score on it does not prove a model judges real renders well. Add
+  real renders with `vision_calibration.py label-template` / `import-real`.
+  `vision_calibration.py run --model M [--apply]` measures per dimension and,
+  with `--apply`, records only the dimensions that met their criteria.
+- **GPU worker setup.** `scripts/vision_setup.py doctor | env --write | pull |
+  smoke | service`; the minimum steps are in WORKER_RUNBOOK.md.
+- **Tests** mock the model (`tests/test_vision.py`,
+  `test_vision_calibration.py`, `test_vision_setup.py`,
+  `test_gpu_coordination.py`); nothing here has been run against a real model.
 
 ## Experiments
 

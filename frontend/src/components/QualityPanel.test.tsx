@@ -19,7 +19,8 @@ function report(overrides: Partial<QualityReport> = {}): QualityReport {
     counts: { block: 0, warn: 1, info: 0 },
     coverage: {
       evaluated: ["scene_intent", "soundtrack_dynamics"],
-      unavailable: [{ id: "scene_depiction", title: "Scene depiction (local vision model)",
+      partial: [],
+      unavailable: [{ id: "scene_vision", title: "Scene imagery: depiction, composition, artifacts (local vision model)",
                       required: false, reason: "no local vision model configured" }],
       not_applicable: [],
     },
@@ -32,7 +33,7 @@ function report(overrides: Partial<QualityReport> = {}): QualityReport {
     },
     evaluations: [
       evaluation({}),
-      evaluation({ id: "scene_depiction", title: "Scene depiction (local vision model)",
+      evaluation({ id: "scene_vision", title: "Scene imagery: depiction, composition, artifacts (local vision model)",
                    required: false, status: "UNAVAILABLE",
                    summary: "no local vision model configured", method: null }),
       evaluation({ id: "soundtrack_dynamics", title: "Soundtrack dynamics", status: "REVIEW",
@@ -62,10 +63,11 @@ describe("QualityPanel", () => {
     vi.spyOn(qualityApi, "getQualityReport").mockResolvedValue(report());
     renderWithClient(<QualityPanel videoId="vid" />);
 
-    const depiction = await screen.findByTestId("evaluation-scene_depiction");
+    const depiction = await screen.findByTestId("evaluation-scene_vision");
     expect(within(depiction).getByText("Not evaluated")).toBeInTheDocument();
     expect(within(depiction).queryByText("Nothing found")).not.toBeInTheDocument();
-    expect(screen.getByText(/Not evaluated: Scene depiction/)).toBeInTheDocument();
+    expect(within(depiction).queryByTestId("vision-details")).not.toBeInTheDocument();
+    expect(screen.getByText(/Not evaluated: Scene imagery/)).toBeInTheDocument();
   });
 
   it("says when the assessment describes an earlier render", async () => {
@@ -78,6 +80,50 @@ describe("QualityPanel", () => {
     vi.spyOn(qualityApi, "getQualityReport").mockResolvedValue(null);
     renderWithClient(<QualityPanel videoId="vid" />);
     expect(await screen.findByText("Not evaluated yet")).toBeInTheDocument();
+  });
+
+  it("shows the vision dimensions, where the judgements came from, and that the model is uncalibrated", async () => {
+    const vision = evaluation({
+      id: "scene_vision", title: "Scene imagery: depiction, composition, artifacts (local vision model)",
+      required: false, status: "PARTIAL", partial: true,
+      summary: "nothing measurable is wrong - partly evaluated: judged 5 of 8 depicted images",
+      findings: [{ code: "weak_composition", severity: "info", dimension: "composition", scene_ids: ["s03"],
+                   detail: "s03: composition scored 2/5 (qwen3-vl:2b, not yet calibrated) - subject cut off" }],
+      measurements: {
+        dimensions: {
+          adherence: { mean: 4.2, min: 3, flagged: 0 },
+          composition: { mean: 3.4, min: 2, flagged: 1 },
+          artifacts: { images_with_artifacts: 1, by_name: { blur: 1 } },
+          consistency: { assessed: false, reason: "4 judged image(s) is too few" },
+        },
+        coverage: {
+          eligible: 8, judged: 5, abstract_plates_not_judged: 2, sources: { worker: 3, cache: 2 },
+          skipped: [{ code: "gpu_busy", detail: "deferred: ComfyUI has 1 running prompt(s)", origin: "this host", count: 3 }],
+        },
+        models: { "qwen3-vl:2b": { calibrated: ["adherence"], uncalibrated: ["composition", "artifacts", "consistency"] } },
+      },
+    });
+    vi.spyOn(qualityApi, "getQualityReport").mockResolvedValue(report({
+      evaluations: [vision],
+      coverage: { evaluated: ["scene_vision"], unavailable: [],
+                  partial: [{ id: "scene_vision", title: "Scene imagery: depiction, composition, artifacts (local vision model)", reason: "judged 5 of 8" }],
+                  not_applicable: [] },
+    }));
+    renderWithClient(<QualityPanel videoId="vid" />);
+
+    const card = await screen.findByTestId("evaluation-scene_vision");
+    expect(within(card).getByText("Partly evaluated")).toBeInTheDocument();
+    const details = within(card).getByTestId("vision-details");
+    expect(within(details).getByText("Prompt match 4.2/5")).toBeInTheDocument();
+    expect(within(details).getByText("Composition 3.4/5")).toBeInTheDocument();
+    expect(within(details).getByText("Artifacts in 1 image")).toBeInTheDocument();
+    expect(within(details).getByText("Consistency not assessed")).toBeInTheDocument();
+    expect(within(details).getByText(/Judged 5 of 8 depicted images \(3 worker, 2 cache\)/)).toBeInTheDocument();
+    expect(within(details).getByText(/3 not judged: deferred: ComfyUI has 1 running prompt/)).toBeInTheDocument();
+    expect(within(details).getByText(/qwen3-vl:2b \(composition, artifacts, consistency\)/)).toBeInTheDocument();
+    expect(within(details).getByText(/has not been calibrated against labelled examples/)).toBeInTheDocument();
+    expect(within(card).getByText("composition")).toBeInTheDocument();
+    expect(screen.getByTestId("partial-coverage")).toHaveTextContent(/Partly evaluated: Scene imagery/);
   });
 
   it("formats positions the way the report's own text does", () => {
