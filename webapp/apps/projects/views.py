@@ -9,21 +9,24 @@ from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+import scripts.media as media
 import scripts.project as project
 import scripts.research as research
 
-from apps.engine.exceptions import ProjectNotFound
+from apps.engine.exceptions import ProjectNotFound, translate
 from apps.engine.http import serve_file
 from apps.engine.services import assets as assets_service
 from apps.engine.services import concepts as concepts_service
 from apps.engine.services import library as library_service
 from apps.engine.services import projects as projects_service
+from apps.engine.services import visual_assets as visual_assets_service
 from apps.engine.services import research as research_service
 from apps.engine.services import workers as workers_service
 
 from apps.library.serializers import OwnerMediaSelectionSerializer
 
 from .serializers import (
+    SceneRegenerateSerializer, VisualAssetChoiceSerializer, VisualAssetSearchSerializer,
     ProductionGoalSerializer, ProjectCreateSerializer, ProjectDeleteSerializer,
     ProjectSummarySerializer, ResearchBriefSerializer,
     ProjectArchiveSerializer,
@@ -327,3 +330,100 @@ class ProjectQualityReportView(APIView):
         if report is None:
             raise NotFound(f"{video_id} has not been assessed for perceptual quality")
         return Response(report)
+
+
+def _actor(request):
+    return getattr(request.user, "email", "") or request.user.get_username()
+
+
+def _visual_asset_call(video_id, fn, *args, **kwargs):
+    """Run a visual-asset operation, mapping its refusals onto HTTP.
+
+    A refusal is a 400 with the reason (it is the request that cannot be
+    honoured, not a server fault); a busy project is the usual 409.
+    """
+    if projects_service.get_metadata(video_id) is None:
+        raise ProjectNotFound(f"no such project: {video_id}")
+    try:
+        return fn(video_id, *args, **kwargs)
+    except visual_assets_service.VisualAssetError as e:
+        if "no such project" in str(e):
+            raise ProjectNotFound(str(e)) from e
+        raise ValidationError({"detail": str(e)}) from e
+    except project.ProjectBusyError as e:
+        translate(e)
+    except (media.MediaError, project.ProjectError) as e:
+        raise ValidationError({"detail": str(e)}) from e
+
+
+class ProjectVisualAssetStatusView(APIView):
+    """GET /api/v1/projects/{id}/visual-assets/ - what sourcing can use right
+    now: which stock providers are ready, rate-limited or not configured,
+    whether the GPU could take a generation, and the approval level in force."""
+
+    def get(self, request, video_id):
+        return Response(_visual_asset_call(video_id, visual_assets_service.status))
+
+
+class SceneAssetsView(APIView):
+    """GET - the last search for a scene. POST - search again.
+
+    One list ranks the owner's library, stock photos and footage and a
+    planned generation together, each with its reasoning, its licence and
+    what choosing it would require. Searching reads, ranks and records; it
+    downloads, generates and spends nothing.
+    """
+
+    def get(self, request, video_id, scene_id):
+        entry = _visual_asset_call(video_id, visual_assets_service.scene_view, scene_id)
+        return Response(entry or {"scene_id": scene_id, "candidates": [], "searched": False})
+
+    def post(self, request, video_id, scene_id):
+        serializer = VisualAssetSearchSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        entry = _visual_asset_call(
+            video_id, visual_assets_service.search, scene_id,
+            query=data["query"] or None, kind=data["kind"], sources=data["sources"],
+            more=data["more"], pages=data["pages"])
+        return Response(entry)
+
+
+class SceneAssetSelectView(APIView):
+    """POST - choose a candidate. 200 with ``status``: selected,
+    approval_required (nothing downloaded yet), generation_requested or
+    blocked. First use of external media is never approved implicitly."""
+
+    def post(self, request, video_id, scene_id):
+        serializer = VisualAssetChoiceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        return Response(_visual_asset_call(
+            video_id, visual_assets_service.select, scene_id, data["candidate_id"],
+            _actor(request), approve=data["approve"], note=data["note"]))
+
+
+class SceneAssetSaveView(APIView):
+    """POST - keep a stock candidate in the library without using it yet."""
+
+    def post(self, request, video_id, scene_id):
+        serializer = VisualAssetChoiceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        return Response(_visual_asset_call(
+            video_id, visual_assets_service.save, scene_id, data["candidate_id"],
+            _actor(request), approve=data["approve"], note=data["note"]), status=201)
+
+
+class SceneRegenerateView(APIView):
+    """POST - have one scene's picture generated again, differently. Queues
+    the intent; the scenes stage does the work (and defers it if the GPU is
+    off)."""
+
+    def post(self, request, video_id, scene_id):
+        serializer = SceneRegenerateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        return Response(_visual_asset_call(
+            video_id, visual_assets_service.regenerate, scene_id, _actor(request),
+            seed=data["seed"], prompt=data["prompt"], negative_prompt=data["negative_prompt"]))

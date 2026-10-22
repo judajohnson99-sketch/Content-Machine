@@ -28,10 +28,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
+    import asset_licensing
     import media
     import render
 except ImportError:                                   # package-style import
-    from . import media, render
+    from . import asset_licensing, media, render
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -126,6 +127,10 @@ def _rights_summary(asset):
         "attribution_text": rights.get("attribution_text"),
         "evidence": rights.get("evidence"),
         "status": rights.get("status"),
+        "creator": rights.get("creator"),
+        "license_url": rights.get("license_url"),
+        "external": asset_licensing.is_external(rights),
+        "approved": asset_licensing.approved(rights),
     }
 
 
@@ -255,9 +260,10 @@ def stage(pdir, asset, source_path, role):
         return target, "copy"
 
 
-def _entry(asset, source_path, staged_path, pdir, role, method):
+def _entry(asset, source_path, staged_path, pdir, role, method,
+           scene_id=None, lineage=None):
     rights = media.rights_record(asset)
-    return {
+    entry = {
         "asset_id": asset["id"],
         "role": role,
         "kind": asset["technical"]["kind"],
@@ -271,6 +277,21 @@ def _entry(asset, source_path, staged_path, pdir, role, method):
         "technical": _stream_summary(asset),
         "selected_utc": utc_now(),
     }
+    if scene_id:
+        entry["scene_id"] = scene_id
+    if lineage:
+        entry["lineage"] = lineage
+    return entry
+
+
+def _item(role, item):
+    """``(asset_id, scene_id, lineage)`` from a plain id or a pinned entry."""
+    if isinstance(item, str):
+        return item, None, None
+    if isinstance(item, dict) and isinstance(item.get("asset_id"), str):
+        scene_id = item.get("scene_id") if role == "visuals" else None
+        return item["asset_id"], scene_id, item.get("lineage")
+    raise OwnerMediaError(f"{role}: expected an asset id or an object with asset_id")
 
 
 def build_selection(pdir, assignments, *, actor, catalog=media.DEFAULT_CATALOG):
@@ -278,7 +299,11 @@ def build_selection(pdir, assignments, *, actor, catalog=media.DEFAULT_CATALOG):
 
     ``assignments`` is ``{role: [asset_id, ...]}``; a role present with an
     empty list is cleared, a role left out is untouched by the caller. Order
-    inside a role is kept - it is the order the visuals are used in.
+    inside a role is kept - it is the order the visuals are used in. A
+    visual may instead be ``{"asset_id", "scene_id", "lineage"}``, which pins
+    it to one scene and records where the choice came from (the candidate
+    and ranking that led to it); the same asset may then serve several
+    scenes, but never twice in the same one.
 
     Refuses rather than degrades: an asset without a description, without a
     rights record, or whose bytes are not on this host is not silently
@@ -303,11 +328,12 @@ def build_selection(pdir, assignments, *, actor, catalog=media.DEFAULT_CATALOG):
         if not isinstance(identities, (list, tuple)):
             raise OwnerMediaError(f"{role}: expected a list of asset ids")
         entries, seen = [], set()
-        for identity in identities:
-            if identity in seen:
+        for item in identities:
+            identity, scene_id, lineage = _item(role, item)
+            if (identity, scene_id) in seen:
                 raise OwnerMediaError(
                     f"{role}: asset {identity[:12]} is selected twice")
-            seen.add(identity)
+            seen.add((identity, scene_id))
             asset = catalog_assets.get(identity)
             if asset is None:
                 raise OwnerMediaError(f"unknown asset: {identity}")
@@ -321,7 +347,8 @@ def build_selection(pdir, assignments, *, actor, catalog=media.DEFAULT_CATALOG):
             except media.MediaError as exc:
                 raise OwnerMediaError(str(exc)) from exc
             staged_path, method = stage(pdir, asset, source_path, role)
-            entries.append(_entry(asset, source_path, staged_path, pdir, role, method))
+            entries.append(_entry(asset, source_path, staged_path, pdir, role, method,
+                                  scene_id=scene_id, lineage=lineage))
         selection[role] = entries
     return {
         "version": SELECTION_VERSION,
@@ -398,7 +425,8 @@ def assignment_for_scenes(metadata, scenes):
 
 def scene_source(entry):
     """What a storyboard scene records about the owner asset behind it."""
-    return {
+    rights = entry.get("rights") or {}
+    source = {
         "kind": "owner_media",
         "asset_id": entry["asset_id"],
         "media_kind": entry["kind"],
@@ -406,6 +434,19 @@ def scene_source(entry):
         "description": entry.get("description") or "",
         "selected_utc": entry.get("selected_utc"),
     }
+    if asset_licensing.is_external(rights):
+        # The scene itself says it came from outside, and whose it is, so a
+        # reader of storyboard.json never has to cross-reference the selection.
+        source["external"] = {
+            "provider": rights.get("source"),
+            "creator": rights.get("creator"),
+            "source_url": rights.get("source_url"),
+            "license": rights.get("license"),
+            "attribution_text": rights.get("attribution_text"),
+        }
+    if entry.get("lineage"):
+        source["candidate_id"] = entry["lineage"].get("candidate_id")
+    return source
 
 
 def is_owner_scene(scene):
@@ -533,6 +574,13 @@ def verification_problems(metadata, pdir):
                 media.rights_record(entry)
             except media.MediaError as exc:
                 problems.append(str(exc))
+            # Fail closed: external media is usable only because a person
+            # said so. A record that claims commercial use without that
+            # approval was edited, not approved.
+            rights = entry.get("rights") or {}
+            if asset_licensing.is_external(rights) and not asset_licensing.approved(rights):
+                problems.append(f"{label} comes from {rights.get('source') or 'an external source'} "
+                                "and has not been approved for production use")
     return problems
 
 

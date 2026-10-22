@@ -1040,6 +1040,69 @@ See [editing and ingestion](docs/editing-and-ingestion.md) for local commands,
 rights fields, the tested bootstrap boundary, Kdenlive/MLT research, the
 recommended worker architecture, and the remaining production acceptance tests.
 
+## Finding pictures and footage
+
+One workflow ranks every way a storyboard shot can get its picture: media
+already in the library, stock photography and footage, and a new generation.
+Nothing is downloaded, generated or spent by searching.
+
+```bash
+./content-machine assets status                       # providers, GPU, autonomy level
+./content-machine assets search <video-id> s03        # rank options for one shot
+./content-machine assets search <video-id> s03 --more --query "river stream"
+./content-machine assets select <video-id> s03 <candidate-id> --actor you   # asks first
+./content-machine assets select <video-id> s03 <candidate-id> --actor you --approve
+./content-machine assets regenerate <video-id> s03 --actor you [--seed N] [--run]
+./content-machine assets sources <video-id>           # who each picture belongs to
+```
+
+In the workspace this is the "Find a picture for each shot" panel under Media.
+
+**Sources.** The library is searched first, and a strong approved match skips
+the stock search (`--more` searches anyway). Stock comes from the official
+APIs of Pexels (photos and footage), Pixabay (photos, illustrations, footage)
+and Unsplash (photos); a provider is used only when its key is in `.env`:
+
+```
+PEXELS_API_KEY=         PIXABAY_API_KEY=         UNSPLASH_ACCESS_KEY=
+STOCK_PROVIDERS=pexels,pixabay,unsplash      # optional order / subset
+```
+
+Responses are cached for 24 hours, rate-limit headers are honoured and a limit
+puts the provider on a cooldown (kept on disk, so it survives restarts) rather
+than being retried; one provider failing never stops the others. Downloads come
+only from the provider's own hosts. Unsplash downloads are reported to
+Unsplash as its API terms require. There is no scraping.
+
+**Generation** is planned, not run, by a search: the candidate carries the
+scene's prompt, negative prompt, seed and a 768x432 request (the verified size
+for the 3GB card). Choosing it hands the scene to the ordinary `scenes` stage;
+if the GPU is off the choice is recorded as *deferred* and everything else
+continues. `regenerate` re-rolls one scene's seed without touching the others.
+Cloud (metered) generation is shown as blocked and never runs unless a person
+enables that provider the way they already must.
+
+**Ranking.** Every candidate is scored on the same nine factors (scene match,
+subject, visual direction, aspect/resolution, technical quality, motion, licence,
+cost, reuse), with a confidence, the limits of the evidence, and alternatives.
+Pixels are measured only where a file exists (`qc.assess_image`, the perceptual
+palette check); a CLIP similarity is shown as advisory. A reusable match within
+10 points of a fresh generation is recommended over it; a clearly better
+generation still wins.
+
+**Rights.** A stock candidate carries the provider's licence, terms link,
+creator, source page, retrieval date and restrictions, and is **not** cleared:
+`commercial_use` stays false until a person approves first use (an ambiguous
+record needs a written reason; terms that rule use out cannot be approved).
+Approval is the one step that downloads. After that the asset is an ordinary
+library asset, reused without asking, pinned to the scene, and its record
+travels to `storyboard.json`, `publication_package.json` (`visual_sources`,
+`source_attributions_required`, `output/visual_credits.txt`), the Review Center
+and the Kdenlive archive (`*-editable-provenance.json`,
+`*-visual-credits.txt`). The approval level is a table in
+`scripts/asset_licensing.py`; only `supervised` is enabled
+(`VISUAL_ASSET_AUTONOMY=graduated` is refused and falls back).
+
 ## Not built yet
 
 Deliberately unimplemented, in dependency order:

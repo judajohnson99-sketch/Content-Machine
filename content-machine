@@ -9,6 +9,7 @@
 #   ./content-machine knowledge <context|capture|refresh|status|query|open>
 #   ./content-machine experiment <list|show|blockers|validate|scaffold>
 #   ./content-machine worker <enroll|serve|enqueue|jobs|workers|show|agent>
+#   ./content-machine assets <status|search|select|regenerate|sources>
 #   ./content-machine produce <video-id> --concept-id <id>
 #   ./content-machine test
 #
@@ -36,6 +37,11 @@ fi
 if [ "${1:-}" = "worker" ]; then
     shift
     exec python3 scripts/worker.py "$@"
+fi
+
+if [ "${1:-}" = "assets" ]; then
+    shift
+    exec python3 scripts/visual_assets.py "$@"
 fi
 
 if [ "${1:-}" = "media" ]; then

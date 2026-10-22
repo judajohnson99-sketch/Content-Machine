@@ -56,6 +56,7 @@ import research  # noqa: E402
 import sound_design  # noqa: E402
 import storyboard as storyboard_mod  # noqa: E402
 import subject_research  # noqa: E402
+import visual_assets as visual_assets_mod  # noqa: E402
 import visual_direction  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -549,12 +550,20 @@ def set_owner_media(video_id, assignments, actor, catalog=media_mod.DEFAULT_CATA
         if not metadata_path.is_file():
             raise ProjectError(f"no such project: {video_id}")
         metadata = json.loads(metadata_path.read_text())
+        previous = ownermedia_mod.selection_of(metadata)
+        assignments = _keep_scene_pins(previous, assignments)
+        board = storyboard_mod.load(video_id)
+        if board and board.get("scenes"):
+            known = {scene["scene_id"] for scene in board["scenes"]}
+            for item in assignments.get("visuals") or []:
+                scene_id = item.get("scene_id") if isinstance(item, dict) else None
+                if scene_id and scene_id not in known:
+                    raise ProjectError(f"no such scene in this storyboard: {scene_id}")
         try:
             update = ownermedia_mod.build_selection(
                 pdir, assignments, actor=actor, catalog=catalog)
         except ownermedia_mod.OwnerMediaError as exc:
             raise ProjectError(str(exc)) from exc
-        previous = ownermedia_mod.selection_of(metadata)
         selection = ownermedia_mod.merge_selection(previous, update)
         metadata["owner_media"] = selection
 
@@ -592,7 +601,35 @@ def _stale_stages(video_id, metadata):
 
 
 def _role_asset_ids(selection, role):
-    return [entry.get("asset_id") for entry in (selection.get(role) or [])]
+    return [(entry.get("asset_id"), entry.get("scene_id"))
+            for entry in (selection.get(role) or [])]
+
+
+def _keep_scene_pins(previous, assignments):
+    """A plain list of visual ids must not silently unpin scenes.
+
+    The panel that picks "these are my visuals" sends ids. An id that was
+    already pinned to a scene keeps its scene (and the lineage that explains
+    the choice) instead of falling back into the pool that is dealt out in
+    order. Pinned objects are passed through untouched.
+    """
+    if not isinstance(assignments, dict) or not isinstance(assignments.get("visuals"), list):
+        return assignments
+    pinned = {}
+    for entry in previous.get("visuals") or []:
+        if entry.get("scene_id"):
+            pinned.setdefault(entry["asset_id"], []).append(entry)
+    merged, used = [], set()
+    for item in assignments["visuals"]:
+        if isinstance(item, str) and item in pinned:
+            for entry in pinned[item]:
+                if (item, entry["scene_id"]) not in used:
+                    used.add((item, entry["scene_id"]))
+                    merged.append({"asset_id": item, "scene_id": entry["scene_id"],
+                                   "lineage": entry.get("lineage")})
+            continue
+        merged.append(item)
+    return {**assignments, "visuals": merged}
 
 
 def owner_media_view(video_id):
@@ -689,6 +726,9 @@ def build_kdenlive_project(video_id, *, render_output=True):
         if not scenes:
             raise ProjectError("Kdenlive export requires an explicit scene timeline")
         starts = motion_mod.scene_start_times(scenes)
+        board_for_sources = storyboard_mod.load(video_id)
+        visual_sources = visual_assets_mod.sources_for_production(metadata, board_for_sources)
+        sources_by_scene = {v["scene_id"]: v for v in visual_sources}
         editable_media = pdir / "output" / "editable-media"
         editable_media.mkdir(parents=True, exist_ok=True)
         clips = []
@@ -726,9 +766,14 @@ def build_kdenlive_project(video_id, *, render_output=True):
                     zoom_start=1.0 if zoom_in else 1.0 + amount,
                     zoom_end=1.0 + amount if zoom_in else 1.0,
                 ))
-            source_handoffs.append({"source": str(source), "editable_media": str(local_source),
-                                    "method": method, "sha256": sha256(local_source),
-                                    "media_kind": media_kind})
+            handoff = {"source": str(source), "editable_media": str(local_source),
+                       "method": method, "sha256": sha256(local_source),
+                       "media_kind": media_kind, "scene_id": scene.get("scene_id")}
+            visual_source = sources_by_scene.get(scene.get("scene_id"))
+            if visual_source:
+                # The licence travels with the clip into the editor's handoff.
+                handoff["visual_source"] = visual_source
+            source_handoffs.append(handoff)
         total_frames = max(1, round(float(spec["duration_seconds"]) * spec["fps"]))
         audio_spec = spec.get("audio") or {}
         audio_source = Path(spec["audio_path"])
@@ -748,6 +793,9 @@ def build_kdenlive_project(video_id, *, render_output=True):
             "sha256 hashes are recorded on each producer. Audio rights remain "
             "subject to the project's provenance gate."
         )
+        credits = visual_assets_mod.attributions(visual_sources)
+        if credits:
+            notes += " Visual credits required: " + "; ".join(credits) + "."
         result = kdenlive_mod.build_project(
             project_path, width=spec["width"], height=spec["height"], fps=spec["fps"],
             clips=clips, audio_clips=[audio_clip],
@@ -849,6 +897,12 @@ def package_kdenlive_project(video_id, project_path, source_handoffs):
     media_dir = output / "editable-media"
     if not project_path.is_file() or not media_dir.is_dir():
         raise ProjectError("Kdenlive package requires project-local editable media")
+    visual_sources = [h["visual_source"] for h in source_handoffs if h.get("visual_source")]
+    credits_path = output / f"{video_id}-visual-credits.txt"
+    if any(v["kind"] != "generated" for v in visual_sources):
+        credits_path.write_text(visual_assets_mod.credits_text(video_id, visual_sources))
+    else:
+        credits_path.unlink(missing_ok=True)
     manifest = {
         "video_id": video_id,
         "created_utc": utc_now(),
@@ -860,6 +914,8 @@ def package_kdenlive_project(video_id, project_path, source_handoffs):
         # but is still wrong: it taught a reader to ignore the field, which
         # is exactly what makes a rights warning useless when it is true.
         "audio_rights": _audio_rights_statement(pdir),
+        "visual_sources": visual_sources,
+        "visual_attributions": visual_assets_mod.attributions(visual_sources),
     }
     manifest_path = output / f"{video_id}-editable-provenance.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
@@ -870,6 +926,8 @@ def package_kdenlive_project(video_id, project_path, source_handoffs):
         bundle.add(media_dir, arcname=f"{video_id}/{media_dir.name}")
         bundle.add(manifest_path, arcname=f"{video_id}/{manifest_path.name}")
         bundle.add(pdir / "metadata.json", arcname=f"{video_id}/metadata.json")
+        if credits_path.is_file():
+            bundle.add(credits_path, arcname=f"{video_id}/{credits_path.name}")
     os.replace(temporary, archive)
     return {"archive": "output/" + archive.name,
             "provenance": "output/" + manifest_path.name,
@@ -2126,7 +2184,11 @@ def run_scenes(video_id, force=False, depicted=False):
             if scene.get("image") and not force:
                 reused += 1
                 continue
-            request = storyboard_mod.scene_request(scene, require_depicted=require_depicted)
+            # A scene a person chose to have *generated* (not merely left
+            # without media) must be a depicted picture even when its
+            # concept would accept a procedural plate.
+            scene_depicted = require_depicted or bool(scene["generation"].get("require_depicted"))
+            request = storyboard_mod.scene_request(scene, require_depicted=scene_depicted)
             shared = generated_by_digest.get(scene["generation"]["request_digest"])
             if shared:
                 scene["image"] = shared["image"]
@@ -2137,7 +2199,7 @@ def run_scenes(video_id, force=False, depicted=False):
                 job = router.generate(request, scene_dir)
             except generation.GenerationError as e:
                 remote = None
-                if require_depicted:
+                if scene_depicted:
                     remote = _defer_to_gpu_worker(
                         request, scene_dir, video_id,
                         label=f"{scene['scene_id']}: {request.prompt[:60]}")
@@ -3220,6 +3282,7 @@ def project_assets(video_id):
             staged = pdir / entry["staged_path"]
             entry["file"] = _file_entry(pdir, staged) if staged.is_file() else None
     owner_media["problems"] = ownermedia_mod.verification_problems(metadata, pdir)
+    visual_sources = visual_assets_mod.sources_for_production(metadata, board)
 
     return {
         "video_id": video_id,
@@ -3227,6 +3290,8 @@ def project_assets(video_id):
         "thumbnails": thumbnails,
         "images": images,
         "owner_media": owner_media,
+        "visual_sources": visual_sources,
+        "visual_attributions": visual_assets_mod.attributions(visual_sources),
         "images_provenance": {
             "provider": images_prov.get("provider"),
             "model": images_prov.get("model"),
@@ -3483,6 +3548,14 @@ def run_pipeline(video_id):
             elapsed = (datetime.now(timezone.utc) - started).total_seconds()
             metadata["experiment"]["generation_seconds"] = round(elapsed, 2)
 
+            # Where every picture came from and on what terms, read from the
+            # production itself so it cannot drift from what was rendered.
+            visual_sources = visual_assets_mod.sources_for_production(metadata, board)
+            visual_credits = visual_assets_mod.attributions(visual_sources)
+            if any(v["kind"] != "generated" for v in visual_sources):
+                (pdir / "output" / "visual_credits.txt").write_text(
+                    visual_assets_mod.credits_text(video_id, visual_sources))
+
             package = {
                 "video_id": video_id,
                 "generated_utc": utc_now(),
@@ -3525,7 +3598,11 @@ def run_pipeline(video_id):
                     asset["rights"]["attribution_text"]
                     for asset in (metadata.get("ingestion") or {}).get("inputs", [])
                     if (asset.get("rights") or {}).get("attribution_required")
-                    and (asset.get("rights") or {}).get("attribution_text")}),
+                    and (asset.get("rights") or {}).get("attribution_text")} | set(visual_credits)),
+                # Per scene: provider, creator, licence and terms reference,
+                # retrieval date, who approved first use, and the ranking that
+                # led to the choice. Generated scenes carry provider and seed.
+                "visual_sources": visual_sources,
                 "storyboard": {
                     "scenes": len(board["scenes"]),
                     "timeline_seconds": board["timeline_seconds"],

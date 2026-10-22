@@ -11,6 +11,7 @@ import { PipelineStageGraph } from "../../components/PipelineStageGraph";
 import { DeliverablePanel } from "../../components/DeliverablePanel";
 import { AssetsPanel } from "../../components/AssetsPanel";
 import { OwnMediaPanel } from "../../components/OwnMediaPanel";
+import { SceneSourcingPanel } from "../../components/SceneSourcingPanel";
 import { ReviewPanel } from "../../components/ReviewPanel";
 import { DiscoverMedia } from "../../components/DiscoverMedia";
 import { ResearchPanel } from "../../components/ResearchPanel";
@@ -295,6 +296,7 @@ export function WorkspacePage() {
                 disabled={busy}
                 disabledReason="Another operation is already in progress for this project."
               />
+              <SceneSourcingPanel videoId={videoId} disabled={busy} />
               <details className={styles.advanced}><summary>Discover media for this film</summary><DiscoverMedia initialQuery={project?.experiment?.goal_text || project?.selected_title || ""} /></details>
             </Card>}
 
