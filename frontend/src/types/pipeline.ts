@@ -11,7 +11,8 @@ export type StageName =
   | "visuals"
   | "run"
   | "produce"
-  | "editable";
+  | "editable"
+  | "quality";
 
 export type RunStatus =
   | "QUEUED"

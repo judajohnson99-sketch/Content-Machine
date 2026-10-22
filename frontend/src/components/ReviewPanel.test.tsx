@@ -7,11 +7,13 @@ import { ApiError } from "../api/client";
 import * as assetsApi from "../api/assets";
 import * as projectsApi from "../api/projects";
 import * as reviewApi from "../api/review";
+import * as qualityApi from "../api/quality";
 import type { ProjectDetail, StatusReport } from "../types/project";
 
 // The embedded DeliverablePanel reads project_assets(); an empty manifest
 // keeps these tests about the decision controls, not the preview.
 beforeEach(() => {
+  vi.spyOn(qualityApi, "getQualityReport").mockResolvedValue(null);
   vi.spyOn(assetsApi, "getAssets").mockResolvedValue({
     video_id: "abc", video: null, thumbnails: [], images: [], audio: null,
     qc: null, storyboard: null, package: null, logs: [],
@@ -35,6 +37,7 @@ function status(overrides: Partial<StatusReport> = {}): StatusReport {
     blocking: [],
     stale: false,
     digest_state: "MATCHES",
+    quality: { assessed: false, verdict: null, current: null, counts: null, unavailable: [] },
     ...overrides,
   };
 }

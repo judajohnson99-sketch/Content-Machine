@@ -18,18 +18,21 @@ import argparse
 import json
 import shutil
 import sys
+import os
 import tempfile
 import threading
 import time
 import unittest
 import unittest.mock
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import generation  # noqa: E402
+import gpu_coordination  # noqa: E402
+import vision  # noqa: E402
 import worker  # noqa: E402
 import worker_agent  # noqa: E402
 import worker_api  # noqa: E402
@@ -1345,3 +1348,260 @@ class AgentTests(ApiTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- Vision evidence travels with a completed job ---------------------------
+
+VISION_OK = {
+    "adherence": 4, "adherence_reason": "the lit window is visible",
+    "composition": 4, "composition_reason": "balanced",
+    "artifacts": [], "artifact_reason": "",
+    "style_medium": "digital painting", "style_palette": ["indigo"],
+    "style_lighting": "dim", "style_mood": "calm",
+}
+
+
+def _judgement(sha, **overrides):
+    return vision.coerce_judgement(
+        dict(VISION_OK, **overrides), model="qwen3-vl:2b", provider="ollama",
+        intent="a lit window at night", image_sha=sha)
+
+
+class VisionEvidenceTests(WorkerTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.enroll()
+        self.online()
+
+    _n = 0
+
+    def finish(self, **kwargs):
+        # A job id is the request digest, so each completion needs its own prompt.
+        VisionEvidenceTests._n += 1
+        self.enqueue(f"a lit window at night, take {VisionEvidenceTests._n}")
+        job_id, lease = self.take()
+        entry = self.upload(job_id, lease)
+        job = worker.complete(job_id, "home-gpu-01", lease, [entry], **kwargs)
+        return job, entry
+
+    def test_evidence_is_stored_bound_to_the_verified_bytes(self):
+        sha = hashlib.sha256(PNG).hexdigest()
+        job, entry = self.finish(vision_evidence={
+            "judgements": {entry_name: dict(_judgement("f" * 64), image_sha256="f" * 64)
+                           for entry_name in ("ComfyUI_00001_.png",)}})
+        self.assertEqual(list(job["vision"]["judgements"]), [sha],
+                         "the worker's claimed hash was trusted over the verified bytes")
+        stored = job["vision"]["judgements"][sha]
+        self.assertEqual(stored["image_sha256"], sha)
+        self.assertEqual(stored["source"], "worker:home-gpu-01")
+        record = generation.load_job(job["job_id"])
+        self.assertEqual(record["vision"], job["vision"])
+        self.assertEqual(vision.evidence_for(record, sha)[0]["adherence"]["score"], 4)
+
+    def test_evidence_never_changes_what_the_job_is(self):
+        job, _ = self.finish(vision_evidence={"judgements": {
+            "ComfyUI_00001_.png": _judgement("a" * 64, adherence=1)}})
+        self.assertEqual(job["state"], worker.SUCCEEDED)
+        record = generation.load_job(job["job_id"])
+        self.assertEqual(record["status"], generation.COMPLETED)
+        self.assertNotIn("production_grade", record)
+
+    def test_malformed_or_foreign_evidence_is_dropped_not_fatal(self):
+        for bad in ("a string", [], {"judgements": "no"},
+                    {"judgements": {"not-in-manifest.png": _judgement("a" * 64)}},
+                    {"judgements": {"ComfyUI_00001_.png": {"adherence": {"score": 99}}}}):
+            with self.subTest(bad=bad):
+                job, _ = self.finish(vision_evidence=bad)
+                self.assertEqual(job["state"], worker.SUCCEEDED)
+                self.assertNotIn("vision", job)
+                self.assertNotIn("vision", generation.load_job(job["job_id"]))
+
+    def test_a_skip_reason_is_kept_so_the_dashboard_can_say_why(self):
+        job, _ = self.finish(vision_evidence={"skipped": {
+            "ComfyUI_00001_.png": {"code": vision.UNREACHABLE, "detail": "Ollama is down"}}})
+        sha = hashlib.sha256(PNG).hexdigest()
+        self.assertEqual(job["vision"]["skipped"][sha]["code"], vision.UNREACHABLE)
+        self.assertEqual(vision.evidence_for(job, sha)[1]["detail"], "Ollama is down")
+
+    def test_the_heartbeat_keeps_five_facts_about_vision_and_nothing_else(self):
+        worker.heartbeat("home-gpu-01", {"vision": {
+            "enabled": True, "ready": True, "model": "qwen3-vl:2b", "code": None,
+            "detail": "ready", "secret": "x" * 5000, "nested": {"a": 1}}})
+        status = worker.load_workers()[0]["status"]["vision"]
+        self.assertEqual(set(status), {"enabled", "ready", "model", "code", "detail"})
+        self.assertTrue(status["ready"])
+        worker.heartbeat("home-gpu-01", {"vision": "garbage"})
+        self.assertEqual(worker.load_workers()[0]["status"]["vision"]["enabled"], False)
+
+
+class WorkerOllama(BaseHTTPRequestHandler):
+    reply = VISION_OK
+    installed = ["qwen3-vl:2b"]
+    hits = 0
+
+    def _send(self, payload):
+        data = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):  # noqa: N802
+        self._send({"models": [{"name": n} for n in type(self).installed]})
+
+    def do_POST(self):  # noqa: N802
+        self.rfile.read(int(self.headers["Content-Length"]))
+        type(self).hits += 1
+        self._send({"response": json.dumps(type(self).reply)})
+
+    def log_message(self, *args):
+        pass
+
+
+class AgentVisionTests(ApiTestCase):
+    """The agent judges what it rendered, under the GPU lease, and reports it."""
+
+    def setUp(self):
+        super().setUp()
+        FakeComfyHandler.behaviour["mode"] = "ok"
+        WorkerOllama.reply, WorkerOllama.installed, WorkerOllama.hits = VISION_OK, ["qwen3-vl:2b"], 0
+        self.comfy = ThreadingHTTPServer(("127.0.0.1", 0), FakeComfyHandler)
+        threading.Thread(target=self.comfy.serve_forever, daemon=True).start()
+        self.ollama = ThreadingHTTPServer(("127.0.0.1", 0), WorkerOllama)
+        threading.Thread(target=self.ollama.serve_forever, daemon=True).start()
+        self.addCleanup(self._stop_servers)
+        env = {"CONTENT_MACHINE_JOBS_DIR": str(self.tmp / "jobs"),
+               "GPU_LOCK_PATH": str(self.tmp / "gpu.lock"),
+               "QUALITY_VISION_URL": f"http://127.0.0.1:{self.ollama.server_port}",
+               "QUALITY_VISION_MODELS": "qwen3-vl:2b",
+               "QUALITY_VISION_FREE_SETTLE_SECONDS": "0",
+               "GPU_LEASE_WAIT_SECONDS": "0.3",
+               "WORKER_VISION": "1"}
+        patcher = unittest.mock.patch.dict(os.environ, env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # The ComfyUI stand-in serves placeholder bytes, not a decodable image.
+        prep = unittest.mock.patch.object(vision, "prepare_image", return_value=b"\xff\xd8jpeg")
+        prep.start()
+        self.addCleanup(prep.stop)
+        self.agent = self.make_agent()
+
+    def make_agent(self):
+        return worker_agent.Agent(
+            client=worker_agent.ControlPlaneClient(self.url, self.token),
+            provider=generation.ComfyUIProvider(
+                url=f"http://127.0.0.1:{self.comfy.server_port}",
+                workflow_path=str(ROOT / "config" / "comfyui_workflow.example.json")))
+
+    def _stop_servers(self):
+        for server in (self.comfy, self.ollama):
+            server.shutdown()
+            server.server_close()
+
+    def test_a_rendered_image_arrives_with_a_judgement_bound_to_its_bytes(self):
+        job = self.enqueue()
+        self.assertEqual(self.agent.poll_once(), worker.SUCCEEDED)
+        finished = worker.load_job(job["job_id"])
+        sha = finished["manifest"][0]["sha256"]
+        judgement, skip = vision.evidence_for(finished, sha)
+        self.assertIsNone(skip)
+        self.assertEqual(judgement["adherence"]["score"], 4)
+        self.assertEqual(judgement["image_sha256"], sha)
+        self.assertEqual(judgement["intent_sha256"], vision.sha256_text("a lit window at night"))
+        self.assertTrue(judgement["source"].startswith("worker:"))
+        self.assertEqual(WorkerOllama.hits, 1)
+        self.assertEqual(generation.load_job(job["job_id"])["vision"]["judgements"][sha], judgement)
+
+    def test_the_heartbeat_says_whether_this_worker_can_judge(self):
+        self.assertIsNone(self.agent.poll_once())
+        status = worker.load_workers()[0]["status"]["vision"]
+        self.assertEqual((status["enabled"], status["ready"], status["model"]),
+                         (True, True, "qwen3-vl:2b"))
+
+    def test_without_worker_vision_nothing_is_judged_and_nothing_is_sent(self):
+        with unittest.mock.patch.dict(os.environ, {"WORKER_VISION": ""}):
+            agent = self.make_agent()
+        job = self.enqueue()
+        self.assertEqual(agent.poll_once(), worker.SUCCEEDED)
+        self.assertNotIn("vision", worker.load_job(job["job_id"]))
+        self.assertEqual(WorkerOllama.hits, 0)
+        self.assertFalse(worker.load_workers()[0]["status"]["vision"]["enabled"])
+
+    def test_an_unreachable_model_costs_nothing_and_the_reason_is_recorded(self):
+        with unittest.mock.patch.dict(os.environ, {"QUALITY_VISION_URL": "http://127.0.0.1:9"}):
+            agent = self.make_agent()
+            job = self.enqueue()
+            self.assertEqual(agent.poll_once(), worker.SUCCEEDED)
+        finished = worker.load_job(job["job_id"])
+        sha = finished["manifest"][0]["sha256"]
+        judgement, skip = vision.evidence_for(finished, sha)
+        self.assertIsNone(judgement)
+        self.assertEqual(skip["code"], vision.UNREACHABLE)
+
+    def test_a_vision_crash_never_fails_the_render(self):
+        job = self.enqueue()
+        with unittest.mock.patch.object(vision.Runner, "judge_images",
+                                        side_effect=RuntimeError("model exploded")):
+            self.assertEqual(self.agent.poll_once(), worker.SUCCEEDED)
+        self.assertNotIn("vision", worker.load_job(job["job_id"]))
+
+    def test_the_worker_keeps_beating_while_it_judges(self):
+        beats = []
+
+        def slow_judge(runner, items):
+            time.sleep(0.5)
+            return vision.BatchResult()
+        real = self.agent.heartbeat
+        self.agent.heartbeat = lambda current_job=None: beats.append(current_job) or real(current_job)
+        # The claim hands the agent the control plane's cadence.
+        with unittest.mock.patch.object(vision.Runner, "judge_images", slow_judge), \
+                unittest.mock.patch.object(worker, "heartbeat_seconds", return_value=0.05), \
+                unittest.mock.patch.object(worker_agent, "MIN_BEAT_SECONDS", 0.05):
+            job = self.enqueue()
+            self.assertEqual(self.agent.poll_once(), worker.SUCCEEDED)
+        self.assertTrue(any(b == job["job_id"] for b in beats),
+                        "no heartbeat was sent during the vision pass")
+
+    def test_the_agent_waits_for_the_gpu_longer_than_a_vision_batch_can_hold_it(self):
+        with unittest.mock.patch.dict(os.environ, {"GPU_LEASE_WAIT_SECONDS": ""}):
+            wait = gpu_coordination.lease_wait_seconds()
+        self.assertGreater(wait, vision.DEFAULT_BUDGET_SECONDS + vision.DEFAULT_TIMEOUT)
+
+    def test_unusable_model_output_is_not_a_score(self):
+        WorkerOllama.reply = {"adherence": 11}
+        job = self.enqueue()
+        self.assertEqual(self.agent.poll_once(), worker.SUCCEEDED)
+        finished = worker.load_job(job["job_id"])
+        sha = finished["manifest"][0]["sha256"]
+        judgement, skip = vision.evidence_for(finished, sha)
+        self.assertIsNone(judgement)
+        self.assertEqual(skip["code"], vision.UNUSABLE)
+
+    def test_the_lease_is_held_through_the_render_and_released_after(self):
+        seen = {}
+        real = vision.Runner.judge_images
+
+        def spy(runner, items):
+            try:
+                with gpu_coordination.lease("probe"):
+                    seen["free_during"] = True
+            except gpu_coordination.GpuBusy as e:
+                seen["free_during"] = False
+                seen["holder"] = e.detail
+            return real(runner, items)
+        self.enqueue()
+        with unittest.mock.patch.object(vision.Runner, "judge_images", spy):
+            self.assertEqual(self.agent.poll_once(), worker.SUCCEEDED)
+        self.assertFalse(seen["free_during"])
+        self.assertIn("worker-agent", seen["holder"])
+        with gpu_coordination.lease("after"):
+            pass
+
+    def test_a_busy_gpu_defers_the_job_without_a_permanent_failure(self):
+        job = self.enqueue()
+        with gpu_coordination.lease("an operator running ComfyUI by hand"):
+            self.assertEqual(self.agent.poll_once(), worker.RETRY_WAIT)
+        deferred = worker.load_job(job["job_id"])
+        self.assertEqual(deferred["state"], worker.RETRY_WAIT)
+        self.assertIn("held by", deferred["error"])

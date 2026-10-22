@@ -1,0 +1,1378 @@
+{
+  "dataset_version": 1,
+  "label_source": "constructed",
+  "human_reviewed": false,
+  "review_status": "labels are true by construction and were checked against contact sheets by whoever built the set; no independent human has reviewed them. Use `sheet` to review, and `import-real` for real renders.",
+  "note": "Subjects drawn at known positions on production plates, defects injected by known filters. See scripts/vision_calibration.py for what this can and cannot show.",
+  "image_size": [
+    384,
+    216
+  ],
+  "source_plates": {
+    "night": {
+      "path": "projects/exp-b-sleep-brown/images/deep-night_01.png",
+      "sha256": "3852c97c338ad7833a9c82ff39be80b74a806adff1b7b53adc763a48d075b698"
+    },
+    "slate": {
+      "path": "projects/exp-a-rain-focus/images/storm-slate_01.png",
+      "sha256": "ef3c98f464881c6454e9a297ab5b9254d508da496562fb1789660843feef33da"
+    },
+    "amber": {
+      "path": "projects/exp-c-narrated-sleep/images/dust-archive_01.png",
+      "sha256": "cf12930726f435ba045f85f6b11402204f9f3f928462666de5bea3f5b33a745b"
+    }
+  },
+  "built_with": "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers",
+  "counts": {
+    "adherence": 20,
+    "artifacts": 16,
+    "composition": 10,
+    "consistency": 36
+  },
+  "cases": [
+    {
+      "id": "adh-01-match",
+      "file": "images/adh-01-match.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a large red circle on the left on a dark background",
+      "labels": {
+        "adherence": "match",
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "82e140ec4a2c46710626833d94ea5a2c3dfb4994b8942a8601b80a4262726305"
+    },
+    {
+      "id": "adh-01-mismatch",
+      "file": "images/adh-01-mismatch.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a large red circle on the left on a dark background",
+      "labels": {
+        "adherence": "mismatch",
+        "mismatch_kind": "colour",
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "3ba1ee20a91940eff6766db3ecbf059d7ff4d398f70139c57a2e84d58efc5b05"
+    },
+    {
+      "id": "adh-02-match",
+      "file": "images/adh-02-match.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a large yellow square on the right on a dark background",
+      "labels": {
+        "adherence": "match",
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "11b7292ea0a6a4c8e4dad09e1f35b32d73996abdcac0cc7ba4b1d0af9d86c765"
+    },
+    {
+      "id": "adh-02-mismatch",
+      "file": "images/adh-02-mismatch.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a large yellow square on the right on a dark background",
+      "labels": {
+        "adherence": "mismatch",
+        "mismatch_kind": "missing",
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "9edbeaad8bd33c2fa6787a5820181e7c58d9ec1144d8c3b072df2a865a51bf36"
+    },
+    {
+      "id": "adh-03-match",
+      "file": "images/adh-03-match.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a large blue circle in the centre on a dark background",
+      "labels": {
+        "adherence": "match",
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "5ff4163ddc75c873d66b17045e32ea7c0c13ed2327e8045d8076eed044050441"
+    },
+    {
+      "id": "adh-03-mismatch",
+      "file": "images/adh-03-mismatch.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a large blue circle in the centre on a dark background",
+      "labels": {
+        "adherence": "mismatch",
+        "mismatch_kind": "shape",
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "c984d5f80d9238118b5fde814767ac64a7c9e3c6a3243310d77234873202cec5"
+    },
+    {
+      "id": "adh-04-match",
+      "file": "images/adh-04-match.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a small green square near the top on a dark background",
+      "labels": {
+        "adherence": "match",
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "262d15e9faf6d65e6323ba59a24794a0363276e82b1afcb066c2c972ceac3f79"
+    },
+    {
+      "id": "adh-04-mismatch",
+      "file": "images/adh-04-mismatch.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a small green square near the top on a dark background",
+      "labels": {
+        "adherence": "mismatch",
+        "mismatch_kind": "position",
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "a82275feb0249437561e8d596dafc0ba412afab3b3e15b8c4d1b2b3ab1624496"
+    },
+    {
+      "id": "adh-05-match",
+      "file": "images/adh-05-match.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a small white circle near the bottom on a dark background",
+      "labels": {
+        "adherence": "match",
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "f7d816f10205ca2e5af61d2183107db0b1039aad882ff1050c5f0bf10c4a9776"
+    },
+    {
+      "id": "adh-05-mismatch",
+      "file": "images/adh-05-mismatch.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a small white circle near the bottom on a dark background",
+      "labels": {
+        "adherence": "mismatch",
+        "mismatch_kind": "colour",
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "4823ad0b6ce4be7a472fc3c94621238fd80bfd5d7f59b0ade466a9a15633a98e"
+    },
+    {
+      "id": "adh-06-match",
+      "file": "images/adh-06-match.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a large red square on the left and a small yellow circle on the right on a dark background",
+      "labels": {
+        "adherence": "match",
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "32ca278c729556b2744c62dc6947a569b292536d4c3afd8735a6e215f37d800a"
+    },
+    {
+      "id": "adh-06-mismatch",
+      "file": "images/adh-06-mismatch.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a large red square on the left and a small yellow circle on the right on a dark background",
+      "labels": {
+        "adherence": "mismatch",
+        "mismatch_kind": "missing",
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "c873b132361d3493ea6e1a771357947f1ef1462c00a53ee6ed21119190619291"
+    },
+    {
+      "id": "adh-07-match",
+      "file": "images/adh-07-match.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a large orange circle on the right on a dark background",
+      "labels": {
+        "adherence": "match",
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "a6ae5c7c9a915504170850aeb831042a497045852f75fad409063e77a6ace3a6"
+    },
+    {
+      "id": "adh-07-mismatch",
+      "file": "images/adh-07-mismatch.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a large orange circle on the right on a dark background",
+      "labels": {
+        "adherence": "mismatch",
+        "mismatch_kind": "position",
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "94ffc1687cde74a68b37486a36c09af43c6bc175c2ca3eda6626c8628ed622a1"
+    },
+    {
+      "id": "adh-08-match",
+      "file": "images/adh-08-match.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a large green circle on the left and a large blue square on the right on a dark background",
+      "labels": {
+        "adherence": "match",
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "3a868d506846a7fe287b9f112225c9775b9bc53734a85b1d092fa3da7252b280"
+    },
+    {
+      "id": "adh-08-mismatch",
+      "file": "images/adh-08-mismatch.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a large green circle on the left and a large blue square on the right on a dark background",
+      "labels": {
+        "adherence": "mismatch",
+        "mismatch_kind": "colour",
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "7a20cf11880f1e3d2ec7dacfdd967cf5a7101176b5582b60f7381807d49d6cf8"
+    },
+    {
+      "id": "adh-09-match",
+      "file": "images/adh-09-match.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a small white square in the centre on a dark background",
+      "labels": {
+        "adherence": "match",
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "3ecaa671773091ea80ab38b7f6149ba7823fedec45f16f96b15678a3ac905d70"
+    },
+    {
+      "id": "adh-09-mismatch",
+      "file": "images/adh-09-mismatch.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a small white square in the centre on a dark background",
+      "labels": {
+        "adherence": "mismatch",
+        "mismatch_kind": "shape",
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "3b3c3f62d95be00dbfe3a0eba00e6c23a8686243c7cfb37a6b074f7ea7fda02f"
+    },
+    {
+      "id": "adh-10-match",
+      "file": "images/adh-10-match.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a large yellow circle near the top on a dark background",
+      "labels": {
+        "adherence": "match",
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "1d6fa2e983660489862e35576e334da2532fceca1638b85c3855e5b9fbe1fb94"
+    },
+    {
+      "id": "adh-10-mismatch",
+      "file": "images/adh-10-mismatch.jpg",
+      "source": "constructed",
+      "group": "adherence",
+      "intent": "a large yellow circle near the top on a dark background",
+      "labels": {
+        "adherence": "mismatch",
+        "mismatch_kind": "missing",
+        "composition": null,
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "b4f33d94b6587e9bf31f4562083f9f627a6c7381955216a6a8a694d4ad5abab6"
+    },
+    {
+      "id": "art-text-01",
+      "file": "images/art-text-01.jpg",
+      "source": "constructed",
+      "group": "artifacts",
+      "intent": "a large yellow square on the right on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [
+          "text_or_watermark"
+        ],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "eaee0c7e2f62b381e9971982ec2c2a20ccc2d33fca9079e2cefc15fa42fbe4e3"
+    },
+    {
+      "id": "art-text-02",
+      "file": "images/art-text-02.jpg",
+      "source": "constructed",
+      "group": "artifacts",
+      "intent": "a large red square on the left and a small yellow circle on the right on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [
+          "text_or_watermark"
+        ],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "cf763859ac47d70bd585d5ad39d4d5d85fe3ecefba7c840cc9e4160db24a5148"
+    },
+    {
+      "id": "art-text-03",
+      "file": "images/art-text-03.jpg",
+      "source": "constructed",
+      "group": "artifacts",
+      "intent": "a large yellow circle near the top on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [
+          "text_or_watermark"
+        ],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "58bdb88e2b37354f29e7809438f91c3dc233250660f5e2473a61588bec3f7623"
+    },
+    {
+      "id": "art-text-04",
+      "file": "images/art-text-04.jpg",
+      "source": "constructed",
+      "group": "artifacts",
+      "intent": "a large green circle on the left and a large blue square on the right on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [
+          "text_or_watermark"
+        ],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "8dae60bf53b7666cb83e0f54644d6390e96d134c09a69d913ff626a231f7965f"
+    },
+    {
+      "id": "art-text-05",
+      "file": "images/art-text-05.jpg",
+      "source": "constructed",
+      "group": "artifacts",
+      "intent": "a small white circle near the bottom on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [
+          "text_or_watermark"
+        ],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "647563f752277aa9bdda266ea273c039491bfd303cbaa68e249ef27eb420eeb7"
+    },
+    {
+      "id": "art-blur-01",
+      "file": "images/art-blur-01.jpg",
+      "source": "constructed",
+      "group": "artifacts",
+      "intent": "a large yellow circle near the top on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [
+          "blur"
+        ],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "a91871091c3c5f6b89c6892e58c9e24938ed14f356bc47fdb67d2155ee735bbc"
+    },
+    {
+      "id": "art-blur-02",
+      "file": "images/art-blur-02.jpg",
+      "source": "constructed",
+      "group": "artifacts",
+      "intent": "a small white square in the centre on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [
+          "blur"
+        ],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "3e9ee3b8a5f56dca8e9588d0a6eb5003db371ac4f3686301b95f06bda2bea1f9"
+    },
+    {
+      "id": "art-blur-03",
+      "file": "images/art-blur-03.jpg",
+      "source": "constructed",
+      "group": "artifacts",
+      "intent": "a large orange circle on the right on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [
+          "blur"
+        ],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "bc2b7b56852de1b3bd141021192ef0860c15d55b6bd7d5fb3067631bb1f94e52"
+    },
+    {
+      "id": "art-blur-04",
+      "file": "images/art-blur-04.jpg",
+      "source": "constructed",
+      "group": "artifacts",
+      "intent": "a large green circle on the left and a large blue square on the right on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [
+          "blur"
+        ],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "347b710b263d710818aad353ad19862842c1ef7c0190f23dbf2dd713c8f3ea47"
+    },
+    {
+      "id": "art-blocky-01",
+      "file": "images/art-blocky-01.jpg",
+      "source": "constructed",
+      "group": "artifacts",
+      "intent": "a large yellow circle near the top on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [
+          "blocky_compression"
+        ],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "471fb1fc24f4c2afb1682e5e48d1031bc5ec8f218dbb4b10f09b321f8ab690a0"
+    },
+    {
+      "id": "art-blocky-02",
+      "file": "images/art-blocky-02.jpg",
+      "source": "constructed",
+      "group": "artifacts",
+      "intent": "a small white square in the centre on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [
+          "blocky_compression"
+        ],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "655e839104318d4b5dc877c78ccd99643beae9d633ac08142f7a5de06bb55058"
+    },
+    {
+      "id": "art-blocky-03",
+      "file": "images/art-blocky-03.jpg",
+      "source": "constructed",
+      "group": "artifacts",
+      "intent": "a large green circle on the left and a large blue square on the right on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [
+          "blocky_compression"
+        ],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "19d84f70dcc57e75b0e0708b11b73c2cb96acdafaf011aee47431cae0de1df18"
+    },
+    {
+      "id": "art-blocky-04",
+      "file": "images/art-blocky-04.jpg",
+      "source": "constructed",
+      "group": "artifacts",
+      "intent": "a large orange circle on the right on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [
+          "blocky_compression"
+        ],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "e7b7f7294e1227dfbf73934be3041af02348e63ecb82c25a6c52190d8a916562"
+    },
+    {
+      "id": "art-noise-01",
+      "file": "images/art-noise-01.jpg",
+      "source": "constructed",
+      "group": "artifacts",
+      "intent": "a large yellow circle near the top on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [
+          "noise"
+        ],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "d784a02f4c086554f4963e46f7c35725818d66476f01e905b61e4eddae680d88"
+    },
+    {
+      "id": "art-noise-02",
+      "file": "images/art-noise-02.jpg",
+      "source": "constructed",
+      "group": "artifacts",
+      "intent": "a large green circle on the left and a large blue square on the right on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [
+          "noise"
+        ],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "8e169e583f805315187c363f91168a80025f1e59dcaf9748cf620cb0d69c912a"
+    },
+    {
+      "id": "art-noise-03",
+      "file": "images/art-noise-03.jpg",
+      "source": "constructed",
+      "group": "artifacts",
+      "intent": "a small green square near the top on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [
+          "noise"
+        ],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "1c1465037ef6a892d1dab788fa7f671bb90caae471a8ba7a0d3bc8b776d613df"
+    },
+    {
+      "id": "cmp-good-01",
+      "file": "images/cmp-good-01.jpg",
+      "source": "constructed",
+      "group": "composition",
+      "intent": "a red circle on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": "good",
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "184022a7efff230235b463a00bfb7fed6d7dba3ea072d6697dc331778214fbca"
+    },
+    {
+      "id": "cmp-good-02",
+      "file": "images/cmp-good-02.jpg",
+      "source": "constructed",
+      "group": "composition",
+      "intent": "a yellow square on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": "good",
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "56afd1b24ed928d24cc2b926714b825db4d7803f8bb55c6083ec093bc331516e"
+    },
+    {
+      "id": "cmp-good-03",
+      "file": "images/cmp-good-03.jpg",
+      "source": "constructed",
+      "group": "composition",
+      "intent": "a white circle on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": "good",
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "19c5d9e12643aa812e71a7a8c8b20256393215989fefb36f02bb9bf6596544a8"
+    },
+    {
+      "id": "cmp-good-04",
+      "file": "images/cmp-good-04.jpg",
+      "source": "constructed",
+      "group": "composition",
+      "intent": "a blue square on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": "good",
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "87a4a6757a87f4cfb52d9a9be8434f638e22d14af2b3e867ac4bf659b6f66940"
+    },
+    {
+      "id": "cmp-good-05",
+      "file": "images/cmp-good-05.jpg",
+      "source": "constructed",
+      "group": "composition",
+      "intent": "a green circle on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": "good",
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "d2ec39a0e031de6c2a04f4854557560cb6788c65f511c6508fc59cf5b09801aa"
+    },
+    {
+      "id": "cmp-poor-01",
+      "file": "images/cmp-poor-01.jpg",
+      "source": "constructed",
+      "group": "composition",
+      "intent": "a red circle on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": "poor",
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "bfb9b81bd04419cdee5b94840ced3031c3d4400c909eb2898061a9bc238d9322"
+    },
+    {
+      "id": "cmp-poor-02",
+      "file": "images/cmp-poor-02.jpg",
+      "source": "constructed",
+      "group": "composition",
+      "intent": "a yellow square on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": "poor",
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "820838e975cd2640149912f6d0ac553e11f08002c0d3d007de3470b057f45e6e"
+    },
+    {
+      "id": "cmp-poor-03",
+      "file": "images/cmp-poor-03.jpg",
+      "source": "constructed",
+      "group": "composition",
+      "intent": "a white circle on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": "poor",
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "4eea221c4de37d83eee22f6f55203e9e0877598e89dcc3cb98a0a80c87dd8e01"
+    },
+    {
+      "id": "cmp-poor-04",
+      "file": "images/cmp-poor-04.jpg",
+      "source": "constructed",
+      "group": "composition",
+      "intent": "a blue square on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": "poor",
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "275c7fe24c01a8ce4920ab40251dc71a3fd17854206b4fa70ce32c39a8d90d99"
+    },
+    {
+      "id": "cmp-poor-05",
+      "file": "images/cmp-poor-05.jpg",
+      "source": "constructed",
+      "group": "composition",
+      "intent": "a green circle on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": "poor",
+        "artifacts": [],
+        "style_set": null,
+        "odd_one_out": null
+      },
+      "sha256": "a2dd6416499aec7e87d2541d5c91c45ce4ada6c7a58f6932c478d7e5876e3a9a"
+    },
+    {
+      "id": "setA-1",
+      "file": "images/setA-1.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small blue circle on the left on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "A",
+        "odd_one_out": false
+      },
+      "sha256": "33eb68653bd9a709586b8ed327ea11837b0c9891b8b29174e2072d53783c7072"
+    },
+    {
+      "id": "setA-2",
+      "file": "images/setA-2.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small white circle on the left on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "A",
+        "odd_one_out": false
+      },
+      "sha256": "073f1431fbdd957ae7fdadaa4f5b764d7c84a8ea449f0789d23f87d3f1775c1b"
+    },
+    {
+      "id": "setA-3",
+      "file": "images/setA-3.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small blue square near the top on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "A",
+        "odd_one_out": false
+      },
+      "sha256": "458a79152c55d1cc02a3201dc8e293b0731b2ee9b6e59bd36686ce5232a7dc0c"
+    },
+    {
+      "id": "setA-4",
+      "file": "images/setA-4.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large white square near the top on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "A",
+        "odd_one_out": false
+      },
+      "sha256": "28ac17c98914d512619746c7707bd5b256217ddb696a75b208ed3c1631149870"
+    },
+    {
+      "id": "setA-5",
+      "file": "images/setA-5.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small blue square near the bottom on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "A",
+        "odd_one_out": false
+      },
+      "sha256": "becbf32a2efdc97d82f7342f2f7bf2a1f02563434dac9733536e0c4e587f257c"
+    },
+    {
+      "id": "setA-odd",
+      "file": "images/setA-odd.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large blue circle in the centre on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "A",
+        "odd_one_out": true
+      },
+      "sha256": "d51696758b69f0c41a602bbfac4befaf34c5bdacebfe47a0de7e5ec0855a95a6"
+    },
+    {
+      "id": "setB-1",
+      "file": "images/setB-1.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small yellow square on the right on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "B",
+        "odd_one_out": false
+      },
+      "sha256": "f977de39e23815f29db5a6bb6386b1227397cf54ea70849fafabaf36803d507c"
+    },
+    {
+      "id": "setB-2",
+      "file": "images/setB-2.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small yellow circle in the centre on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "B",
+        "odd_one_out": false
+      },
+      "sha256": "c54bfdaba647cfd681a4dd58a83a29f607eb6eae26967d1a127f295dfb2968a6"
+    },
+    {
+      "id": "setB-3",
+      "file": "images/setB-3.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small orange square near the top on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "B",
+        "odd_one_out": false
+      },
+      "sha256": "b27c8824ecfd542d4b0e6803e187810d837ea17d47d2074edb4d217ec9a5df89"
+    },
+    {
+      "id": "setB-4",
+      "file": "images/setB-4.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small yellow circle near the bottom on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "B",
+        "odd_one_out": false
+      },
+      "sha256": "c15881a0b5c978557854781ef96b6d14a59646131b37dd60232777a366cc2119"
+    },
+    {
+      "id": "setB-5",
+      "file": "images/setB-5.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small yellow square near the top on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "B",
+        "odd_one_out": false
+      },
+      "sha256": "01b73dfb5e04d9d8a60c545d73393e63e5c49e0943e274c302cb9e05dbffbd2b"
+    },
+    {
+      "id": "setB-odd",
+      "file": "images/setB-odd.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large orange circle in the centre on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "B",
+        "odd_one_out": true
+      },
+      "sha256": "d48b902b60eda2e977b08e389ce08a9153a5cecfc280e79454b17cdca8f362b8"
+    },
+    {
+      "id": "setC-1",
+      "file": "images/setC-1.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large green circle on the right on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "C",
+        "odd_one_out": false
+      },
+      "sha256": "b26593ee3a32dce8c4c4ea7bf7d3afb6d138a9c045fc7f8395937ef1dec45fc1"
+    },
+    {
+      "id": "setC-2",
+      "file": "images/setC-2.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large white circle near the top on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "C",
+        "odd_one_out": false
+      },
+      "sha256": "8ae0a96986ec940475bdd96b2c6eb79479ad3ecd7a825d95dad07203c913374e"
+    },
+    {
+      "id": "setC-3",
+      "file": "images/setC-3.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small green square on the left on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "C",
+        "odd_one_out": false
+      },
+      "sha256": "afaa1a89b820790a9746eb8f8c1edc576ef01b272b85ab70c1689c9b12658759"
+    },
+    {
+      "id": "setC-4",
+      "file": "images/setC-4.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small white square near the bottom on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "C",
+        "odd_one_out": false
+      },
+      "sha256": "5507e673a1db5f5b73adc72b3afba9561ffe933da0dd4ef3ce30f2d60c6d047d"
+    },
+    {
+      "id": "setC-5",
+      "file": "images/setC-5.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small white square near the top on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "C",
+        "odd_one_out": false
+      },
+      "sha256": "41fb23421db357b52922f1d0469924a791f9a4e3aa68a95b8aee1da99df8c3db"
+    },
+    {
+      "id": "setC-odd",
+      "file": "images/setC-odd.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large green circle in the centre on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "C",
+        "odd_one_out": true
+      },
+      "sha256": "5a779809356f105cd2080e00cbe4f21e3f2dfdd73dcddc83f7c8028c7c0e6aa7"
+    },
+    {
+      "id": "setD-1",
+      "file": "images/setD-1.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large yellow circle in the centre on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "D",
+        "odd_one_out": false
+      },
+      "sha256": "035b7c55af5bc8082909b52dc150c2e1a83dca04c8b560ec9e0ebf3758d5ca2d"
+    },
+    {
+      "id": "setD-2",
+      "file": "images/setD-2.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small red circle near the bottom on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "D",
+        "odd_one_out": false
+      },
+      "sha256": "8afce311e6e5397a0c6156637a90f417b563e07c6f506fbb44dc62a6addd08b2"
+    },
+    {
+      "id": "setD-3",
+      "file": "images/setD-3.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small yellow square on the right on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "D",
+        "odd_one_out": false
+      },
+      "sha256": "cb579dd40beb5a617cc581e56033f8e72957d60eb0e00b8bd4934f453f5c8902"
+    },
+    {
+      "id": "setD-4",
+      "file": "images/setD-4.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small yellow square near the bottom on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "D",
+        "odd_one_out": false
+      },
+      "sha256": "93f75685c6f4725d695d04e411847ece288779053c68cca496460311a9e9159d"
+    },
+    {
+      "id": "setD-5",
+      "file": "images/setD-5.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small red square in the centre on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "D",
+        "odd_one_out": false
+      },
+      "sha256": "f266863bcdf389ca367c5518296a2acf5c3cbcec7607ea5eeb8eb025984c762f"
+    },
+    {
+      "id": "setD-odd",
+      "file": "images/setD-odd.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large red circle in the centre on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "D",
+        "odd_one_out": true
+      },
+      "sha256": "66182a179e0e692e6ddfb256884dc6de4a9930508cebaafec0a1daf3512eba24"
+    },
+    {
+      "id": "setE-1",
+      "file": "images/setE-1.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small blue square near the top on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "E",
+        "odd_one_out": false
+      },
+      "sha256": "6e0c215c6ce66fca2ddc343a611fc409ecc36d17b0011b1a34a73225f365956b"
+    },
+    {
+      "id": "setE-2",
+      "file": "images/setE-2.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small orange circle near the top on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "E",
+        "odd_one_out": false
+      },
+      "sha256": "6560938b072abfee3a3cf428782a5f4e0160019fe5a7d15edae78f52465a3c69"
+    },
+    {
+      "id": "setE-3",
+      "file": "images/setE-3.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large blue circle near the top on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "E",
+        "odd_one_out": false
+      },
+      "sha256": "d50e08dccd14589b68f038678c1ad9aa327937825f62de181b85e979f67ed7b7"
+    },
+    {
+      "id": "setE-4",
+      "file": "images/setE-4.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large blue square on the left on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "E",
+        "odd_one_out": false
+      },
+      "sha256": "a20575fbb9bfd6f1b3045ecadc3470f9e0933f070046e04c82c4fd4363caf92e"
+    },
+    {
+      "id": "setE-5",
+      "file": "images/setE-5.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large blue square near the bottom on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "E",
+        "odd_one_out": false
+      },
+      "sha256": "c50ebd2072a5da447c758366002ce777c6abd7862af0fc337c7925fdd825432f"
+    },
+    {
+      "id": "setE-odd",
+      "file": "images/setE-odd.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large blue circle in the centre on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "E",
+        "odd_one_out": true
+      },
+      "sha256": "7a03de9249c78ebd40e2eb918d569bc9fd27106621d097595ad6415cb9b64313"
+    },
+    {
+      "id": "setF-1",
+      "file": "images/setF-1.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large green circle near the bottom on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "F",
+        "odd_one_out": false
+      },
+      "sha256": "304fb49f1dcd49415faa8be43a5fe742fbc6c266e2af905f2819552d2b74bd03"
+    },
+    {
+      "id": "setF-2",
+      "file": "images/setF-2.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large white square on the right on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "F",
+        "odd_one_out": false
+      },
+      "sha256": "d062e22092aa4d42d68a14874f5caad7beff03a96300d6c87cf73d186f1302dd"
+    },
+    {
+      "id": "setF-3",
+      "file": "images/setF-3.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a small green square near the bottom on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "F",
+        "odd_one_out": false
+      },
+      "sha256": "9cd7b3dac23561a7e459f979f7f5fb5ed666846514d45bd1ea70797053670be9"
+    },
+    {
+      "id": "setF-4",
+      "file": "images/setF-4.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large white circle on the right on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "F",
+        "odd_one_out": false
+      },
+      "sha256": "eb540a456fe146eab83158e559cfb9f8553eb220f2aeb6b58c5cbcff568484b6"
+    },
+    {
+      "id": "setF-5",
+      "file": "images/setF-5.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large white square near the top on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "F",
+        "odd_one_out": false
+      },
+      "sha256": "0c5ae23466b2e4e8fee9cbb413191cb8822196bcbe69c565ab722d61783585e1"
+    },
+    {
+      "id": "setF-odd",
+      "file": "images/setF-odd.jpg",
+      "source": "constructed",
+      "group": "consistency",
+      "intent": "a large green circle in the centre on a dark background",
+      "labels": {
+        "adherence": null,
+        "mismatch_kind": null,
+        "composition": null,
+        "artifacts": [],
+        "style_set": "F",
+        "odd_one_out": true
+      },
+      "sha256": "d28b45194a8d207dcd4624fecbbdffeddd964de9ca5869f88e12901dd4824841"
+    }
+  ]
+}

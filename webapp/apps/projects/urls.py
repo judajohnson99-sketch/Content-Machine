@@ -21,4 +21,6 @@ urlpatterns = [
          name="project-research-findings"),
     path("<str:video_id>/research/influence/", views.ProjectResearchInfluenceView.as_view(),
          name="project-research-influence"),
+    path("<str:video_id>/quality-report/", views.ProjectQualityReportView.as_view(),
+         name="project-quality-report"),
 ]

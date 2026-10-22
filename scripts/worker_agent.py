@@ -47,6 +47,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import generation  # noqa: E402
+import gpu_coordination  # noqa: E402
+import vision  # noqa: E402
 import worker  # noqa: E402
 import media  # noqa: E402
 import media_sync  # noqa: E402
@@ -77,6 +79,14 @@ PERMANENT_MARKERS = (
 
 class AgentError(Exception):
     """The agent cannot run - misconfiguration or the control plane refusing."""
+
+
+# Floor on how often a background beat is sent while the agent is busy.
+MIN_BEAT_SECONDS = 5
+
+
+def _truthy(value):
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _env(name, default=None):
@@ -156,6 +166,13 @@ class Agent:
         # Overwritten by the control plane on the first exchange: the cadence
         # is its decision, not this machine's.
         self.heartbeat_seconds = worker.heartbeat_seconds()
+        # Optional: judge each rendered image with a local vision model while
+        # this agent already owns the GPU. Off unless WORKER_VISION is set;
+        # on, it still needs QUALITY_VISION_URL, and a missing model only
+        # ever means "no judgement" - never a failed render.
+        self.vision = (vision.Runner(coordination="held")
+                       if _truthy(_env("WORKER_VISION")) else None)
+        self._vision_seen = (0.0, None)
         self.media_scan_at = 0
         self.media_detail = "Media folders not connected" if not media_sync.local_roots() else "Discovering your media"
 
@@ -177,7 +194,7 @@ class Agent:
                      "vram_total_mb": None, "vram_free_mb": None, "checkpoints": []}
         ok, detail = probe["reachable"], probe["detail"]
         model = _env("COMFYUI_MODEL") or (probe["checkpoints"][0] if probe["checkpoints"] else None)
-        return {
+        report = {
             "agent_version": AGENT_VERSION,
             "comfyui": detail if ok else f"unavailable: {detail}",
             "comfyui_reachable": ok,
@@ -191,6 +208,26 @@ class Agent:
             "media_sync": bool(media_sync.local_roots()),
             "media_detail": self.media_detail,
         }
+        report["vision"] = self._vision_status()
+        return report
+
+    def _vision_status(self):
+        """Whether this worker can judge images, for the heartbeat.
+
+        Probing Ollama every heartbeat is cheap, but a black-holed host would
+        make every heartbeat slow, so the answer is reused for half a minute.
+        """
+        if self.vision is None:
+            return {"enabled": False, "ready": False, "model": None,
+                    "code": None, "detail": "WORKER_VISION is not set"}
+        seen_at, seen = self._vision_seen
+        if seen is None or time.monotonic() - seen_at > 30.0:
+            health = self.vision.availability()
+            seen = {"enabled": True, "ready": health["ready"],
+                    "model": (health["models"] or [None])[0],
+                    "code": health["code"], "detail": health["detail"]}
+            self._vision_seen = (time.monotonic(), seen)
+        return seen
 
     def heartbeat(self, current_job=None):
         return self._absorb(self.client.post(
@@ -287,16 +324,22 @@ class Agent:
         staging = Path(tempfile.mkdtemp(prefix=f"cm-worker-{job_id[:8]}-"))
         started = time.monotonic()
         try:
-            assets, result = self._render(job_id, lease_id, request, staging,
-                                          lease_seconds)
+            # One hold on the GPU for the render and the vision pass after
+            # it: a vision model must never be loaded while ComfyUI works,
+            # and the two cannot overlap if the same process owns both.
+            with gpu_coordination.lease(f"worker-agent:{job_id[:8]}",
+                                        wait_seconds=gpu_coordination.lease_wait_seconds()):
+                assets, result = self._render(job_id, lease_id, request, staging,
+                                              lease_seconds)
+                evidence = self._judge(job_id, lease_id, assets, request, lease_seconds)
             return self._deliver(job_id, lease_id, assets, result,
-                                 round(time.monotonic() - started, 2))
+                                 round(time.monotonic() - started, 2), evidence)
         except AgentError:
             # The control plane itself is unreachable or refusing. There is
             # nobody to report the failure to; the lease will expire and the
             # job returns to the queue on its own.
             raise
-        except (GenerationError, OSError, ValueError) as e:
+        except (GenerationError, OSError, ValueError, gpu_coordination.GpuBusy) as e:
             permanent = any(m in str(e).lower() for m in PERMANENT_MARKERS)
             log.error("job %s failed%s: %s", job_id,
                       " (permanently)" if permanent else "", e)
@@ -343,6 +386,45 @@ class Agent:
             progress=progress)
         return [Path(a) for a in result.get("assets") or []], result
 
+    def _judge(self, job_id, lease_id, assets, request, lease_seconds):
+        """Judge each rendered image with the local vision model, or ``None``.
+
+        Runs while this agent still holds the GPU, bounded to a third of the
+        job lease so it cannot cost the job its lease. Whatever happens here
+        is advisory: an unavailable model becomes a recorded reason, and an
+        unexpected error is logged and swallowed - the render is already
+        done and a vision fault must not undo it.
+        """
+        if self.vision is None or not assets:
+            return None
+        stop = threading.Event()
+
+        def beat():
+            # A judging pass can outlast the ONLINE window; without this a
+            # busy, healthy worker would look gone to the dashboard.
+            while not stop.wait(max(MIN_BEAT_SECONDS, self.heartbeat_seconds)):
+                try:
+                    self.heartbeat(current_job=job_id)
+                except AgentError:
+                    pass
+
+        thread = threading.Thread(target=beat, daemon=True)
+        thread.start()
+        try:
+            self._progress(job_id, lease_id, None, "judging the rendered image(s)")
+            self.vision.budget_seconds = min(self.vision.budget_seconds, lease_seconds / 3)
+            result = self.vision.judge_images(
+                [{"key": str(p), "path": p, "intent": request.prompt} for p in assets])
+            if result.stopped:
+                log.warning("vision pass did not complete: %s", result.stopped["detail"])
+            return vision.evidence_payload(result, {str(p): p.name for p in assets})
+        except Exception:  # noqa: BLE001 - advisory work must never fail a render
+            log.exception("vision pass failed; delivering the render without it")
+            return None
+        finally:
+            stop.set()
+            thread.join(timeout=1)
+
     def _progress(self, job_id, lease_id, state, detail, provider_job_id=None):
         payload = {"lease_id": lease_id, "detail": detail}
         if state:
@@ -351,7 +433,7 @@ class Agent:
             payload["provider_job_id"] = provider_job_id
         return self.client.post(f"/v1/jobs/{job_id}/progress", payload)
 
-    def _deliver(self, job_id, lease_id, assets, result, elapsed):
+    def _deliver(self, job_id, lease_id, assets, result, elapsed, vision_evidence=None):
         """Upload every asset, then the manifest that accounts for them.
 
         The manifest is built from the bytes on disk here and re-verified
@@ -369,7 +451,7 @@ class Agent:
             manifest.append({"filename": path.name, "sha256": digest,
                              "bytes": path.stat().st_size})
             log.info("uploaded %s (%d bytes)", path.name, path.stat().st_size)
-        response = self.client.post(f"/v1/jobs/{job_id}/complete", {
+        body = {
             "lease_id": lease_id,
             "manifest": manifest,
             "provider_job_id": result.get("provider_job_id"),
@@ -377,7 +459,10 @@ class Agent:
             "elapsed_seconds": elapsed,
             "notes": (f"generated on remote ComfyUI worker via agent "
                       f"{AGENT_VERSION} in {elapsed:.1f}s"),
-        })
+        }
+        if vision_evidence:
+            body["vision"] = vision_evidence
+        response = self.client.post(f"/v1/jobs/{job_id}/complete", body)
         log.info("job %s %s", job_id, response.get("state"))
         return response.get("state")
 
