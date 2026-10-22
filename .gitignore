@@ -41,8 +41,9 @@ graphify-out/
 .serena/
 .claude/.headroom_wrap_*
 .claude/settings.local.json
-# Skills installed by `npx skills add` (vendored tooling, not project source).
-.claude/skills/
+# Project skills in .claude/skills/ are version-controlled (catalog: docs/SKILLS.md);
+# only generated caches are ignored.
+.claude/skills/**/__pycache__/
 .agents/
 .playwright/
 .playwright-mcp/
