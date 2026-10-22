@@ -398,12 +398,117 @@ class CoordinationTest(VisionTestCase):
         self.assertIn("a", result.judgements)
         freed.assert_called_once()
 
+    def test_held_mode_still_defers_when_someone_is_using_comfyui(self):
+        # The caller's lease excludes its own renders, not an operator.
+        with gpu.lease("worker-agent"), \
+                mock.patch.object(gpu, "comfyui_busy", return_value=(True, "ComfyUI has 1 running and 0 queued prompt(s)")), \
+                mock.patch.object(gpu, "free_comfyui") as freed:
+            result = self.runner(coordination="held", comfyui_url="http://comfy").judge_images([self.item()])
+        self.assertEqual(result.skipped["a"]["code"], vision.GPU_BUSY)
+        freed.assert_not_called()
+        self.assertEqual(FakeOllama.requests, [])
+
+    def test_coordination_never_touches_comfyuis_queue_or_interrupts_it(self):
+        paths = []
+
+        class Recorder(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                paths.append(("GET", self.path))
+                body = json.dumps({"queue_running": [], "queue_pending": [],
+                                   "devices": [{"vram_free": 8 * 1024 ** 3}]}).encode()
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):  # noqa: N802
+                paths.append(("POST", self.path))
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        comfy = HTTPServer(("127.0.0.1", 0), Recorder)
+        threading.Thread(target=comfy.serve_forever, daemon=True).start()
+        try:
+            self.coordinated(comfy_url=f"http://127.0.0.1:{comfy.server_port}",
+                             min_free_vram_mb=100).judge_images([self.item()])
+        finally:
+            comfy.shutdown()
+            comfy.server_close()
+        # /free only sets a flag ComfyUI applies between prompts; /interrupt
+        # and writes to /queue would stop or drop someone's work.
+        self.assertEqual({p for _, p in paths if _ == "POST"}, {"/free"})
+        self.assertTrue(all(p in ("/queue", "/system_stats", "/free") for _, p in paths))
+
     def test_auto_coordinates_only_when_comfyui_shares_the_host(self):
         os.environ.pop("GPU_LOCK_PATH", None)
         self.assertFalse(self.runner(coordination="auto")._coordinating())
         with mock.patch.dict(os.environ, {"COMFYUI_URL": "http://127.0.0.1:8188"}):
             self.assertTrue(self.runner(coordination="auto")._coordinating())
         self.assertFalse(self.runner(coordination="off", comfyui_url="http://x")._coordinating())
+
+
+class BatchingTest(VisionTestCase):
+    def images(self, n):
+        return [self.item(f"i{k}", path=make_image(self.dir / f"i{k}.png", colour=f"0x{k * 40 + 30:02x}2058"))
+                for k in range(n)]
+
+    def test_a_batch_holds_the_gpu_once_and_loads_the_model_once(self):
+        calls = {"coordinate": 0, "free": 0}
+        real = vision.Runner._gpu
+
+        def counting(runner):
+            calls["coordinate"] += 1
+            return real(runner)
+        with mock.patch.object(vision.Runner, "_gpu", counting), \
+                mock.patch.object(gpu, "comfyui_busy", return_value=(False, "idle")), \
+                mock.patch.object(gpu, "free_comfyui", side_effect=lambda url: calls.__setitem__("free", calls["free"] + 1) or True):
+            result = self.runner(coordination="on", comfyui_url="http://comfy").judge_images(self.images(3))
+        self.assertEqual(len(result.judgements), 3)
+        self.assertEqual(calls, {"coordinate": 1, "free": 1})
+
+    def test_model_stays_resident_between_images_and_is_unloaded_at_the_end(self):
+        self.runner().judge_images(self.images(3))
+        generate = [r for r in FakeOllama.requests if "prompt" in r]
+        self.assertEqual([r["keep_alive"] for r in generate], [vision.BATCH_KEEP_ALIVE, vision.BATCH_KEEP_ALIVE, "0"])
+        unloads = [r for r in FakeOllama.requests if "prompt" not in r]
+        self.assertEqual(unloads, [{"model": "qwen3-vl:2b", "keep_alive": 0}])
+
+    def test_a_single_image_is_not_kept_resident(self):
+        self.runner().judge_images(self.images(1))
+        self.assertEqual([r["keep_alive"] for r in FakeOllama.requests], ["0"])
+
+    def test_a_stopped_batch_still_unloads_what_it_loaded(self):
+        def handler(body):
+            if "prompt" in body and len([r for r in FakeOllama.requests if "prompt" in r]) == 2:
+                return 500, {"error": "boom"}
+            return 200, {"response": json.dumps(GOOD)}
+        FakeOllama.handler = staticmethod(handler)
+        self.runner().judge_images(self.images(3))
+        self.assertIn({"model": "qwen3-vl:2b", "keep_alive": 0}, FakeOllama.requests)
+
+    def test_an_explicit_keep_alive_is_respected(self):
+        self.runner(provider=vision.OllamaProvider(url=self.url, keep_alive="10m")).judge_images(self.images(2))
+        generate = [r for r in FakeOllama.requests if "prompt" in r]
+        self.assertEqual({r["keep_alive"] for r in generate}, {"10m"})
+
+    def test_a_thinking_model_that_spent_its_budget_is_retried_without_thinking(self):
+        def handler(body):
+            if body.get("think") is False:
+                return 200, {"response": json.dumps(GOOD)}
+            return 200, {"response": "", "thinking": "let me look at the picture..."}
+        FakeOllama.handler = staticmethod(handler)
+        result = self.runner().judge_images([self.item()])
+        self.assertIn("a", result.judgements)
+        self.assertEqual([r.get("think") for r in FakeOllama.requests if "prompt" in r], [None, False])
+
+    def test_reasoning_only_replies_stay_a_skip_not_a_pass(self):
+        FakeOllama.handler = staticmethod(lambda body: (200, {"response": "", "thinking": "hmm"}))
+        result = self.runner().judge_images([self.item()])
+        self.assertEqual(result.judgements, {})
+        self.assertIn("reasoning", result.skipped["a"]["detail"])
 
 
 class ThresholdsAndFindingsTest(unittest.TestCase):

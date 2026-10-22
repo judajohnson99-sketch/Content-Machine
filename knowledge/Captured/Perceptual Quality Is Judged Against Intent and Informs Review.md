@@ -33,7 +33,7 @@ On the Dreamdrip production (sleep, procedural plates): raw chroma flagged every
 
 ## Unavailable is a state
 
-Scene depiction needs a local vision model (QUALITY_VISION_URL + QUALITY_VISION_MODEL, Ollama API, no default). Without one it reports Not evaluated, and the report's coverage lists it - never as a pass.
+Scene imagery (depiction, composition, artifacts, consistency) needs a local vision model (QUALITY_VISION_URL + QUALITY_VISION_MODELS, Ollama API, no default). Without one it reports Not evaluated, and the report's coverage lists it - never as a pass.
 
 ## Evidence
 

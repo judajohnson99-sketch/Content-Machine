@@ -737,7 +737,8 @@ configured, model not installed, GPU busy, timeout, unparseable answer ...).
 - **GPU coordination.** Renders win. Vision takes a file lease
   (`jobs/_gpu.lock`, `GPU_LOCK_PATH`) the render also holds, defers
   (`gpu_busy`) when ComfyUI has queued work, frees ComfyUI's models before
-  loading its own, and unloads (`keep_alive: 0`) after every image.
+  loading its own, and unloads (`keep_alive: 0`) when the batch ends: one
+  hold and one model load per batch, not per image.
   `QUALITY_VISION_GPU_COORDINATION=auto|on|off`.
 - **Findings are advisory and honest about calibration.** A finding never
   blocks. Until a model is measured against `calibration/vision`, thresholds

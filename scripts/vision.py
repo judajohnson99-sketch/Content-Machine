@@ -64,6 +64,9 @@ THRESHOLDS_PATH = ROOT / "config" / "vision_thresholds.json"
 # reports a bad name accurately, and `doctor` lists what is really installed.
 DEFAULT_MODELS = ("qwen3-vl:2b", "moondream")
 
+# How long Ollama keeps the model loaded between two images of one batch.
+BATCH_KEEP_ALIVE = "1m"
+
 DEFAULT_TIMEOUT = 120.0
 DEFAULT_BUDGET_SECONDS = 300.0
 DEFAULT_IMAGE_MAX_PX = 768
@@ -371,6 +374,10 @@ class VisionProvider:
     """Adapter contract. Vendor specifics stay inside the subclass."""
 
     name = "base"
+    # True when ``judge`` accepts ``keep_loaded=True``: "more images follow,
+    # leave the model resident for them". Providers that cannot say so are
+    # never passed the argument.
+    supports_keep_loaded = False
 
     def configured(self):
         raise NotImplementedError
@@ -414,6 +421,7 @@ class OllamaProvider(VisionProvider):
     """
 
     name = "ollama"
+    supports_keep_loaded = True
 
     def __init__(self, url=None, keep_alive=None, max_px=None):
         self.url = (url if url is not None else _env("QUALITY_VISION_URL") or "").rstrip("/")
@@ -461,20 +469,31 @@ class OllamaProvider(VisionProvider):
                 names.append(name)
         return names
 
-    def judge(self, image_path, intent, model, timeout):
+    def judge(self, image_path, intent, model, timeout, keep_loaded=False):
         image = prepare_image(image_path, self.max_px)
-        reply = self._call("/api/generate", {
+        body = {
             "model": model,
             "prompt": build_prompt(intent),
             "images": [base64.b64encode(image).decode("ascii")],
             "stream": False,
             "format": SCHEMA,
-            "keep_alive": self.keep_alive,
+            # Between the images of one batch the model stays resident for a
+            # short while (the runner holds the GPU for the whole batch and
+            # unloads at its end); a crash cannot leave it loaded for long.
+            "keep_alive": BATCH_KEEP_ALIVE if keep_loaded and self.keep_alive == "0"
+            else self.keep_alive,
             "options": {"temperature": 0, "seed": 7, "num_predict": 512},
-        }, timeout)
+        }
+        reply = self._call("/api/generate", body, timeout)
         text = reply.get("response")
+        if (not isinstance(text, str) or not text.strip()) and reply.get("thinking"):
+            # A thinking-capable model spent its token budget reasoning.
+            # Ollama documents ``think: false`` for exactly this.
+            reply = self._call("/api/generate", dict(body, think=False), timeout)
+            text = reply.get("response")
         if not isinstance(text, str) or not text.strip():
-            raise VisionError(UNUSABLE, "the model returned an empty reply")
+            raise VisionError(UNUSABLE, "the model returned an empty reply"
+                              + (" (it only produced reasoning text)" if reply.get("thinking") else ""))
         try:
             return json.loads(text)
         except ValueError as e:
@@ -607,6 +626,10 @@ class Runner:
             yield
             return
         if self.coordination == "held":
+            # The caller holds the lease, but that only excludes this
+            # process's own renders: someone using ComfyUI by hand is not
+            # covered by it, so ask ComfyUI too.
+            gpu.check_clear(0, self.comfyui_url)
             self._release_comfyui()
             self._check_vram()
             yield
@@ -636,13 +659,15 @@ class Runner:
         """Judge ``items`` (``{"key", "path", "intent"}``), returning a ``BatchResult``.
 
         Cache hits cost nothing and need no GPU. Everything else goes
-        through the model chain under the GPU lease, within the time
-        budget; the batch stops early, with a reason, as soon as the cause
-        is not about one image (unreachable, GPU busy).
+        through the model chain within the time budget, under ONE hold on
+        the GPU for the whole batch: the model is loaded once, kept resident
+        between images and unloaded at the end, instead of being reloaded
+        for every image. The batch stops early, with a reason, as soon as
+        the cause is not about one image (unreachable, GPU busy).
         """
         result = BatchResult()
         started = time.monotonic()
-        models = None
+        pending = []
         for item in items:
             key = item["key"]
             try:
@@ -653,36 +678,58 @@ class Runner:
             hit = self._cached(item["intent"], image_sha)
             if hit is not None:
                 result.judgements[key] = hit
-                continue
-            if result.stopped:
-                result.skipped[key] = dict(result.stopped)
-                continue
-            if time.monotonic() - started >= self.budget_seconds:
-                result.stopped = {"code": BUDGET, "detail":
-                                  f"the {self.budget_seconds:.0f}s time budget ran out"}
-                result.skipped[key] = dict(result.stopped)
-                continue
-            if models is None:
-                health = self.availability()
-                if not health["ready"]:
-                    result.stopped = {"code": health["code"], "detail": health["detail"]}
+            else:
+                pending.append((item, image_sha))
+        if not pending:
+            return result
+
+        loaded = set()
+        with contextlib.ExitStack() as stack:
+            stack.callback(self._unload, loaded)
+            models = None
+            entered = False
+            for index, (item, image_sha) in enumerate(pending):
+                key = item["key"]
+                if result.stopped:
                     result.skipped[key] = dict(result.stopped)
                     continue
-                models = health["models"]
-            try:
-                judgement = self._judge_one(item, image_sha, models)
-            except gpu.GpuBusy as e:
-                result.stopped = {"code": GPU_BUSY, "detail": f"deferred: {e.detail}"}
-                result.skipped[key] = dict(result.stopped)
-                continue
-            except VisionError as e:
-                entry = {"code": e.code, "detail": e.detail}
-                if e.code in STOP_CODES:
-                    result.stopped = entry
-                result.skipped[key] = entry
-                continue
-            result.judgements[key] = judgement
+                if time.monotonic() - started >= self.budget_seconds:
+                    result.stopped = {"code": BUDGET, "detail":
+                                      f"the {self.budget_seconds:.0f}s time budget ran out"}
+                    result.skipped[key] = dict(result.stopped)
+                    continue
+                if models is None:
+                    health = self.availability()
+                    if not health["ready"]:
+                        result.stopped = {"code": health["code"], "detail": health["detail"]}
+                        result.skipped[key] = dict(result.stopped)
+                        continue
+                    models = health["models"]
+                if not entered:
+                    try:
+                        stack.enter_context(self._gpu())
+                    except gpu.GpuBusy as e:
+                        result.stopped = {"code": GPU_BUSY, "detail": f"deferred: {e.detail}"}
+                        result.skipped[key] = dict(result.stopped)
+                        continue
+                    entered = True
+                try:
+                    judgement = self._judge_one(
+                        item, image_sha, models, loaded,
+                        more_follow=index < len(pending) - 1)
+                except VisionError as e:
+                    entry = {"code": e.code, "detail": e.detail}
+                    if e.code in STOP_CODES:
+                        result.stopped = entry
+                    result.skipped[key] = entry
+                    continue
+                result.judgements[key] = judgement
         return result
+
+    def _unload(self, loaded):
+        """End of a batch: release every model a batch left resident."""
+        for model in loaded:
+            self.provider.unload(model)
 
     def _cached(self, intent, image_sha):
         for model in self.models:
@@ -692,13 +739,16 @@ class Runner:
                 return hit
         return None
 
-    def _judge_one(self, item, image_sha, models):
+    def _judge_one(self, item, image_sha, models, loaded, more_follow=False):
         last = VisionError(MODEL_NOT_INSTALLED, "no usable vision model")
         for model in models:
             began = time.monotonic()
             try:
-                with self._gpu():
-                    raw = self.provider.judge(item["path"], item["intent"], model, self.timeout)
+                extra = {}
+                if more_follow and self.provider.supports_keep_loaded:
+                    extra["keep_loaded"] = True
+                    loaded.add(model)
+                raw = self.provider.judge(item["path"], item["intent"], model, self.timeout, **extra)
                 judgement = coerce_judgement(
                     raw, model=model, provider=self.provider.name, intent=item["intent"],
                     image_sha=image_sha, seconds=time.monotonic() - began, source=self.source)

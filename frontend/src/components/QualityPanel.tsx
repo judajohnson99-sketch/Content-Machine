@@ -204,7 +204,13 @@ export function QualityPanel({ videoId, assessedAt }: { videoId: string; assesse
     );
   }
 
-  const verdict = VERDICT[report.verdict];
+  // An OK verdict covers what ran. When something did not run (or ran only
+  // partly) the badge must not look like a clean pass for the whole.
+  const gaps = report.coverage.unavailable.length + (report.coverage.partial ?? []).length;
+  const verdict = report.verdict === "OK" && gaps > 0
+    ? { label: "Nothing wrong in what was evaluated", tone: "neutral" as Tone,
+        line: `${gaps} evaluation${gaps === 1 ? " was" : "s were"} not run or only partly run, so this is not a pass for ${gaps === 1 ? "it" : "them"}.` }
+    : VERDICT[report.verdict];
   const counted = report.counts.block + report.counts.warn + report.counts.info;
   return (
     <div className={styles.panel} data-testid="quality-panel">

@@ -70,6 +70,23 @@ describe("QualityPanel", () => {
     expect(screen.getByText(/Not evaluated: Scene imagery/)).toBeInTheDocument();
   });
 
+  it("an OK verdict with evaluations that did not run is not drawn as a clean pass", async () => {
+    vi.spyOn(qualityApi, "getQualityReport").mockResolvedValue(report({ verdict: "OK" }));
+    renderWithClient(<QualityPanel videoId="vid" />);
+    const badge = await screen.findByText("Nothing wrong in what was evaluated");
+    expect(badge).toHaveAttribute("data-status", "OK");
+    expect(screen.queryByText("Nothing measurable is wrong")).not.toBeInTheDocument();
+    expect(screen.getByText(/not a pass for it/)).toBeInTheDocument();
+  });
+
+  it("an OK verdict with full coverage still says nothing measurable is wrong", async () => {
+    vi.spyOn(qualityApi, "getQualityReport").mockResolvedValue(report({
+      verdict: "OK",
+      coverage: { evaluated: ["scene_intent"], partial: [], unavailable: [], not_applicable: [] } }));
+    renderWithClient(<QualityPanel videoId="vid" />);
+    expect(await screen.findByText("Nothing measurable is wrong")).toBeInTheDocument();
+  });
+
   it("says when the assessment describes an earlier render", async () => {
     vi.spyOn(qualityApi, "getQualityReport").mockResolvedValue(report({ current: false }));
     renderWithClient(<QualityPanel videoId="vid" />);

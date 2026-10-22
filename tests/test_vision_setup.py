@@ -281,7 +281,7 @@ class SmokeTest(SetupTestCase):
     def test_the_images_it_judges_really_differ(self):
         FakeOllama.generate_replies = [dict(GOOD), dict(GOOD)]
         setup.smoke(runner=self.runner())
-        images = [p[1]["images"][0] for p in FakeOllama.posts if p[0] == "/api/generate"]
+        images = [p[1]["images"][0] for p in FakeOllama.posts if p[0] == "/api/generate" and "images" in p[1]]
         self.assertEqual(len(images), 2)
         self.assertNotEqual(images[0], images[1])
 
@@ -316,6 +316,19 @@ class ServiceTest(SetupTestCase):
         with mock.patch("builtins.print") as printed:
             self.assertEqual(setup.main(["service"]), 0)
         self.assertIn("content-machine-worker.service", str(printed.call_args_list))
+
+
+class OllamaVersionTest(unittest.TestCase):
+    def test_an_ollama_older_than_qwen3_vl_needs_is_flagged(self):
+        message = setup._too_old_for("ollama version is 0.11.4", ["qwen3-vl:2b", "moondream"])
+        self.assertIn("0.12.7", message)
+        self.assertIn("qwen3-vl:2b", message)
+
+    def test_a_new_enough_ollama_or_an_unreadable_version_is_not(self):
+        self.assertIsNone(setup._too_old_for("ollama version is 0.12.7", ["qwen3-vl:2b"]))
+        self.assertIsNone(setup._too_old_for("ollama version is 0.13.0", ["qwen3-vl:2b"]))
+        self.assertIsNone(setup._too_old_for("", ["qwen3-vl:2b"]))
+        self.assertIsNone(setup._too_old_for("ollama version is 0.1.0", ["moondream"]))
 
 
 if __name__ == "__main__":

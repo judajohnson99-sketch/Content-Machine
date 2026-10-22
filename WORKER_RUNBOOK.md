@@ -160,9 +160,11 @@ Minimum steps once the PC is on (all on the PC, in the worker checkout):
 2. Install Ollama (https://ollama.com/download) if the doctor says so.
 3. `python3 scripts/vision_setup.py env --write` - appends the vision keys to
    `.env` without touching existing ones.
-4. `python3 scripts/vision_setup.py pull` - downloads `qwen3-vl:2b` and the
-   fallback. Model tags were not checked against the registry from the dev
-   environment; if one is rejected, change `QUALITY_VISION_MODELS`.
+4. `python3 scripts/vision_setup.py pull` - downloads `qwen3-vl:2b` (about
+   1.9 GB; needs Ollama 0.12.7 or newer, which `doctor` checks) and
+   `moondream` (about 1.7 GB, small context, older). Both tags appear in
+   Ollama's public library; a pull on the PC is the real confirmation. If one
+   is rejected, change `QUALITY_VISION_MODELS`.
 5. Run `doctor` again, then `python3 scripts/vision_setup.py smoke` (judges
    two test images through the real GPU lease; it defers if ComfyUI is busy).
 6. `python3 scripts/vision_calibration.py run --model qwen3-vl:2b --apply`
@@ -176,12 +178,19 @@ Minimum steps once the PC is on (all on the PC, in the worker checkout):
 Things to watch, because they could not be tested without the hardware:
 
 - The GTX 1060 3GB is tight for `qwen3-vl:2b`. Vision and ComfyUI never run
-  together (file lease), and ComfyUI's models are freed first via its `/free`
-  endpoint - that call's effect on VRAM is unverified. If loading still fails
+  together (file lease plus a check that ComfyUI's queue is empty). ComfyUI's
+  models are freed first via its `/free` endpoint; ComfyUI's source shows that
+  call only sets a flag applied between prompts, so it can never interrupt a
+  running render, but how much VRAM it returns on this card is unmeasured. A
+  batch of images takes the GPU once: the model loads once, stays resident for
+  at most a minute between images, and is unloaded at the end. If loading still fails
   with out-of-memory, the job records `oom` and "Not evaluated"; try the
   fallback model or a smaller `QUALITY_VISION_IMAGE_MAX_PX`.
-- Some Qwen3-VL builds emit "thinking" text before the answer. Answers that
-  are not the requested JSON are rejected as `unparseable`, not guessed at.
+- Some Qwen3-VL builds "think" before answering and can spend the whole
+  token budget on it. An empty reply that carries reasoning is retried once
+  with `think: false` (an Ollama parameter); if it is still empty, or the
+  answer is not the requested JSON, the image is "not evaluated", never
+  guessed at.
 - A busy ComfyUI defers judging (`gpu_busy`); the render itself is never
   delayed or failed by vision.
 

@@ -22,6 +22,7 @@ The order on a fresh machine is ``doctor`` -> install Ollama -> ``env
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -58,6 +59,28 @@ ENV_BLOCK = (
     ("QUALITY_VISION_BUDGET_SECONDS", "300", "seconds per job spent judging, at most"),
     ("QUALITY_VISION_FREE_SETTLE_SECONDS", "2", "seconds to let ComfyUI release VRAM before the model loads"),
 )
+
+
+# Qwen3-VL needs Ollama 0.12.7 or newer (the model's library page says so).
+MIN_OLLAMA = {"qwen3-vl": (0, 12, 7)}
+
+
+def chain_for_version(models):
+    return list(models) if models else vision.configured_models()
+
+
+def _too_old_for(version_text, chain):
+    """A warning when the installed Ollama predates a configured model, else None."""
+    found = re.search(r"(\d+)\.(\d+)\.(\d+)", version_text or "")
+    if not found:
+        return None
+    have = tuple(int(n) for n in found.groups())
+    for model in chain:
+        needed = MIN_OLLAMA.get(model.split(":")[0])
+        if needed and have < needed:
+            return (f"Ollama {'.'.join(map(str, have))} is older than "
+                    f"{'.'.join(map(str, needed))}, which {model} needs")
+    return None
 
 
 def check(name, status, detail, hint=None):
@@ -101,6 +124,10 @@ def doctor(url=None, models=None):
     if ollama_bin:
         _, version, _ = _run([ollama_bin, "--version"])
         results.append(check("ollama binary", PASS, f"{ollama_bin} ({version})"))
+        too_old = _too_old_for(version, chain_for_version(models))
+        if too_old:
+            results.append(check("ollama version", WARN, too_old,
+                                 "update Ollama from https://ollama.com/download"))
     else:
         results.append(check("ollama binary", WARN, "not on PATH",
                              "install it from https://ollama.com/download (or point QUALITY_VISION_URL "
