@@ -217,6 +217,10 @@ provider (`gemini`, `api`), publishing anything publicly, and any spending.
 `READY_FOR_REVIEW` is the hard stop. Nothing downstream of it is automated,
 and no code path may set a production-grade claim on a person's behalf.
 
+## Skills
+
+Project skills (`.claude/skills/`, catalog and provenance in `docs/SKILLS.md`) are instructions that point at the code above; they add no pipeline behaviour. Add one only through `skill-discovery`.
+
 ## Testing
 
 ```bash
