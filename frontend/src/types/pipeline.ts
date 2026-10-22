@@ -75,6 +75,7 @@ export interface StageParams {
   };
   run: Record<string, never>;
   produce: {
+    image_source?: "automatic" | "generated" | "procedural" | null;
     concept_id?: string | null;
     duration?: number | null;
     production_grade_visuals?: boolean | null;

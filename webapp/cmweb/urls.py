@@ -14,5 +14,6 @@ urlpatterns = [
     path('api/v1/projects/', include('apps.review.urls')),
     path('api/v1/concepts/', include('apps.concepts.urls')),
     path('api/v1/system/', include('apps.system.urls')),
+    path('api/v1/library/', include('apps.library.urls')),
     path('api/v1/pipeline-runs/', include('apps.pipeline.urls_global')),
 ]

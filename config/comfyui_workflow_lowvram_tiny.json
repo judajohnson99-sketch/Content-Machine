@@ -21,7 +21,7 @@
   },
   "5": {
     "class_type": "EmptyLatentImage",
-    "inputs": {"width": %latent_width%, "height": %latent_height%, "batch_size": 1}
+    "inputs": {"width": %latent_width%, "height": %latent_height%, "batch_size": %count%}
   },
   "6": {
     "class_type": "CLIPTextEncode",

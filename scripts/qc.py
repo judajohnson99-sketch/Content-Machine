@@ -559,6 +559,13 @@ def qc_storyboard(storyboard, pdir, audio_seconds=None):
         width, height = dimensions
         if width <= 0 or height <= 0:
             unreadable.append(f"{scene.get('scene_id')} ({path.name})")
+        elif (scene.get("source") or {}).get("kind") == "owner_media":
+            # The owner's own picture is whatever size they shot it at. The
+            # storyboard's source_generation describes what *generation* was
+            # asked for, so comparing the two would reject a perfectly good
+            # photograph for not having been generated. The renderer scales
+            # and crops it to the frame like any other source.
+            continue
         elif expected_w and expected_h and (width, height) != (expected_w, expected_h):
             wrong_size.append(
                 f"{scene.get('scene_id')} is {width}x{height}, "

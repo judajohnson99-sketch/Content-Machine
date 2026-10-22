@@ -9,6 +9,8 @@ urlpatterns = [
     path("<str:video_id>/status/", views.ProjectStatusView.as_view(), name="project-status"),
     path("<str:video_id>/archive/", views.ProjectArchiveView.as_view(), name="project-archive"),
     path("<str:video_id>/assets/", views.ProjectAssetsView.as_view(), name="project-assets"),
+    path("<str:video_id>/owner-media/", views.ProjectOwnerMediaView.as_view(),
+         name="project-owner-media"),
     path("<str:video_id>/files/<path:relative>", views.ProjectFileView.as_view(),
          name="project-file"),
     path("<str:video_id>/gpu-jobs/", views.ProjectGpuJobsView.as_view(),

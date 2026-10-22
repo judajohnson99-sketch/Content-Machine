@@ -40,6 +40,7 @@ import shutil
 import sys
 import tempfile
 import time
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -49,11 +50,13 @@ import generation  # noqa: E402
 import gpu_coordination  # noqa: E402
 import vision  # noqa: E402
 import worker  # noqa: E402
+import media  # noqa: E402
+import media_sync  # noqa: E402
 from generation import GenerationRequest, GenerationError  # noqa: E402
 
 log = logging.getLogger("worker.agent")
 
-AGENT_VERSION = "0.2"
+AGENT_VERSION = "0.3"
 DEFAULT_REQUEST_TIMEOUT = 30.0
 DEFAULT_UPLOAD_TIMEOUT = 120.0
 
@@ -166,6 +169,8 @@ class Agent:
         self.vision = (vision.Runner(coordination="held")
                        if _truthy(_env("WORKER_VISION")) else None)
         self._vision_seen = (0.0, None)
+        self.media_scan_at = 0
+        self.media_detail = "Media folders not connected" if not media_sync.local_roots() else "Discovering your media"
 
     # --- status ----------------------------------------------------------
 
@@ -196,6 +201,8 @@ class Agent:
             "model": model,
             "workflow": Path(getattr(self.provider, "workflow_path", "") or "").name or None,
             "current_job": current_job,
+            "media_sync": bool(media_sync.local_roots()),
+            "media_detail": self.media_detail,
         }
         report["vision"] = self._vision_status()
         return report
@@ -233,6 +240,8 @@ class Agent:
 
     def poll_once(self):
         """Claim and run at most one job. Returns the final state, or None."""
+        if media_sync.local_roots():
+            self.sync_media()
         response = self._absorb(
             self.client.post("/v1/claim", {"status": self.status()}))
         job = response.get("job")
@@ -242,6 +251,65 @@ class Agent:
         log.info("claimed %s (attempt %s/%s)", job["job_id"],
                  job.get("attempt"), job.get("max_attempts"))
         return self.run_job(job)
+
+    def sync_media(self):
+        """Discover configured originals and service one requested transfer."""
+        catalog = Path(_env("WORKER_MEDIA_CATALOG") or str(media.DEFAULT_CATALOG))
+        stop = threading.Event()
+
+        def keep_alive():
+            while not stop.wait(max(5, self.heartbeat_seconds)):
+                try:
+                    self.heartbeat()
+                except AgentError:
+                    pass
+
+        thread = threading.Thread(target=keep_alive, daemon=True)
+        thread.start()
+        try:
+            if time.monotonic() - self.media_scan_at > 300:
+                for root in media_sync.local_roots():
+                    media.scan(root, catalog=catalog)
+                inventory = media.load(catalog)
+                assets = [(identity, dict(asset, locations=[loc for loc in asset["locations"]
+                           if loc["host_id"] == media.host_id()]))
+                          for identity, asset in inventory["assets"].items()
+                          if any(loc["host_id"] == media.host_id() for loc in asset["locations"])]
+                for start in range(0, len(assets), 20):
+                    self.client.post("/v1/media/inventory", {
+                        "host_id": media.host_id(),
+                        "catalog": {"version": 1, "assets": dict(assets[start:start + 20]), "issues": {}},
+                    })
+                self.media_scan_at = time.monotonic()
+                self.media_detail = f"{len(assets)} media files cataloged"
+            response = self.client.post("/v1/media/claim", {"host_id": media.host_id()})
+            transfer = response.get("transfer")
+            if transfer:
+                try:
+                    with tempfile.TemporaryDirectory(prefix="cm-owner-transfer-") as temporary:
+                        request_path = Path(temporary) / "request.json"
+                        bundle = Path(temporary) / "bundle.tar.gz"
+                        media.atomic_json(request_path, transfer["request"])
+                        media.export_bundle(request_path, bundle, catalog=catalog)
+                        if bundle.stat().st_size > 512 * 1024 * 1024:
+                            raise media.MediaError("This file exceeds the 512 MB transfer limit")
+                        with bundle.open("rb") as stream:
+                            self.client._request(f"/v1/media/{transfer['id']}/bundle", stream,
+                                "application/gzip", {"X-Lease-Id": transfer["lease_id"],
+                                "Content-Length": str(bundle.stat().st_size)}, timeout=900)
+                except (media.MediaError, OSError, AgentError) as exc:
+                    try:
+                        self.client.post(f"/v1/media/{transfer['id']}/fail", {
+                            "lease_id": transfer["lease_id"], "message": str(exc)})
+                    except AgentError:
+                        pass  # Disconnected attempts are recovered by lease expiry.
+                    self.media_detail = str(exc)[:300]
+        except (media.MediaError, OSError, AgentError) as exc:
+            self.media_detail = str(exc)[:300]
+            log.warning("Media sync: %s", self.media_detail)
+        finally:
+            stop.set()
+            thread.join(timeout=1)
 
     def run_job(self, job):
         job_id, lease_id = job["job_id"], job["lease_id"]

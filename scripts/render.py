@@ -42,6 +42,12 @@ log = logging.getLogger("render")
 ROOT = Path(__file__).resolve().parent.parent
 SUPPORTED_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 
+# A scene can also be built from footage the owner selected from their own
+# library (scripts/ownermedia.py). Those scenes declare media_kind="video"
+# and are rendered from the clip itself rather than from a still with a
+# pan/zoom move over it; everything else about the timeline is unchanged.
+SUPPORTED_VIDEO_EXTENSIONS = (".mp4", ".mov", ".m4v", ".mkv", ".webm")
+
 # How much to upscale each frame before zoompan crops/zooms it, so the
 # pan/zoom motion is smooth instead of stepping pixel-by-pixel. Not
 # exposed in the spec since it's an internal quality/perf tradeoff.
@@ -142,6 +148,14 @@ def _normalize_scenes(raw_scenes, base_dir):
         if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration <= 0:
             errors.append(f"{where}: 'duration_seconds' must be > 0, got {duration!r}")
 
+        media_kind = (raw_scene.get("media_kind") or "image").lower()
+        if media_kind not in ("image", "video"):
+            errors.append(f"{where}: 'media_kind' must be 'image' or 'video', "
+                          f"got {raw_scene.get('media_kind')!r}")
+            media_kind = "image"
+        supported = (SUPPORTED_VIDEO_EXTENSIONS if media_kind == "video"
+                     else SUPPORTED_IMAGE_EXTENSIONS)
+
         image_path = raw_scene.get("image_path") or raw_scene.get("image")
         if not image_path:
             errors.append(f"{where}: no image")
@@ -150,13 +164,17 @@ def _normalize_scenes(raw_scenes, base_dir):
             image_path = resolve_path(str(image_path), base_dir)
             if not image_path.is_file():
                 errors.append(f"{where}: image does not exist: {image_path}")
-            elif image_path.suffix.lower() not in SUPPORTED_IMAGE_EXTENSIONS:
+            elif image_path.suffix.lower() not in supported:
                 errors.append(
-                    f"{where}: unsupported image type '{image_path.suffix}'; "
-                    f"supported: {', '.join(SUPPORTED_IMAGE_EXTENSIONS)}")
+                    f"{where}: unsupported {media_kind} type '{image_path.suffix}'; "
+                    f"supported: {', '.join(supported)}")
 
         motion_cfg = raw_scene.get("motion") or {}
         transition_cfg = raw_scene.get("transition") or {}
+        if media_kind == "video":
+            # Footage carries its own movement; a pan/zoom over it on top
+            # would be a second, uninvited move.
+            motion_cfg = {**motion_cfg, "kind": "static"}
         errors.extend(
             f"{where}: {problem}" for problem in motion_mod.validate_motion(
                 motion_cfg.get("kind", "static"),
@@ -168,10 +186,14 @@ def _normalize_scenes(raw_scenes, base_dir):
             "duration_seconds": float(duration) if isinstance(duration, (int, float))
                                 and not isinstance(duration, bool) else 0.0,
             "image_path": image_path,
+            "media_kind": media_kind,
             "motion": dict(motion_cfg),
             "transition": dict(transition_cfg),
         })
-    if len(scenes) > MAX_IMAGE_SLOTS:
+    # The same arithmetic guard wherever the piecewise renderer will run -
+    # scene count, or a footage scene that forces that path (see render()).
+    if (len(scenes) > MAX_IMAGE_SLOTS
+            or any(s.get("media_kind") == "video" for s in scenes)):
         errors.extend(piecewise_problems(scenes))
     return scenes, errors
 
@@ -325,8 +347,13 @@ def validate_and_normalize(raw, base_dir):
             if not isinstance(crossfade_seconds, (int, float)) or isinstance(crossfade_seconds, bool) or crossfade_seconds < 0:
                 errors.append(f"'crossfade.duration_seconds' must be a number >= 0, got {crossfade_seconds!r}")
 
+    # Only meaningful for the cycling path. A scene list states its own
+    # per-scene length and transition, and `piecewise_problems` checks those
+    # against each other; measuring them against the global defaults the
+    # scenes replaced would reject a perfectly coherent edit.
     if (
-        crossfade_enabled
+        scenes is None
+        and crossfade_enabled
         and isinstance(crossfade_seconds, (int, float))
         and isinstance(seconds_per_image, (int, float))
         and crossfade_seconds >= seconds_per_image
@@ -592,7 +619,11 @@ def _render_scene_pieces(index, piece, target, workdir):
     # or a trim would land in zoompan's restart on the next input frame.
     frame_scene = dict(piece["scene"],
                        duration_seconds=piece["total_frames"] / float(target["fps"]))
-    parts = [motion_mod.build_scene_filter(0, "m", frame_scene, target)]
+    if piece["scene"].get("media_kind") == "video":
+        input_args, parts = _video_scene_input(piece, target)
+    else:
+        input_args = ["-i", str(piece["scene"]["image_path"])]
+        parts = [motion_mod.build_scene_filter(0, "m", frame_scene, target)]
     # Only the pieces this scene actually contributes: the first scene has no
     # incoming overlap and the last has no outgoing one.
     wanted = [
@@ -615,10 +646,32 @@ def _render_scene_pieces(index, piece, target, workdir):
         cmd_outputs += ["-map", f"[{out_label}]", "-r", f"{target['fps']}",
                         *_PIECEWISE_VIDEO_ARGS, str(path)]
 
-    cmd = ["ffmpeg", "-y", "-i", str(piece["scene"]["image_path"]),
+    cmd = ["ffmpeg", "-y", *input_args,
            "-filter_complex", ";".join(parts), *cmd_outputs]
     run_ffmpeg(cmd)
     return {name: path for name, _, _, path in wanted}
+
+
+def _video_scene_input(piece, target):
+    """Input arguments and filter for a scene rendered from owner footage.
+
+    The clip is scaled and cropped to fill the frame, resampled to the
+    project's frame rate, and repeated if it is shorter than the shot it has
+    to cover - the same `-stream_loop` the audio bed uses, so a 10-second
+    loop can hold a 30-second shot. Trimmed by frame count, like the still
+    path, so the pieces the overlaps are cut from line up exactly.
+    """
+    W, H, fps = target["width"], target["height"], target["fps"]
+    frames = piece["total_frames"]
+    # Looping is what makes a short clip usable; the trim below is what stops
+    # it. An un-looped input would simply end early and leave black.
+    input_args = ["-stream_loop", "-1", "-i", str(piece["scene"]["image_path"])]
+    filters = (
+        f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
+        f"crop={W}:{H},fps={fps},format=yuv420p,setsar=1,"
+        f"trim=end_frame={frames},setpts=PTS-STARTPTS[m]"
+    )
+    return input_args, [filters]
 
 
 def _render_transition(tail_path, head_path, frames, target, out_path):
@@ -706,7 +759,13 @@ def render(spec, output_path):
     original single-invocation filter graph is used unchanged; above it the
     piecewise renderer takes over.
     """
-    if spec.get("scenes") and len(spec["scenes"]) > MAX_IMAGE_SLOTS:
+    scenes = spec.get("scenes") or []
+    # Footage scenes always take the piecewise path: it renders each scene on
+    # its own input, which is the only way a looped clip and a still can sit
+    # in one timeline without the single filter graph having to special-case
+    # every combination of them.
+    if scenes and (len(scenes) > MAX_IMAGE_SLOTS
+                   or any(s.get("media_kind") == "video" for s in scenes)):
         return render_scenes_piecewise(spec, output_path)
     run_ffmpeg(build_ffmpeg_command(spec, output_path))
     return output_path

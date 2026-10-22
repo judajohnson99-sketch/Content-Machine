@@ -24,12 +24,14 @@ export function ProductionHeader({
   assets,
   status,
   runs,
+  compact = false,
 }: {
   videoId: string;
   project: ProjectDetail | undefined;
   assets: ProjectAssets | undefined;
   status: StatusReport | undefined;
   runs: LatestRuns | undefined;
+  compact?: boolean;
 }) {
   const progress = deriveProgress(assets, status, runs);
   const next = nextAction(progress, status, videoId);
@@ -82,11 +84,11 @@ export function ProductionHeader({
         </div>
       </div>
 
-      <ol className={styles.phases}>
+      {!compact && <ol className={styles.phases}>
         {progress.phases.map((phase) => (
           <PhaseCell key={phase.id} phase={phase} />
         ))}
-      </ol>
+      </ol>}
 
       <details className={styles.technical}>
         <summary>Technical details</summary>

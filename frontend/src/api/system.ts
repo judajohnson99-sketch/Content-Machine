@@ -42,6 +42,10 @@ export function gpuJobAssetUrl(jobId: string, index: number): string {
   return `${API_BASE_URL}/system/gpu-jobs/${encodeURIComponent(jobId)}/assets/${index}/`;
 }
 
+export function saveGpuJobAsset(jobId: string, index: number): Promise<{ asset: unknown; id: string }> {
+  return apiPost<{ asset: unknown; id: string }>(`/system/gpu-jobs/${encodeURIComponent(jobId)}/assets/${index}/save/`, {});
+}
+
 export interface RecentRuns {
   active: PipelineRun[];
   recent: PipelineRun[];

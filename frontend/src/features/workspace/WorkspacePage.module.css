@@ -258,3 +258,12 @@
 .backLink:hover {
   color: var(--text-primary);
 }
+.steps { display: flex; overflow-x: auto; gap: var(--space-1); padding: var(--space-2); background: var(--bg-glass); border-radius: var(--radius-lg); }
+.step { flex: 1 0 auto; display: flex; gap: var(--space-2); align-items: center; padding: var(--space-4); border: 0; border-radius: var(--radius-md); color: var(--text-secondary); background: transparent; cursor: pointer; font: inherit; }
+.step span { color: var(--text-tertiary); font-size: var(--text-xs); }
+.step:hover { background: var(--tint-2); color: var(--text-primary); }
+.selectedStep { background: var(--accent-bg); color: var(--text-primary); box-shadow: var(--sheen-subtle); }
+.selectedStep span { color: var(--accent); }
+.advanced { color: var(--text-secondary); padding: var(--space-4) 0; }
+.advanced summary { cursor: pointer; padding-bottom: var(--space-4); }
+@media (max-width: 600px) { .step { padding: var(--space-3); } }

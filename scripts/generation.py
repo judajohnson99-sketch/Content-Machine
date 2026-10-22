@@ -501,12 +501,13 @@ class ComfyUIProvider(Provider):
         if not path.is_file():
             raise GenerationError(f"ComfyUI workflow template not found: {path}")
         raw = path.read_text()
-        latent_width, latent_height = latent_size(request.width, request.height)
+        latent_width, latent_height = self._native_size(request)
         substitutions = {
             "%prompt%": request.prompt,
             "%negative%": request.negative_prompt,
             "%width%": str(request.width),
             "%height%": str(request.height),
+            "%count%": str(request.count),
             "%latent_width%": str(latent_width),
             "%latent_height%": str(latent_height),
             "%seed%": str(request.seed),
@@ -523,6 +524,40 @@ class ComfyUIProvider(Provider):
         # Underscore keys are template documentation, not nodes; ComfyUI would
         # reject them for having no class_type.
         return {k: v for k, v in graph.items() if not k.startswith("_")}
+
+    def _native_size(self, request):
+        """Use the validated 3GB landscape profile; preserve operator budgets."""
+        if not _env("COMFYUI_LATENT_MAX_PIXELS"):
+            total = self.vram_total_mb()
+            # The verified 3GB profile is not a promise for smaller cards.
+            if (total is not None and 2560 <= total <= 3072
+                    and request.width * 9 == request.height * 16
+                    and request.width >= 768):
+                return 768, 432
+        return latent_size(request.width, request.height)
+
+    @staticmethod
+    def _finish_size(assets, width, height):
+        """Finish a small diffusion result on CPU without another VRAM pass."""
+        for asset in assets:
+            path = Path(asset)
+            target = path.with_name(f"{path.stem}.sized{path.suffix}")
+            try:
+                result = subprocess.run(
+                    ["ffmpeg", "-nostdin", "-y", "-v", "error", "-threads", "1",
+                     "-i", str(path), "-vf", f"scale={width}:{height}:flags=lanczos",
+                     "-frames:v", "1", "-threads", "1", str(target)],
+                    capture_output=True, text=True, timeout=120)
+                if result.returncode:
+                    raise GenerationError(
+                        "The image was generated, but preparing its final size failed: "
+                        + result.stderr.strip()[-600:])
+                target.replace(path)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise GenerationError(
+                    f"The image was generated, but preparing its final size failed: {exc}") from exc
+            finally:
+                target.unlink(missing_ok=True)
 
     def _post(self, endpoint, payload, timeout):
         data = json.dumps(payload).encode("utf-8")
@@ -551,6 +586,34 @@ class ComfyUIProvider(Provider):
         long render is not reaped mid-flight. Callers that do not care pass
         nothing and the behaviour is unchanged.
         """
+        # Not every deployed ComfyUI workflow exposes a batch-size input. A
+        # manual Image Lab request must still honour count, so use one
+        # deterministic prompt per requested result when count > 1. This is
+        # also safe for older worker machines whose workflow predates the
+        # %count% placeholder.
+        if request.count > 1:
+            assets = []
+            prompt_ids = []
+            first = None
+            for offset in range(request.count):
+                single = GenerationRequest(
+                    prompt=request.prompt, negative_prompt=request.negative_prompt,
+                    width=request.width, height=request.height, count=1,
+                    seed=request.seed + offset, model=request.model,
+                    style=request.style, require_depicted=request.require_depicted,
+                    params=request.params)
+                result = self.generate(single, out_dir, timeout=timeout, progress=progress)
+                first = first or result
+                assets.extend(result.get("assets") or [])
+                if result.get("provider_job_id"):
+                    prompt_ids.append(str(result["provider_job_id"]))
+            return {
+                **(first or {}), "assets": assets,
+                "provider_job_id": ",".join(prompt_ids),
+                "notes": (f"{len(assets)} image(s) rendered sequentially as individual "
+                          f"ComfyUI jobs. {(first or {}).get('notes', '')}"),
+            }
+
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         workflow_path = self._select_workflow_path()
@@ -575,13 +638,23 @@ class ComfyUIProvider(Provider):
         prompt_id = submitted.get("prompt_id")
         if not prompt_id:
             raise GenerationError(f"ComfyUI returned no prompt_id: {submitted}")
-        latent_width, latent_height = latent_size(request.width, request.height)
+        latent_width, latent_height = self._native_size(request)
+        # Custom templates may use final-size inputs instead of latent inputs.
+        latents = [node.get("inputs", {}) for node in workflow.values()
+                   if isinstance(node, dict) and node.get("class_type") == "EmptyLatentImage"]
+        if len(latents) == 1:
+            latent_width = int(latents[0].get("width", latent_width))
+            latent_height = int(latents[0].get("height", latent_height))
 
         _notify(progress, "submitted", prompt_id)
         outputs = self._await_outputs(prompt_id, timeout, progress)
         assets = self._download(outputs, out_dir, request)
         if not assets:
             raise GenerationError(f"ComfyUI job {prompt_id} produced no images")
+        upscaled_on_cpu = (not upscaled_in_graph
+                           and (latent_width, latent_height) != (request.width, request.height))
+        if upscaled_on_cpu:
+            self._finish_size(assets, request.width, request.height)
         if upscaled_in_graph:
             notes = (f"generated on ComfyUI at {self.url} via "
                      f"{Path(workflow_path).name}, latent "
@@ -589,8 +662,9 @@ class ComfyUIProvider(Provider):
         else:
             notes = (f"generated on ComfyUI at {self.url} via "
                      f"{Path(workflow_path).name}, native "
-                     f"{latent_width}x{latent_height} (no in-graph upscale; "
-                     f"{request.width}x{request.height} requested, not yet reached)")
+                     f"{latent_width}x{latent_height}" +
+                     (f" -> {request.width}x{request.height} (CPU Lanczos upscale)"
+                      if upscaled_on_cpu else " (requested size)"))
         return {
             "assets": assets,
             "provider_job_id": prompt_id,
@@ -599,12 +673,12 @@ class ComfyUIProvider(Provider):
             "model": self.resolve_model(request),
             "cost_usd": 0.0,
             "notes": notes,
-            # False means the asset is at native generation resolution, not
-            # the request's width/height - a later upscale pass (ffmpeg at
-            # render time, or a higher-VRAM provider) still owes the rest.
             "upscaled_in_graph": upscaled_in_graph,
+            "upscaled_on_cpu": upscaled_on_cpu,
             "native_width": latent_width,
             "native_height": latent_height,
+            "final_width": request.width,
+            "final_height": request.height,
         }
 
     def _await_outputs(self, prompt_id, timeout, progress=None):
@@ -693,6 +767,7 @@ def validate_workflow(path):
         "%prompt%": request.prompt, "%negative%": request.negative_prompt,
         "%width%": str(request.width), "%height%": str(request.height),
         "%latent_width%": str(latent_width), "%latent_height%": str(latent_height),
+        "%count%": str(request.count),
         "%seed%": str(request.seed), "%model%": request.model,
     }
     substituted = raw

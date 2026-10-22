@@ -230,6 +230,9 @@
 
 body {
   margin: 0;
+  font-family: var(--sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
   color: var(--text-primary);
   /* Atmospheric foundation: a deep midnight field with two soft glows -
      indigo high-left, aqua low-right - fixed so the page scrolls over it. */

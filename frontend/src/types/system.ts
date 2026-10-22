@@ -92,6 +92,7 @@ export type GpuJobState =
   | "CANCELLED";
 
 export interface GpuJob {
+  request?: { prompt: string; negative_prompt?: string | null; width: number; height: number; model?: string | null };
   job_id: string;
   state: GpuJobState;
   wait_reason: string | null;

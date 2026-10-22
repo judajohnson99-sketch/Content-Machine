@@ -65,6 +65,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const nav: NavItem[] = [
     { to: "/", label: "Dashboard", icon: <GridIcon /> },
     { to: "/projects/new", label: "New Production", icon: <PlayIcon /> },
+    { to: "/media", label: "Media library", icon: <GridIcon /> },
     { to: "/review", label: "Review Center", icon: <CheckCircleIcon />, count: reviewCount },
   ];
 
@@ -163,7 +164,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
         <div className={styles.spacer} />
 
-        <section className={styles.systemPanel} aria-label="System status">
+        <details className={styles.systemPanel} aria-label="System status"><summary>Studio availability</summary>
           <div className={styles.systemHead}>
             <span className={styles.systemTitle}>System</span>
             {activeCount > 0 && (
@@ -219,7 +220,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               </span>
             </li>
           </ul>
-        </section>
+        </details>
 
         <div className={styles.account}>
           <span className={styles.accountWho} title={identity.data?.reviewer ?? ""}>
@@ -252,7 +253,7 @@ function BrandMark({ compact = false, collapsed = false }: { compact?: boolean; 
       {!compact && !collapsed && (
         <span className={styles.brandText}>
           <span className={styles.brandName}>Content Machine</span>
-          <span className={styles.brandSub}>Control Center</span>
+          <span className={styles.brandSub}>Creator studio</span>
         </span>
       )}
       {compact && <span className={styles.brandName}>Content Machine</span>}

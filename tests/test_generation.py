@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -308,6 +309,7 @@ class FakeComfyHandler(BaseHTTPRequestHandler):
     # What the stand-in reports as installed. Tests that need "no checkpoint"
     # or "a different one" override this on the class.
     checkpoints = ["test-checkpoint.safetensors", "other.safetensors"]
+    events = []
 
     def do_GET(self):
         if self.path.startswith("/system_stats"):
@@ -347,7 +349,8 @@ class FakeComfyHandler(BaseHTTPRequestHandler):
                         {"filename": "content-machine_0001.png",
                          "subfolder": "", "type": "output"}]}}}})
         elif self.path.startswith("/view"):
-            body = b"\x89PNG\r\n\x1a\nFAKE"
+            self.events.append(("download", None))
+            body = (ROOT / "tests" / "fixtures" / "images" / "01_red.png").read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "image/png")
             self.send_header("Content-Length", str(len(body)))
@@ -358,7 +361,7 @@ class FakeComfyHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
-        self.rfile.read(length)
+        self.events.append(("submit", json.loads(self.rfile.read(length))))
         if self.behaviour["mode"] == "reject":
             self._json(400, {"error": "bad workflow"})
         else:
@@ -419,6 +422,13 @@ class ComfyUIAdapterTestCase(unittest.TestCase):
         self.assertEqual(len(result["assets"]), 1)
         self.assertTrue(result["assets"][0].is_file())
         self.assertTrue(result["assets"][0].read_bytes().startswith(b"\x89PNG"))
+
+    def test_count_honours_multiple_results_even_with_single_image_workflow(self):
+        result = self.provider.generate(
+            generation.GenerationRequest(prompt="a lit window", count=2, seed=7),
+            self.tmp, timeout=20)
+        self.assertEqual(len(result["assets"]), 2)
+        self.assertEqual(len(set(map(str, result["assets"]))), 2)
 
     def test_rejected_workflow_raises(self):
         FakeComfyHandler.behaviour["mode"] = "reject"
@@ -537,7 +547,7 @@ class LowVramWorkflowTestCase(unittest.TestCase):
     def test_default_workflow_renders_small_and_upscales_to_the_request(self):
         request = generation.GenerationRequest(prompt="x", width=1920, height=1080)
         graph = self.provider._load_workflow(request)
-        self.assertEqual((graph["5"]["inputs"]["width"], graph["5"]["inputs"]["height"]), (680, 384))
+        self.assertEqual((graph["5"]["inputs"]["width"], graph["5"]["inputs"]["height"]), (768, 432))
         self.assertEqual((graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]), (1920, 1080))
         self.assertEqual(graph["9"]["inputs"]["images"], ["10", 0])
         self.assertEqual(graph["4"]["inputs"]["ckpt_name"], "test-checkpoint.safetensors")
@@ -585,9 +595,9 @@ class LowVramWorkflowTestCase(unittest.TestCase):
             generation.GenerationRequest(prompt="x", width=1920, height=1080, count=1),
             self.tmp, timeout=5)
         self.assertEqual(result["model"], "test-checkpoint.safetensors")
-        self.assertIn("680x384 -> 1920x1080", result["notes"])
+        self.assertIn("768x432 -> 1920x1080", result["notes"])
         self.assertTrue(result["upscaled_in_graph"])
-        self.assertEqual((result["native_width"], result["native_height"]), (680, 384))
+        self.assertEqual((result["native_width"], result["native_height"]), (768, 432))
 
 
 class VramTieredWorkflowTestCase(unittest.TestCase):
@@ -613,8 +623,13 @@ class VramTieredWorkflowTestCase(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="cm-comfy-vram-"))
         self._threshold_env = os.environ.pop("COMFYUI_UPSCALE_MIN_VRAM_MB", None)
         self._workflow_env = os.environ.pop("COMFYUI_WORKFLOW", None)
+        self._budget_env = os.environ.pop("COMFYUI_LATENT_MAX_PIXELS", None)
+        FakeComfyHandler.events = []
 
     def tearDown(self):
+        os.environ.pop("COMFYUI_LATENT_MAX_PIXELS", None)
+        if self._budget_env is not None:
+            os.environ["COMFYUI_LATENT_MAX_PIXELS"] = self._budget_env
         os.environ.pop("COMFYUI_UPSCALE_MIN_VRAM_MB", None)
         if self._threshold_env is not None:
             os.environ["COMFYUI_UPSCALE_MIN_VRAM_MB"] = self._threshold_env
@@ -630,6 +645,7 @@ class VramTieredWorkflowTestCase(unittest.TestCase):
         graph = provider._load_workflow(request)
         self.assertNotIn("10", graph)
         self.assertEqual(graph["9"]["inputs"]["images"], ["8", 0])
+        self.assertEqual(graph["5"]["inputs"], {"width": 768, "height": 432, "batch_size": 1})
 
     def test_a_large_card_keeps_the_upscale_template(self):
         os.environ["COMFYUI_UPSCALE_MIN_VRAM_MB"] = "1024"
@@ -646,14 +662,62 @@ class VramTieredWorkflowTestCase(unittest.TestCase):
         graph = provider._load_workflow(request)
         self.assertIn("10", graph)
 
-    def test_generate_reports_native_resolution_when_not_upscaled(self):
+    def test_generate_finishes_full_size_on_cpu_and_records_native_resolution(self):
         provider = generation.ComfyUIProvider(url=self.url)
         result = provider.generate(
             generation.GenerationRequest(prompt="x", width=1920, height=1080, count=1),
             self.tmp, timeout=5)
         self.assertFalse(result["upscaled_in_graph"])
-        self.assertEqual((result["native_width"], result["native_height"]), (680, 384))
-        self.assertIn("not yet reached", result["notes"])
+        self.assertTrue(result["upscaled_on_cpu"])
+        self.assertEqual((result["native_width"], result["native_height"]), (768, 432))
+        self.assertEqual((result["final_width"], result["final_height"]), (1920, 1080))
+        self.assertIn("CPU Lanczos upscale", result["notes"])
+        self.assert_image_size(result["assets"][0], 1920, 1080)
+
+    def assert_image_size(self, path, width, height):
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=width,height", "-of", "json", str(path)],
+            check=True, capture_output=True, text=True)
+        stream = json.loads(probe.stdout)["streams"][0]
+        self.assertEqual((stream["width"], stream["height"]), (width, height))
+
+    def test_multi_image_is_sequential_batch_one_and_each_result_reaches_final_size(self):
+        result = generation.ComfyUIProvider(url=self.url).generate(
+            generation.GenerationRequest(prompt="moonlit trees", count=3, seed=12),
+            self.tmp, timeout=5)
+        self.assertEqual([kind for kind, _ in FakeComfyHandler.events],
+                         ["submit", "download"] * 3)
+        self.assertEqual(len(set(result["assets"])), 3)
+        for offset, (_, payload) in enumerate(FakeComfyHandler.events[::2]):
+            graph = payload["prompt"]
+            self.assertEqual(graph["5"]["inputs"],
+                             {"width": 768, "height": 432, "batch_size": 1})
+            self.assertEqual(graph["3"]["inputs"]["seed"], 12 + offset)
+            self.assert_image_size(result["assets"][offset], 1920, 1080)
+        self.assertIn("CPU Lanczos upscale", result["notes"])
+
+    def test_explicit_budget_and_other_hardware_keep_existing_sizing(self):
+        request = generation.GenerationRequest(prompt="x")
+        provider = generation.ComfyUIProvider(url=self.url)
+        os.environ["COMFYUI_LATENT_MAX_PIXELS"] = str(512 * 512)
+        self.assertEqual(provider._native_size(request), (680, 384))
+        os.environ["COMFYUI_LATENT_MAX_PIXELS"] = str(1024 * 1024)
+        self.assertEqual(provider._native_size(request), generation.latent_size(1920, 1080))
+        os.environ.pop("COMFYUI_LATENT_MAX_PIXELS")
+        for memory in (2048, 8192, None):
+            with patch.object(provider, "vram_total_mb", return_value=memory):
+                self.assertEqual(provider._native_size(request), (680, 384))
+        self.assertEqual(provider._native_size(
+            generation.GenerationRequest(prompt="x", width=512, height=512)), (512, 512))
+
+    def test_cpu_resize_failure_preserves_original_and_is_not_success(self):
+        provider = generation.ComfyUIProvider(url=self.url)
+        with patch.object(generation.subprocess, "run", side_effect=FileNotFoundError("ffmpeg missing")):
+            with self.assertRaisesRegex(generation.GenerationError, "preparing its final size failed"):
+                provider.generate(generation.GenerationRequest(prompt="x"), self.tmp, timeout=5)
+        self.assertEqual(len(list(self.tmp.glob("*.png"))), 1)
+        self.assertFalse(list(self.tmp.glob("*.sized.png")))
 
     def test_an_unreachable_worker_keeps_the_deployed_default(self):
         """A card that cannot say its VRAM is not guessed at."""

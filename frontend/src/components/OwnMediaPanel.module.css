@@ -1,0 +1,480 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --- notices -------------------------------------------------------- */
+
+.alert {
+  border: 1px solid var(--danger-border);
+  background: var(--danger-bg);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+}
+
+.alertTitle {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.alertList {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  list-style: disc;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.alertHint {
+  margin-top: 6px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.stale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  border: 1px solid var(--warning-border);
+  background: var(--warning-bg);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+}
+
+.staleText {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  margin: 0;
+  flex: 1 1 260px;
+}
+
+.staleActions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* --- roles ---------------------------------------------------------- */
+
+.roles {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.role {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  background: var(--tint-1);
+}
+
+.roleHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.roleTitle {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.roleHint {
+  margin: 2px 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  max-width: 62ch;
+}
+
+.chosen {
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.chosenItem {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+}
+
+.chosenThumb {
+  width: 56px;
+  height: 36px;
+  flex: none;
+  object-fit: cover;
+  border-radius: var(--radius-xs);
+  background: var(--bg-well, var(--glass-well));
+}
+
+.chosenMeta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.chosenName {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.order {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.chosenSub {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.chosenAudio {
+  height: 34px;
+  /* The player is this row's preview, so give it room rather than
+     squeezing its scrubber out of existence. */
+  flex: 1 1 280px;
+  min-width: 240px;
+}
+
+/* --- picker --------------------------------------------------------- */
+
+.picker {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.pickerBar {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.search {
+  flex: 1 1 240px;
+}
+
+.searchInput,
+.field input {
+  min-height: 36px;
+  padding: 0 12px;
+  width: 100%;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-inset);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+
+.searchInput:focus,
+.field input:focus {
+  border-color: var(--accent-border);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+.grid {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-3);
+  /* A library is long. Keep the chooser a panel, not a page. */
+  max-height: 520px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.moreToggle {
+  align-self: flex-start;
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.moreToggle:hover {
+  color: var(--text-primary);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  padding: var(--space-2);
+}
+
+.cardSelected {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 1px var(--accent-border);
+}
+
+.cardBlocked {
+  opacity: 0.78;
+}
+
+.preview {
+  position: relative;
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+  background: var(--glass-well);
+  min-height: 108px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.previewMedia {
+  width: 100%;
+  height: 124px;
+  object-fit: cover;
+  display: block;
+}
+
+.previewAudio {
+  width: 100%;
+  padding: var(--space-3) 6px;
+}
+
+.previewMissing {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  padding: var(--space-4);
+  text-align: center;
+}
+
+.badgeOrder {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  min-width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  background: var(--grad-accent);
+  color: var(--text-on-accent);
+  font-size: 11px;
+  font-weight: var(--weight-semibold);
+}
+
+.cardBody {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.cardDescription {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.undescribed {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.cardMeta {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  /* Paths and content hashes have no spaces to break at, and an
+     unbreakable string overflows its card and lands on the next one. */
+  overflow-wrap: anywhere;
+}
+
+.problems {
+  list-style: disc;
+  margin: 2px 0 0;
+  padding-left: 16px;
+  font-size: var(--text-xs);
+  color: var(--warning-fg);
+  overflow-wrap: anywhere;
+}
+
+.cardBody > * {
+  min-width: 0;
+}
+
+.cardActions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: auto;
+}
+
+.pickerFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.pickerCount {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.pickerActions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.pickerError {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--danger-fg);
+}
+
+/* --- forms ---------------------------------------------------------- */
+
+.form,
+.scan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--tint-2);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field > span {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.rights {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.rights legend {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  padding: 0 6px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--indigo);
+}
+
+.formActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.scan {
+  flex: 1 1 280px;
+}
+
+.scanNote,
+.scanResult {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.scanResult {
+  color: var(--text-secondary);
+}
+
+@media (max-width: 720px) {
+  .roleHead {
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .chosenAudio {
+    max-width: 100%;
+  }
+
+  /* On one column there is no reason to truncate: the sentence is what
+     tells the owner which of their shots this is. */
+  .chosenName {
+    white-space: normal;
+    align-items: flex-start;
+  }
+}
+.expandImage { display: block; width: 100%; padding: 0; background: var(--bg-well); border: 0; cursor: zoom-in; }
