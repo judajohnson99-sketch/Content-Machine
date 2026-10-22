@@ -35,6 +35,8 @@ path. The canonical suite also exposes an idempotent-job reuse defect: a
 completed job can retain an old project output path, leaving a new production
 without its images.
 
+Tooling: project skills (shared, web, `cm-*`) are vendored in `.claude/skills/`; see its REGISTRY.md.
+
 Next: update the PC worker checkout/agent, provide one working search
 provider, then repair/revalidate generation-job output ownership before
 claiming the full creator workflow complete.
