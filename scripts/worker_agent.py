@@ -81,6 +81,10 @@ class AgentError(Exception):
     """The agent cannot run - misconfiguration or the control plane refusing."""
 
 
+# Floor on how often a background beat is sent while the agent is busy.
+MIN_BEAT_SECONDS = 5
+
+
 def _truthy(value):
     return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -393,6 +397,19 @@ class Agent:
         """
         if self.vision is None or not assets:
             return None
+        stop = threading.Event()
+
+        def beat():
+            # A judging pass can outlast the ONLINE window; without this a
+            # busy, healthy worker would look gone to the dashboard.
+            while not stop.wait(max(MIN_BEAT_SECONDS, self.heartbeat_seconds)):
+                try:
+                    self.heartbeat(current_job=job_id)
+                except AgentError:
+                    pass
+
+        thread = threading.Thread(target=beat, daemon=True)
+        thread.start()
         try:
             self._progress(job_id, lease_id, None, "judging the rendered image(s)")
             self.vision.budget_seconds = min(self.vision.budget_seconds, lease_seconds / 3)
@@ -404,6 +421,9 @@ class Agent:
         except Exception:  # noqa: BLE001 - advisory work must never fail a render
             log.exception("vision pass failed; delivering the render without it")
             return None
+        finally:
+            stop.set()
+            thread.join(timeout=1)
 
     def _progress(self, job_id, lease_id, state, detail, provider_job_id=None):
         payload = {"lease_id": lease_id, "detail": detail}

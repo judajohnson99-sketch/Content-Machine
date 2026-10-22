@@ -1546,6 +1546,28 @@ class AgentVisionTests(ApiTestCase):
             self.assertEqual(self.agent.poll_once(), worker.SUCCEEDED)
         self.assertNotIn("vision", worker.load_job(job["job_id"]))
 
+    def test_the_worker_keeps_beating_while_it_judges(self):
+        beats = []
+
+        def slow_judge(runner, items):
+            time.sleep(0.5)
+            return vision.BatchResult()
+        real = self.agent.heartbeat
+        self.agent.heartbeat = lambda current_job=None: beats.append(current_job) or real(current_job)
+        # The claim hands the agent the control plane's cadence.
+        with unittest.mock.patch.object(vision.Runner, "judge_images", slow_judge), \
+                unittest.mock.patch.object(worker, "heartbeat_seconds", return_value=0.05), \
+                unittest.mock.patch.object(worker_agent, "MIN_BEAT_SECONDS", 0.05):
+            job = self.enqueue()
+            self.assertEqual(self.agent.poll_once(), worker.SUCCEEDED)
+        self.assertTrue(any(b == job["job_id"] for b in beats),
+                        "no heartbeat was sent during the vision pass")
+
+    def test_the_agent_waits_for_the_gpu_longer_than_a_vision_batch_can_hold_it(self):
+        with unittest.mock.patch.dict(os.environ, {"GPU_LEASE_WAIT_SECONDS": ""}):
+            wait = gpu_coordination.lease_wait_seconds()
+        self.assertGreater(wait, vision.DEFAULT_BUDGET_SECONDS + vision.DEFAULT_TIMEOUT)
+
     def test_unusable_model_output_is_not_a_score(self):
         WorkerOllama.reply = {"adherence": 11}
         job = self.enqueue()

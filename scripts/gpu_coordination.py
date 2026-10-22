@@ -35,8 +35,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # A render that is mid-flight holds the lease for as long as it takes; a
-# caller that must not wait for it passes wait_seconds=0.
-DEFAULT_LEASE_WAIT_SECONDS = 180.0
+# caller that must not wait for it passes wait_seconds=0. The worker agent
+# waits, and must outlast a vision batch run elsewhere on the same host
+# (a time budget of 300s, plus the one model call it may overrun by), or a
+# healthy job would fail for want of a lock.
+DEFAULT_LEASE_WAIT_SECONDS = 450.0
 POLL_SECONDS = 0.25
 DEFAULT_PROBE_TIMEOUT = 3.0
 
