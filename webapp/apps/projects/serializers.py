@@ -98,3 +98,34 @@ class ProjectDeleteSerializer(serializers.Serializer):
     confirm_video_id = serializers.CharField(max_length=64)
     reason = serializers.CharField(required=False, allow_blank=True, default="",
                                    max_length=500)
+
+
+class VisualAssetSearchSerializer(serializers.Serializer):
+    """POST .../scenes/{scene}/assets/ - what to look for. All optional: with
+    nothing given, the scene's own plan supplies the search words."""
+    query = serializers.CharField(required=False, allow_blank=True, default="", max_length=200)
+    kind = serializers.ChoiceField(choices=("image", "video"), required=False, allow_null=True,
+                                   default=None)
+    sources = serializers.ListField(
+        child=serializers.ChoiceField(choices=("library", "stock", "generated")),
+        required=False, allow_null=True, default=None)
+    more = serializers.BooleanField(required=False, default=False)
+    pages = serializers.DictField(child=serializers.IntegerField(min_value=1),
+                                  required=False, allow_null=True, default=None)
+
+
+class VisualAssetChoiceSerializer(serializers.Serializer):
+    """POST .../assets/select/ and .../assets/save/. ``approve`` is the
+    owner's explicit first-use approval of external media; it never defaults
+    on, and the licence it approves is the one stored at search time."""
+    candidate_id = serializers.CharField(max_length=300)
+    approve = serializers.BooleanField(required=False, default=False)
+    note = serializers.CharField(required=False, allow_blank=True, default="", max_length=1000)
+
+
+class SceneRegenerateSerializer(serializers.Serializer):
+    seed = serializers.IntegerField(required=False, allow_null=True, default=None)
+    prompt = serializers.CharField(required=False, allow_blank=True, allow_null=True,
+                                   default=None, max_length=4000)
+    negative_prompt = serializers.CharField(required=False, allow_blank=True, allow_null=True,
+                                            default=None, max_length=2000)

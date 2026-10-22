@@ -14,6 +14,10 @@ CLI (./content-machine)           thin wrapper; fixes the working directory
         ├── scripts/render.py     spec + assets -> MP4 (ffmpeg)
         ├── scripts/qc.py         probes a finished MP4 for faults
         └── scripts/make_visuals.py procedural plates + provenance forensics
+scripts/visual_assets.py          per-scene sourcing: library + stock + generation
+      ├── scripts/stock_providers.py  Pexels/Pixabay/Unsplash adapters (official APIs)
+      ├── scripts/asset_ranking.py    one explainable ranking for all candidates
+      └── scripts/asset_licensing.py  stock rights records + the approval policy
 scripts/experiment.py             content hypotheses, ranking, scaffolding
 scripts/knowledge.py              Obsidian vault + derived Graphify graph
 scripts/worker.py                 remote GPU worker control plane (queue,
@@ -70,6 +74,30 @@ caller ──► GenerationRequest ──► Router ──► Provider ──►
 Adding a provider: subclass `Provider`, add it to `build_providers()`, add it
 to `DEFAULT_ORDER` if it should be routed by default, and add tests using the
 `FakeProvider` harness in `tests/test_generation.py`.
+
+## Visual asset sourcing
+
+`scripts/visual_assets.py` turns a storyboard scene into ranked *candidates*
+(`library`, `stock`, `generated`, `cloud`) and, when a person chooses one,
+into the thing the pipeline already understands: a catalog asset pinned to
+the scene via `ownermedia` (`owner_media.visuals[].scene_id`, with `lineage`).
+There is no second asset path; render, Review Center and Kdenlive read the
+same selection. Rules to keep:
+
+- Discovery reads and ranks; it never downloads, generates or spends.
+- A stock candidate's `rights.commercial_use` is false until
+  `asset_licensing.approve()`; `ownermedia.verification_problems` blocks
+  external media that lacks a genuine approval record.
+- Rights are read from the candidate stored at search time, never from a
+  request body.
+- Choosing a generation delegates to the `scenes` stage (router + GPU
+  worker queue); a GPU that is off is a deferral, never a failure.
+- Uncalibrated vision/CLIP similarity is advisory in ranking and never
+  raises confidence. Nothing here sets `production_grade`.
+- Graduated autonomy is a disabled row in `AUTONOMY_LEVELS`.
+
+Per-project state: `projects/<id>/visual_assets.json` (last search per scene
+and the decision). Per-asset history: `usage` in the catalog.
 
 ## Remote GPU worker
 
