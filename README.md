@@ -190,7 +190,7 @@ actually decodes (not merely that it exists).
 ./content-machine run my-video
 ```
 
-Runs validate → render → thumbnails → QC → package.
+Runs validate → render → thumbnails → QC → perceptual quality → package.
 
 Exit codes: `0` READY_FOR_REVIEW · `2` NEEDS_ATTENTION (e.g. QC failed or
 metadata incomplete) · `1` hard failure.
@@ -198,6 +198,8 @@ metadata incomplete) · `1` hard failure.
 Outputs `projects/my-video/output/`:
 - `<video-id>.mp4` — the video
 - `qc_report.json` — every check with pass/fail and detail
+- `quality_report.json` — the perceptual quality assessment (see
+  [Perceptual quality](#perceptual-quality))
 - `publication_package.json` — MP4 + sha256, thumbnail, title, description,
   tags, QC result, generation details, and a `publish` block that stays
   `approved_by_human: false` until a human acts
@@ -677,6 +679,41 @@ Re-running an identical request reuses the job, and the existing claim stands.
 READY_FOR_REVIEW means *assembled and ready to be checked*, not cleared to
 publish — so items like "fact-check the narration" belong here rather than
 as blockers.
+
+### Perceptual quality
+
+QC answers whether a render is technically valid. `scripts/quality.py`
+answers whether a valid render has problems a viewer or listener would
+notice, judged against the production's own intent — darkness, stillness and
+a steady bed are defects in an explainer and the point of a sleep video. It
+runs on every `run`, and can be re-run without re-rendering:
+
+```bash
+./content-machine quality my-video
+```
+
+| Evaluation | What it measures |
+|---|---|
+| Scene imagery vs creative intent | each distinct scene image's lighting key, brightness and vividness against the viewing profile, and its colour against the direction's palette |
+| Scene depiction *(optional)* | a local vision model scores each image against its prompt (`QUALITY_VISION_URL` + `QUALITY_VISION_MODEL`, Ollama API; off by default, never a paid call) |
+| Scene-to-scene continuity | lightness and colour change between consecutive scenes, with tolerance that widens with dissolve length; scenes unlike the rest of the video |
+| Rendered frames | flash frames and frame-to-frame steps where the edit planned no cut, in the delivered MP4 |
+| Delivered soundtrack | the MP4's own audio re-measured against the composed track's criteria (only new problems are reported) |
+| Soundtrack dynamics | startle spikes, dropouts and loudness drift across the whole programme |
+| Soundtrack repetition | an audible loop, from the spectral shape's autocorrelation |
+
+Thresholds come from an intent profile (sleep / calm / narrative, from the
+listening context and the concept) and the visual direction's palette and
+lighting. Every finding says where it is (timestamp, scene ids) and every
+evaluation says how it was measured.
+
+Three rules: an evaluation that could not run is **Not evaluated** with its
+reason, never a pass; taste-dependent findings inform review and never block
+it — only objective defects in the delivered video (clipping, silence) join
+the gate, as does a report that no longer describes the video on disk; and an
+OK verdict means nothing measurable is wrong, not that the video is good.
+The report is shown in the Workspace (with a Re-assess action) and in the
+Review Center, ahead of the human grades.
 
 ## Experiments
 

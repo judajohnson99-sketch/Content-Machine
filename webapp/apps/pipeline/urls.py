@@ -12,6 +12,7 @@ urlpatterns = [
     path("<str:video_id>/run/", views.RunActionView.as_view(), name="stage-run"),
     path("<str:video_id>/produce/", views.ProduceActionView.as_view(), name="stage-produce"),
     path("<str:video_id>/editable/", views.EditableActionView.as_view(), name="stage-editable"),
+    path("<str:video_id>/quality/", views.QualityActionView.as_view(), name="stage-quality"),
     path("<str:video_id>/pipeline-runs/",
          views.PipelineRunListView.as_view(), name="pipeline-run-list"),
     path("<str:video_id>/pipeline-runs/<int:run_id>/",

@@ -8,6 +8,7 @@ import { ReviewCenterPage } from "./ReviewCenterPage";
 import * as assetsApi from "../../api/assets";
 import * as projectsApi from "../../api/projects";
 import * as reviewApi from "../../api/review";
+import * as qualityApi from "../../api/quality";
 import type { ProjectSummary } from "../../types/project";
 
 function renderPage() {
@@ -62,9 +63,11 @@ describe("ReviewCenterPage", () => {
       video_id: "abc", selected_title: "A Video",
       status: { overall: "READY_FOR_REVIEW", gate_digest: "d1" },
     });
+    vi.spyOn(qualityApi, "getQualityReport").mockResolvedValue(null);
     vi.spyOn(projectsApi, "getProjectStatus").mockResolvedValue({
       video_id: "abc", recorded: "READY_FOR_REVIEW", verdict: "READY_FOR_REVIEW",
       blocking: [], stale: false, digest_state: "MATCHES",
+      quality: { assessed: false, verdict: null, current: null, counts: null, unavailable: [] },
     });
     vi.spyOn(reviewApi, "listReviewDecisions").mockResolvedValue([]);
     vi.spyOn(assetsApi, "getAssets").mockResolvedValue({

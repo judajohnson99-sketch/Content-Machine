@@ -1,0 +1,131 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.stale {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--warning-border, var(--border-subtle));
+  border-radius: var(--radius-sm);
+  background: var(--warning-bg, var(--bg-inset));
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+
+.verdict {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.verdictLine,
+.counts,
+.coverage,
+.intent {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.counts {
+  font-variant-numeric: tabular-nums;
+}
+
+.evaluations {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.evaluation {
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.evalHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.evalTitle {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.optional {
+  font-weight: normal;
+  color: var(--text-tertiary, var(--text-secondary));
+}
+
+.summary,
+.reason {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.reason {
+  font-style: italic;
+}
+
+.findings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.finding {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.time {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-xs);
+  color: var(--accent-2);
+  background: var(--accent-2-bg);
+  border-radius: var(--radius-sm);
+  padding: 0 6px;
+  flex-shrink: 0;
+}
+
+.detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.method {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.method p {
+  margin: 4px 0 0;
+}
+
+.note {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}

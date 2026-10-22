@@ -10,32 +10,26 @@ The single resume file.
 
 ## Current Position
 
-Milestone: the dashboard is the product - a production now starts from a
-plain-language goal and runs to a reviewable 1080p deliverable without the
-CLI. Done: goal -> concept -> project -> research brief derivation
-(`scripts/goal.py`, POST /api/v1/projects/from-goal/); a piecewise renderer
-that removes the 24-scene ceiling, so a 30-minute video is 120 shots with
-real motion and dissolves instead of a slideshow; sourced findings now
-produce production directives (shot length, movement style, dissolve length,
-audio layers) that the storyboard and sound design actually apply, recorded
-with their evidence in `research_influence.json` and shown in the dashboard;
-procedural plates vary per scene prompt and carry real structure; Kdenlive
-export, permanent deletion and "produce at full length" are dashboard
-actions. Validated through the dashboard: a 90-second 1080p Dreamdrip
-excerpt, QC PASS 15/15, 15 shots across 8 motions, four cleared audio
-layers, editable Kdenlive archive.
+Milestone: Perceptual Quality System, phase 1 - done. Every render now gets
+`output/quality_report.json` from `scripts/quality.py`: scene imagery vs the
+direction's palette/lighting and the viewing profile, scene-to-scene
+continuity, rendered flashes/seams, the delivered soundtrack, dynamics
+(spikes, dropouts, drift) and loop repetition, all judged against the
+production's intent. Findings inform review (Workspace card with Re-assess,
+Review Center evidence); only objective delivered-video defects and a stale
+report reach the gate. `./content-machine quality <id>` and the `quality`
+web stage re-assess without re-rendering. Validated on a real 3-minute
+Dreamdrip production and a degraded copy that old QC passes everywhere.
 
-Blocker (needs the owner): real sourced research cannot run on this host.
-Gemini grounding returns RESOURCE_EXHAUSTED and the Anthropic key has no
-credit balance, so both configured search providers refuse. Every derived
-production therefore carries the new fail-closed gate blocker "research has
-not run". Also outstanding: no depicted-image provider (COMFYUI_URL unset,
-paid providers off), so visuals are abstracts and cannot be production-grade.
+Blockers unchanged (need the owner): no working search provider for sourced
+research; no depicted-image provider, so plates are abstracts. Scene
+depiction (vision model) reports "not evaluated" until QUALITY_VISION_URL and
+QUALITY_VISION_MODEL point at a local Ollama vision model.
 
-Next: top up one search provider and re-run research on
-`dreamdrip-rain-ambient-music-psychedelic-202610030311` to see directives
-drive the build end to end; then owner-media selection from `library/` in
-the dashboard.
+Next: point the depiction check at a local vision model on the GPU PC and
+calibrate it on depicted renders; validate a narrated production (needs the
+piper voice installed); then the earlier next steps (top up a search
+provider, owner-media selection from `library/`).
 
 ## Standing decisions
 
@@ -62,16 +56,12 @@ and are not restated here.
 
 ## Session Continuity
 
-Latest request: make Content Machine a genuinely usable autonomous
-production system operated from the dashboard. Built this session, all
-through `scripts/*.py` as the one domain layer: `scripts/goal.py`,
-`render.render_scenes_piecewise`, `research.production_directives`,
-`storyboard` directive/pacing handling, a prompt-varied procedural plate
-generator, `project.run_editable`, `project.delete_project`,
-`project.set_project_duration`, and the web/UI surface for all of it
-(GoalComposer, ResearchInfluencePanel, DeleteProduction, editable
-downloads, produce-at-full-length). `SEARCH_PROVIDER=anthropic` was added to
-`.env` and a second real search provider (`AnthropicSearchProvider`) written,
-but neither vendor will serve a search on the current credentials. A
-`claude-qa` superuser exists in webapp/db.sqlite3 purely for browser
-validation. No commits.
+Latest request: Phase 1 of the Perceptual Quality System - evaluate creative
+quality, not just technical validity. Built `scripts/quality.py`, wired into
+`project.run_pipeline` (stage 4b), the gate (`quality.blockers`),
+`status_report`, the package, a `quality` CLI/web stage, a
+`/quality-report/` endpoint and a dashboard QualityPanel. Thresholds were
+calibrated on the real production (vividness instead of raw chroma; sleep
+spike 6 LU; loop detection on masked spectral shape). Validation projects
+`dreamdrip-qa-01` and `dreamdrip-qa-bad` are local, untracked. `graphify` is
+not installed here, so the code and knowledge graphs were not refreshed.

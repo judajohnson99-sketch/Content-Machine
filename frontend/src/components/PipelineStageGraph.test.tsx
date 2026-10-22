@@ -16,7 +16,7 @@ function makeRun(overrides: Partial<PipelineRun>): PipelineRun {
 
 const emptyRuns: LatestRuns = {
   research: null, creative: null, storyboard: null, scenes: null,
-  audio: null, visuals: null, run: null, produce: null, editable: null,
+  audio: null, visuals: null, run: null, produce: null, editable: null, quality: null,
 };
 
 describe("PipelineStageGraph", () => {

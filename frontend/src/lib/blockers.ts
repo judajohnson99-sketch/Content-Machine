@@ -24,6 +24,24 @@ type Rule = {
 
 const RULES: Rule[] = [
   {
+    match: (r) => r.startsWith("perceptual quality assessment is stale"),
+    read: (_r, id) => ({
+      title: "The quality assessment describes an earlier render",
+      remedy:
+        "The video changed after it was assessed, so its findings no longer apply. Re-run the quality assessment - it does not re-render.",
+      action: { label: "See perceptual quality", to: `/projects/${id}#quality` },
+    }),
+  },
+  {
+    match: (r) => r.startsWith("perceptual quality defect"),
+    read: (_r, id) => ({
+      title: "The delivered video has an objective defect",
+      remedy:
+        "Only defects with no legitimate reading (clipping, silence) block review. Fix the cause and re-render.",
+      action: { label: "See perceptual quality", to: `/projects/${id}#quality` },
+    }),
+  },
+  {
     match: (r) => r.startsWith("provenance.images.production_grade is not set"),
     read: (_r, id) => ({
       title: "Nobody has judged the visuals yet",

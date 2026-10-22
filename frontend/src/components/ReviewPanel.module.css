@@ -223,3 +223,14 @@
   gap: var(--space-2);
   flex-wrap: wrap;
 }
+
+.quality {
+  margin-top: var(--space-2);
+}
+
+.quality > summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  margin-bottom: var(--space-2);
+}

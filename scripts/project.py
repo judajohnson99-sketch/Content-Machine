@@ -49,6 +49,7 @@ import make_visuals  # noqa: E402
 import media as media_mod  # noqa: E402
 import motion as motion_mod  # noqa: E402
 import qc  # noqa: E402
+import quality  # noqa: E402
 import render  # noqa: E402
 import research  # noqa: E402
 import sound_design  # noqa: E402
@@ -2431,6 +2432,7 @@ def gate_blockers(pdir, metadata, qc_status, qc_failures, has_thumbnail,
     blocking.extend(_visual_blockers(pdir, metadata, images_provenance))
     blocking.extend(_audio_blockers(pdir, metadata, audio_manifest))
     blocking.extend(_creative_quality_blockers(pdir, storyboard, audio_manifest))
+    blocking.extend(quality.blockers(pdir, pdir / "output" / f"{pdir.name}.mp4"))
 
     blocking.extend(_research_blockers(pdir))
 
@@ -2533,6 +2535,7 @@ def status_report(video_id):
             "blocking": [],
             "stale": None,
             "digest_state": None,
+            "quality": quality.summary(pdir, video_path),
         }
 
     qc_path = pdir / "output" / "qc_report.json"
@@ -2568,6 +2571,7 @@ def status_report(video_id):
         "blocking": blocking,
         "stale": recorded != verdict,
         "digest_state": digest_state,
+        "quality": quality.summary(pdir, video_path),
     }
 
 
@@ -3078,6 +3082,14 @@ def run_pipeline(video_id):
             (pdir / "output" / "qc_report.json").write_text(json.dumps(report, indent=2) + "\n")
             metadata["status"]["qc"] = report["status"]
 
+            # --- Stage 4b: perceptual quality -------------------------------------
+            # Technical validity above; whether it looks and sounds right for
+            # its intent here. Informs review - only objective defects reach
+            # the gate (quality.blockers) - and never fails the render.
+            log.info("=== Stage 4b: perceptual quality ===")
+            quality_report = assess_quality(pdir, metadata, board, raw_spec, output_path)
+            metadata["status"]["quality"] = (quality_report or {}).get("verdict", "UNAVAILABLE")
+
             # --- Stage 5: package --------------------------------------------------
             log.info("=== Stage 5/5: publication package ===")
             audio_manifest = {}
@@ -3169,6 +3181,14 @@ def run_pipeline(video_id):
                     ],
                 } if audio_manifest else None,
                 "qc": {"status": report["status"], "failures": report["failures"]},
+                # Perceptual findings inform the reviewer; the full report
+                # sits next to this package.
+                "perceptual_quality": {
+                    "verdict": quality_report.get("verdict"),
+                    "counts": quality_report.get("counts"),
+                    "unavailable": [u["id"] for u in quality_report["coverage"]["unavailable"]],
+                    "report": str(quality.report_path(pdir).relative_to(ROOT)),
+                } if quality_report else None,
                 # Things a human must confirm during review. Not blockers -
                 # READY_FOR_REVIEW means assembled and ready to be checked, not
                 # cleared to publish.
@@ -3211,6 +3231,80 @@ def run_pipeline(video_id):
 
 def cmd_run(args):
     return run_pipeline(args.video_id).exit_code
+
+
+def assess_quality(pdir, metadata, board, raw_spec, video_path):
+    """Run every perceptual evaluation and write output/quality_report.json.
+
+    Returns the report, or None if the assessment itself could not be set
+    up. Never raises: a render that cannot be assessed is reported as
+    unassessed, which the review surfaces as "not evaluated", never a pass.
+    """
+    try:
+        concept = _load_concept((metadata.get("experiment") or {}).get("concept_id"))
+        manifest_path = pdir / "audio" / "audio_manifest.json"
+        audio_manifest = (json.loads(manifest_path.read_text())
+                          if manifest_path.is_file() else {})
+        report = quality.assess(
+            pdir, video_path=video_path, metadata=metadata, storyboard=board,
+            audio_manifest=audio_manifest, concept=concept, spec=raw_spec,
+            holds_one_frame=holds_one_frame(concept))
+        quality.write_report(pdir, report)
+    except Exception:  # noqa: BLE001 - assessment must never fail a render
+        log.exception("perceptual quality assessment could not run")
+        return None
+    log.info("Perceptual quality: %s (%d to review, %d defect(s), %d note(s))",
+             report["verdict"], report["counts"]["warn"], report["counts"]["block"],
+             report["counts"]["info"])
+    for evaluation in report["evaluations"]:
+        log.info("  %-22s %-14s %s", evaluation["id"], evaluation["status"], evaluation["summary"])
+    return report
+
+
+def run_quality(video_id):
+    """Re-assess perceptual quality of the current render without re-rendering.
+
+    Useful after a vision model is configured, or to refresh a stale report.
+    The verdict is evidence for the reviewer: exit 2 only for an objective
+    defect, which the review gate also holds on.
+    """
+    with project_lock(video_id):
+        pdir = project_dir(video_id)
+        meta_path = pdir / "metadata.json"
+        if not meta_path.is_file():
+            return StageResult(False, 1, f"not a project: {video_id}")
+        video_path = pdir / "output" / f"{video_id}.mp4"
+        if not video_path.is_file():
+            log.error("Nothing to assess: %s has not been rendered", video_id)
+            return StageResult(False, 1, "not rendered")
+        metadata = json.loads(meta_path.read_text())
+        spec_path = pdir / "video_spec.json"
+        raw_spec = json.loads(spec_path.read_text()) if spec_path.is_file() else {}
+        report = assess_quality(pdir, metadata, storyboard_mod.load(video_id),
+                                raw_spec, video_path)
+        if report is None:
+            return StageResult(False, 1, "perceptual quality assessment could not run")
+        metadata.setdefault("status", {})["quality"] = report["verdict"]
+        save_metadata(pdir, metadata)
+        defect = report["verdict"] == quality.DEFECT
+        return StageResult(not defect, 2 if defect else 0, report["verdict"],
+                           {"verdict": report["verdict"], "counts": report["counts"],
+                            "report_path": str(quality.report_path(pdir))})
+
+
+def cmd_quality(args):
+    return run_quality(args.video_id).exit_code
+
+
+def quality_report(video_id):
+    """The perceptual quality report plus whether it is ``current`` for the
+    render on disk, or None when this project's render was never assessed."""
+    pdir = project_dir(video_id)
+    report = quality.load_report(pdir)
+    if report is None:
+        return None
+    report["current"] = quality.is_current(report, pdir / "output" / f"{video_id}.mp4")
+    return report
 
 
 def set_project_duration(video_id, seconds):
@@ -3645,6 +3739,11 @@ def main():
     p_run = sub.add_parser("run", help="validate -> render -> thumbnails -> QC -> package")
     p_run.add_argument("video_id")
     p_run.set_defaults(func=cmd_run)
+
+    p_quality = sub.add_parser(
+        "quality", help="re-assess the current render's perceptual quality (no re-render)")
+    p_quality.add_argument("video_id")
+    p_quality.set_defaults(func=cmd_quality)
 
     p_kdenlive = sub.add_parser(
         "kdenlive", help="build, verify and optionally render an editable Kdenlive project")

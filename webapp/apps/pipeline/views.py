@@ -79,6 +79,11 @@ class EditableActionView(StageActionView):
     stage = "editable"
 
 
+class QualityActionView(StageActionView):
+    """Re-assess the current render's perceptual quality without re-rendering."""
+    stage = "quality"
+
+
 class PipelineRunDetailView(APIView):
     """GET /api/v1/projects/{video_id}/pipeline-runs/{run_id}/ - progress poll target."""
 

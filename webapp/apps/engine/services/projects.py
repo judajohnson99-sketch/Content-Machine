@@ -46,3 +46,9 @@ def get_metadata(video_id):
 def delete(video_id, actor, reason=""):
     """Permanently remove a production. Raises project.ProjectError."""
     return project.delete_project(video_id, actor, reason=reason)
+
+
+def get_quality_report(video_id):
+    """scripts.project.quality_report(): the perceptual report with its
+    currency, or None when the render has not been assessed."""
+    return project.quality_report(video_id)

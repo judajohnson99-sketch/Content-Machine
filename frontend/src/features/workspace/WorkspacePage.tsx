@@ -16,6 +16,7 @@ import { DeleteProduction } from "../../components/DeleteProduction";
 import { GpuJobsPanel } from "../../components/GpuJobsPanel";
 import { ProductionHeader } from "../../components/ProductionHeader";
 import { BlockersPanel } from "../../components/BlockersPanel";
+import { QualityPanel } from "../../components/QualityPanel";
 import { Card, CardHeader } from "../../components/ui/Card";
 import { EmptyState, ErrorState, SkeletonRows } from "../../components/ui/States";
 import { CheckCircleIcon, FilmIcon, GpuIcon, ImageIcon } from "../../components/ui/icons";
@@ -200,6 +201,24 @@ export function WorkspacePage() {
                   />
                 ))}
               </div>
+            </Card>
+
+            <Card id="quality">
+              <CardHeader
+                eyebrow="Perceptual quality"
+                title="Does it look and sound right for what it is?"
+                description="Measured against this production's own intent - darkness, stillness and a steady bed are what a sleep video is for. Findings inform review; only objective defects block it."
+                actions={
+                  <StageActionButton
+                    videoId={videoId}
+                    stage="quality"
+                    label="Re-assess"
+                    disabled={busy || !assets?.video}
+                    disabledReason={busy ? "Another operation is already in progress for this project." : "Render the video first."}
+                  />
+                }
+              />
+              <QualityPanel videoId={videoId} assessedAt={status?.quality?.generated_utc ?? null} />
             </Card>
 
             <Card>

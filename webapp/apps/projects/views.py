@@ -272,3 +272,22 @@ class ProjectResearchFindingsView(APIView):
         if findings is None:
             raise NotFound(f"no research findings for {video_id}")
         return Response(findings)
+
+
+class ProjectQualityReportView(APIView):
+    """GET /api/v1/projects/{id}/quality-report/ - the perceptual quality
+    report for the current render, verbatim, with ``current`` saying whether
+    it still describes the video on disk. 404 when the render has never been
+    assessed - "not evaluated" is a state, never a pass.
+
+    Re-assessing is the "quality" pipeline stage:
+    POST /api/v1/projects/{id}/quality/.
+    """
+
+    def get(self, request, video_id):
+        if projects_service.get_metadata(video_id) is None:
+            raise ProjectNotFound(f"no such project: {video_id}")
+        report = projects_service.get_quality_report(video_id)
+        if report is None:
+            raise NotFound(f"{video_id} has not been assessed for perceptual quality")
+        return Response(report)

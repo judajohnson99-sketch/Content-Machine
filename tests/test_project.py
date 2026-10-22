@@ -210,6 +210,15 @@ class TestProjectRun(ProjectTestCase):
 
         self.assertEqual(self.metadata()["status"]["overall"], "READY_FOR_REVIEW")
 
+        # Perceptual quality runs on every render and informs the package;
+        # its findings did not stand in the way of READY_FOR_REVIEW above.
+        quality_report = json.loads(
+            (self.pdir / "output" / "quality_report.json").read_text())
+        self.assertIn(quality_report["verdict"], ("OK", "REVIEW", "INCOMPLETE"))
+        self.assertEqual(package["perceptual_quality"]["verdict"], quality_report["verdict"])
+        self.assertIn("scene_depiction", package["perceptual_quality"]["unavailable"])
+        self.assertEqual(self.metadata()["status"]["quality"], quality_report["verdict"])
+
     def test_withholds_review_status_when_metadata_incomplete(self):
         """QC can pass while the package is still not publishable."""
         self.init_project("--title", "Has Title But No Description")
@@ -1108,6 +1117,22 @@ class StatusReportTest(ProjectTestCase):
         cli = self.cm("status", self.video_id)
         self.assertIn("READY_FOR_REVIEW", cli.stdout)
         self.assertIn("digest:   matches", cli.stdout)
+
+        self.assertTrue(report["quality"]["assessed"])
+        self.assertTrue(report["quality"]["current"])
+
+    def test_a_render_changed_after_its_quality_assessment_is_held(self):
+        self.init_project("--title", "Stale Check", "--production-grade-visuals")
+        self.write_metadata({"description": "A description."})
+        self.assertEqual(self.cm("run", self.video_id).returncode, EXIT_OK)
+        with (self.pdir / "output" / f"{self.video_id}.mp4").open("ab") as stream:
+            stream.write(b"\0")
+        report = project.status_report(self.video_id)
+        self.assertFalse(report["quality"]["current"])
+        self.assertTrue(any("perceptual quality assessment is stale" in b
+                            for b in report["blocking"]))
+        self.assertEqual(self.cm("quality", self.video_id).returncode, EXIT_OK)
+        self.assertTrue(project.status_report(self.video_id)["quality"]["current"])
 
 
 class ProjectLockTest(ProjectTestCase):

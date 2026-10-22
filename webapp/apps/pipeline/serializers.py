@@ -85,6 +85,10 @@ class EditableRequestSerializer(StageRequestSerializer):
     render = serializers.BooleanField(default=False)
 
 
+class QualityRequestSerializer(StageRequestSerializer):
+    """Re-assess the current render's perceptual quality; no parameters."""
+
+
 STAGE_SERIALIZERS = {
     "research": ResearchRequestSerializer,
     "creative": CreativeRequestSerializer,
@@ -95,4 +99,5 @@ STAGE_SERIALIZERS = {
     "run": RunRequestSerializer,
     "produce": ProduceRequestSerializer,
     "editable": EditableRequestSerializer,
+    "quality": QualityRequestSerializer,
 }

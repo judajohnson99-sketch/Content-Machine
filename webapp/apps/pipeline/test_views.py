@@ -191,3 +191,20 @@ class TestRecentPipelineRunsView:
 
     def test_unauthenticated_request_is_rejected(self):
         assert APIClient().get("/api/v1/pipeline-runs/").status_code == 403
+
+
+@pytest.mark.django_db
+class TestQualityStage:
+    def test_posting_quality_runs_the_reassessment_stage(self, client):
+        fake = MagicMock(return_value=project.StageResult(True, 0, "REVIEW", {"verdict": "REVIEW"}))
+        with patch("apps.engine.services.pipeline.project.project_lock"), \
+                patch.dict(STAGE_FUNCS, {"quality": fake}):
+            response = client.post("/api/v1/projects/abc/quality/",
+                                   {"client_request_id": str(uuid.uuid4())}, format="json")
+        assert response.status_code == 202
+        fake.assert_called_once_with("abc")
+        run = PipelineRun.objects.get(video_id="abc", stage="quality")
+        assert run.status == PipelineRun.STATUS_SUCCEEDED
+
+    def test_the_real_stage_function_is_the_domain_one(self):
+        assert STAGE_FUNCS["quality"] is project.run_quality
