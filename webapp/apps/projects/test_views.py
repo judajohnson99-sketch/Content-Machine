@@ -91,6 +91,8 @@ class TestProjectStatusView:
             "video_id": "abc", "recorded": "READY_FOR_REVIEW",
             "verdict": "READY_FOR_REVIEW", "blocking": [], "stale": False,
             "digest_state": "MATCHES",
+            "quality": {"assessed": False, "verdict": None, "current": None,
+                        "counts": None, "unavailable": []},
         }
         with patch("apps.projects.views.projects_service.get_status", return_value=fake):
             response = client.get("/api/v1/projects/abc/status/")
@@ -432,6 +434,38 @@ class TestResearchInfluenceView:
 
 
 @pytest.mark.django_db
+class TestProjectQualityReportView:
+    def test_404_for_an_unknown_project(self, client):
+        with patch("apps.projects.views.projects_service.get_metadata", return_value=None):
+            response = client.get("/api/v1/projects/nope/quality-report/")
+        assert response.status_code == 404
+
+    def test_404_when_the_render_was_never_assessed(self, client):
+        with patch("apps.projects.views.projects_service.get_metadata", return_value={"video_id": "vid"}), \
+             patch("apps.projects.views.projects_service.get_quality_report", return_value=None):
+            response = client.get("/api/v1/projects/vid/quality-report/")
+        assert response.status_code == 404
+
+    def test_returns_the_report_unmodified(self, client):
+        report = {"video_id": "vid", "verdict": "REVIEW", "current": True,
+                  "counts": {"block": 0, "warn": 1, "info": 0},
+                  "coverage": {"evaluated": ["scene_intent"], "unavailable": [], "not_applicable": []},
+                  "evaluations": []}
+        with patch("apps.projects.views.projects_service.get_metadata", return_value={"video_id": "vid"}), \
+             patch("apps.projects.views.projects_service.get_quality_report", return_value=report):
+            response = client.get("/api/v1/projects/vid/quality-report/")
+        assert response.status_code == 200
+        assert response.json() == report
+
+    def test_status_carries_the_quality_summary(self, client):
+        fake = {"video_id": "abc", "recorded": "NEEDS_ATTENTION", "verdict": "NEEDS_ATTENTION",
+                "blocking": [], "stale": False, "digest_state": "MATCHES",
+                "quality": {"assessed": True, "verdict": "REVIEW", "current": True,
+                            "counts": {"block": 0, "warn": 2, "info": 1}, "unavailable": []}}
+        with patch("apps.projects.views.projects_service.get_status", return_value=fake):
+            response = client.get("/api/v1/projects/abc/status/")
+        assert response.json()["quality"] == fake["quality"]
+
 class TestProjectOwnerMediaView:
     def selection(self, **overrides):
         base = {

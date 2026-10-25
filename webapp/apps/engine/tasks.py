@@ -49,6 +49,7 @@ STAGE_FUNCS = {
     "run": lambda video_id, **params: project.run_pipeline(video_id),
     "produce": project.run_produce,
     "editable": project.run_editable,
+    "quality": project.run_quality,
 }
 
 

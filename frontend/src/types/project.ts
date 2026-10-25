@@ -1,5 +1,6 @@
 // Mirrors apps/projects/serializers.py exactly - the API is the source of
 // truth for these shapes, this is just the TS-side declaration of it.
+import type { QualitySummary } from "./quality";
 
 export interface ProjectSummary {
   video_id: string;
@@ -21,6 +22,7 @@ export interface StatusReport {
   blocking: string[];
   stale: boolean | null;
   digest_state: string | null;
+  quality: QualitySummary | null;
 }
 
 // GET /projects/{id}/ returns metadata.json verbatim - there is no fixed

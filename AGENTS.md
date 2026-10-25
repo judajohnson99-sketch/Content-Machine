@@ -132,7 +132,10 @@ source-backed subject research in `scripts/subject_research.py` for concepts
 flagged `requires_subject_research`) → BRIEF/CONTENT (`scripts/creative.py`,
 including batched per-scene visual motifs) → VISUAL/AUDIO PLAN → ASSET
 GENERATION (`scripts/storyboard.py` + `scripts/generation.py`) → ASSEMBLY →
-QC → PACKAGING → READY_FOR_REVIEW. Publishing and analytics are not built;
+QC → PERCEPTUAL QUALITY (`scripts/quality.py`, informs review; only objective
+defects gate it; optional local vision model via `scripts/vision.py`, judged on
+the GPU worker under the `scripts/gpu_coordination.py` lease, calibrated with
+`scripts/vision_calibration.py`) → PACKAGING → READY_FOR_REVIEW. Publishing and analytics are not built;
 see README "Not built yet".
 
 Subject research is search-backed only - it never asks an LLM what it

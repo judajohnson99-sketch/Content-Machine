@@ -42,6 +42,9 @@ class StatusReportSerializer(serializers.Serializer):
     blocking = serializers.ListField(child=serializers.CharField())
     stale = serializers.BooleanField(allow_null=True)
     digest_state = serializers.CharField(allow_null=True)
+    # quality.summary(): whether a perceptual assessment exists, its verdict
+    # and whether it still describes the render on disk.
+    quality = serializers.DictField(allow_null=True)
 
 
 class SeedReferenceSerializer(serializers.Serializer):

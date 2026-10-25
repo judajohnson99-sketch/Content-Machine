@@ -23,6 +23,11 @@ production-grade claim ([[Provenance and Production-Grade Claims]]), audio whose
 rights are not established ([[Rights and Licensing]]), and a QC fault such as the
 black-frame trip described in [[Dark Visual Luminance Floor]].
 
+Perceptual quality evidence ([[Perceptual Quality Is Judged Against Intent and Informs Review]])
+reaches the gate only as an objective defect in the delivered video, or as an
+assessment that no longer describes the video on disk; everything
+taste-dependent informs the reviewer instead of holding the project.
+
 Source of truth: the gate implementation in `scripts/project.py`; per-project
 verdicts in `projects/<id>/metadata.json`.
 

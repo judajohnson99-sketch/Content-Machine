@@ -8,6 +8,7 @@ import {
 import { ApiError } from "../api/client";
 import { StatusBadge } from "./StatusBadge";
 import { DeliverablePanel } from "./DeliverablePanel";
+import { QualityPanel } from "./QualityPanel";
 import { Badge } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { ErrorState, InlineSpinner } from "./ui/States";
@@ -119,6 +120,10 @@ export function ReviewPanel({ videoId }: Props) {
       <section className={styles.section}>
         <h3 className={styles.sectionTitle}><span className={styles.stepNo}>1</span> Media &amp; evidence</h3>
         <DeliverablePanel videoId={videoId} compact />
+        <details className={styles.quality} open={status.quality?.verdict === "DEFECT" || status.quality?.verdict === "REVIEW"}>
+          <summary>Perceptual quality evidence</summary>
+          <QualityPanel videoId={videoId} assessedAt={status.quality?.generated_utc ?? null} />
+        </details>
       </section>
 
       <section className={styles.section}>
