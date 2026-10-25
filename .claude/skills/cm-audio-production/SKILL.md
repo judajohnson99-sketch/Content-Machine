@@ -25,7 +25,7 @@ Everything goes through `scripts/audio.py` (`compose`) and
   `commercial_use_cleared: false` blocks READY_FOR_REVIEW.
 - **Quality:** a valid mix is not pleasant audio. Where the source cannot judge
   itself, only a named person sets `provenance.audio.production_grade`
-  (`./content-machine audio-grade`, after listening); it is voided when the plan
+  (`./content-machine audio-grade`, human-run after listening; Claude must not run it); it is voided when the plan
   changes. Never set it.
 
 Check with `python3 -m unittest tests.test_audio`.

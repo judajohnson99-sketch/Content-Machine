@@ -1,37 +1,16 @@
 ---
 name: web-design-guidelines
-description: Review UI code for Web Interface Guidelines compliance. Use when asked to "review my UI", "check accessibility", "audit design", "review UX", or "check my site against best practices".
-metadata:
-  author: vercel
-  version: "1.0.0"
-  argument-hint: <file-or-pattern>
+description: Review UI code against the Web Interface Guidelines (accessibility, focus, forms, animation, performance). Use when asked to review a UI, audit accessibility or UX, or check a page against best practices.
 ---
 
-# Web Interface Guidelines
+# Web interface review
 
-Review files for compliance with Web Interface Guidelines.
+Review the given files (ask for a file or glob if none) against the rules in
+`references/web-interface-guidelines.md` and report terse `file:line` findings,
+following the output format stated in that file.
 
-## How It Works
-
-1. Read the pinned guidelines in `references/web-interface-guidelines.md`
-2. Read the specified files (or prompt user for files/pattern)
-3. Check against all rules in that file
-4. Output findings in the terse `file:line` format
-
-## Guidelines Source
-
-Pinned copy of `vercel-labs/web-interface-guidelines` `command.md`, reviewed and
-committed (see `.claude/skills/REGISTRY.md`). Upstream originally fetched this
-file live at each run; it is pinned here so remote text cannot change the
-review rules unreviewed. To refresh, diff upstream against the pinned file and
-commit the reviewed result.
-
-## Usage
-
-When a user provides a file or pattern argument:
-1. Read `references/web-interface-guidelines.md`
-2. Read the specified files
-3. Apply all rules from that file
-4. Output findings using the format specified in that file
-
-If no files specified, ask the user which files to review.
+The rules file is a pinned copy of `command.md` from
+`vercel-labs/web-interface-guidelines` (MIT, Copyright (c) 2025 Vercel Labs;
+licence text in `references/LICENSE-web-interface-guidelines.txt`). It is never
+fetched at run time; refresh it only by reviewing a diff against upstream and
+committing the result. Provenance: `.claude/skills/REGISTRY.md`.

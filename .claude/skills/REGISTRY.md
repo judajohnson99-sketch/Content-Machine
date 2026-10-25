@@ -17,13 +17,13 @@ Vendored skills carry no symlinks and no machine-specific paths.
 
 | Skill | Source | Commit | Licence | Local patch |
 |---|---|---|---|---|
-| find-skills | vercel-labs/skills `skills/find-skills` | a80e4c9 | MIT | Added project-policy note; replaced global `-g -y` install step with vendor-and-review |
+| find-skills | vercel-labs/skills `skills/find-skills` | a80e4c9 | MIT (`LICENSE.txt` included) | Added project-policy note; replaced global `-g -y` install step with vendor-and-review |
 | skill-creator | anthropics/skills `skills/skill-creator` | dbd4588 | Apache-2.0 | none |
 | frontend-design | anthropics/skills `skills/frontend-design` | dbd4588 | Apache-2.0 | none |
 | webapp-testing | anthropics/skills `skills/webapp-testing` | dbd4588 | Apache-2.0 | none |
-| vercel-react-best-practices | vercel-labs/agent-skills `skills/react-best-practices` | 063bee9 | MIT (SKILL.md frontmatter) | directory renamed to match `name:` |
-| vercel-composition-patterns | vercel-labs/agent-skills `skills/composition-patterns` | 063bee9 | MIT (SKILL.md frontmatter) | directory renamed to match `name:` |
-| web-design-guidelines | vercel-labs/agent-skills `skills/web-design-guidelines` + vercel-labs/web-interface-guidelines `command.md` (fetched 2026-10-22) | 063bee9 | none declared upstream | Upstream fetched `command.md` live on every run; replaced with a reviewed, pinned copy in `references/` |
+| vercel-react-best-practices | vercel-labs/agent-skills `skills/react-best-practices` | 063bee9 | MIT (declared in upstream README and SKILL.md; no LICENSE file upstream) | directory renamed to match `name:` |
+| vercel-composition-patterns | vercel-labs/agent-skills `skills/composition-patterns` | 063bee9 | MIT (declared in upstream README and SKILL.md; no LICENSE file upstream) | directory renamed to match `name:` |
+| web-design-guidelines | rules: vercel-labs/web-interface-guidelines `command.md` (fetched 2026-10-22, pinned) | main @ fetch date | MIT, (c) 2025 Vercel Labs; text in `references/LICENSE-web-interface-guidelines.txt` | `SKILL.md` rewritten here: the upstream wrapper (vercel-labs/agent-skills, no licence file) is not redistributed, and live fetching is removed |
 | skill-discovery, cm-* | written here with skill-creator conventions | n/a | project | n/a |
 
 Upstream scripts were read before install (skill-creator: `claude -p`

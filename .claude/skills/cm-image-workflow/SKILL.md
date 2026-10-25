@@ -28,7 +28,7 @@ gemini -> api. `./content-machine providers` shows health.
 3. `scripts/media_intelligence.py`: optional local CLIP text-image fit
    (no paid calls, no effect on rights or grades).
 4. A human looking at the images. Only a person sets
-   `provenance.images.production_grade` (`./content-machine visual-grade`).
+   `provenance.images.production_grade` (`./content-machine visual-grade`, a human-run command; Claude must not run it).
    Code may only establish `false`.
 
 Never call procedural plates photographs; they are abstracts. Technical validity

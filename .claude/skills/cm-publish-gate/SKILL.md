@@ -1,6 +1,6 @@
 ---
 name: cm-publish-gate
-description: Publishing readiness and media-rights verification for Content Machine. Use when preparing a package for human review, checking licences and attribution, or reasoning about the publication gate and approvals.
+description: Publishing readiness, approval, and media-rights verification for Content Machine. Use when asking whether a project is cleared to publish, checking voice/audio/image licences and attribution, or reasoning about the publication gate and human approval.
 ---
 
 # Publishing and rights verification
@@ -8,7 +8,7 @@ description: Publishing readiness and media-rights verification for Content Mach
 Pipeline ends at `READY_FOR_REVIEW`; nothing after it is automated. Publishing
 and analytics are not built. Approval is a human act:
 `./content-machine approve <id>` needs a fresh gate digest, `reject` records a
-no. Never publish, upload, or spend.
+no. **Claude must not run `approve`, `reject`, `visual-grade` or `audio-grade`:** they record a named human's verdict. Never publish, upload, or spend.
 
 Verify, do not assume:
 1. **Gate state:** `./content-machine status <id>` then `gate_blockers` in
