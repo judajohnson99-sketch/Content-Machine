@@ -41,8 +41,8 @@ graphify-out/
 .serena/
 .claude/.headroom_wrap_*
 .claude/settings.local.json
-# Skills installed by `npx skills add` (vendored tooling, not project source).
-.claude/skills/
+# `.claude/skills/` is version-controlled (see .claude/skills/REGISTRY.md);
+# only the CLI-managed agent mirror is ignored.
 .agents/
 .playwright/
 .playwright-mcp/

@@ -30,9 +30,15 @@ Kdenlive project was built and inspected but not MLT-verified. WORKER_VISION
 stays disabled. Earlier blockers stand (search provider for sourced research,
 PC agent update, idempotent-job reuse defect, vision calibration on hardware).
 
+Tooling: project skills (shared, web, `cm-*`) are vendored in `.claude/skills/`; see its REGISTRY.md.
+
 Next: add real API keys and run one search per provider; when the GPU PC is on,
-choose a generated candidate for one scene and verify 768x432 on the GTX 1060;
-install `melt` and rerun the Kdenlive export; then the earlier next steps.
+choose a generated candidate for one scene and verify 768x432 on the GTX 1060
+and follow WORKER_RUNBOOK.md "Vision on the GPU worker" (calibrate with
+`vision_calibration.py run --apply`, label real renders, verify ComfyUI `/free`
+and VRAM fit); install `melt` and rerun the Kdenlive export; then the
+creator-workflow next steps (update the PC agent, a working search provider,
+repair job output ownership).
 
 ## Standing decisions
 
