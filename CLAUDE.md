@@ -77,6 +77,13 @@ under 40 lines, never logs, diffs or test output. Feature handoffs such as
 - No new helper scripts, indexes, caches, state files or memory files for
   workflow purposes; STATE.md, the vault and the two graphs are sufficient.
 
+## Skills
+
+Project skills live in `.claude/skills/` (version-controlled; provenance, tiers
+and the vetting policy in `.claude/skills/REGISTRY.md`). `cm-*` skills are
+instructions that point at `scripts/`; they never replace pipeline code. Need a
+skill that is not installed? Use `skill-discovery`; never `npx skills add -g`.
+
 ## The two graphs
 
 | Graph | Corpus | Location | Refresh |

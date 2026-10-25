@@ -30,6 +30,8 @@ search provider for sourced research; the PC worker must be updated to the
 current agent; an idempotent-job reuse defect can leave a new production
 without images.
 
+Tooling: project skills (shared, web, `cm-*`) are vendored in `.claude/skills/`; see its REGISTRY.md.
+
 Next: when the GPU PC is on, follow WORKER_RUNBOOK.md "Vision on the GPU
 worker", calibrate with `vision_calibration.py run --apply`, label real
 renders, and verify ComfyUI `/free` and VRAM fit on the GTX 1060 3GB. Then
