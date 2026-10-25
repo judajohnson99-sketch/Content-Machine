@@ -42,6 +42,7 @@ export function AssetsPanel({ videoId }: Props) {
       <ImagesSection videoId={videoId} assets={assets} />
       <AudioSection videoId={videoId} assets={assets} />
       <StoryboardSection assets={assets} />
+      <VisualSourcesSection assets={assets} />
       <LogsSection videoId={videoId} assets={assets} />
     </div>
   );
@@ -159,6 +160,56 @@ function AudioSection({ videoId, assets }: { videoId: string; assets: ProjectAss
             <p className={styles.muted}>Attribution required: {audio.attributions_required.join("; ")}</p>
           )}
         </div>
+      )}
+    </section>
+  );
+}
+
+// Whose each picture is and on what terms. Shown, never inferred: these are
+// the records the render, the package and the Kdenlive handoff carry.
+function VisualSourcesSection({ assets }: { assets: ProjectAssets }) {
+  const sources = (assets.visual_sources ?? []).filter((v) => v.kind !== "generated" || v.provider);
+  if (sources.length === 0) return null;
+  const credits = assets.visual_attributions ?? [];
+  return (
+    <section>
+      <h4 className={styles.sectionTitle}>
+        Picture sources <span className={styles.count}>{sources.length} scene{sources.length === 1 ? "" : "s"}</span>
+      </h4>
+      <div className={styles.tableWrap}>
+        <table className={styles.table}>
+          <thead>
+            <tr><th>Scene</th><th>From</th><th>Creator</th><th>Licence</th><th>Approved</th></tr>
+          </thead>
+          <tbody>
+            {sources.map((s) => (
+              <tr key={s.scene_id}>
+                <td className={styles.mono}>{s.scene_id}</td>
+                <td>
+                  {s.kind === "generated" ? `Generated (${s.provider})` : s.provider}
+                  {s.source_url && (
+                    <>
+                      {" "}
+                      <a href={s.source_url} target="_blank" rel="noreferrer">source ↗</a>
+                    </>
+                  )}
+                </td>
+                <td>{s.creator ?? "—"}</td>
+                <td>{s.license ?? "—"}</td>
+                <td>
+                  {s.kind === "stock"
+                    ? s.approval ? `${s.approval.actor} · ${s.approval.utc.slice(0, 10)}` : <Badge tone="danger">not approved</Badge>
+                    : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {credits.length > 0 && (
+        <p className={styles.muted}>
+          Added to the video description automatically: {credits.join(" · ")}
+        </p>
       )}
     </section>
   );

@@ -369,6 +369,98 @@ def import_generated(path, *, job_id, asset_index, prompt, negative_prompt=None,
         return asset
 
 
+def register_external(path, *, description, tags, source, rights, provenance,
+                      catalog=DEFAULT_CATALOG):
+    """Catalog a file fetched from an external source, keeping its evidence.
+
+    The bytes move into the library's ``objects`` directory under their own
+    content identity. A file the library already holds (same hash) gains the
+    new source as an additional record but keeps whatever rights it already
+    had - an owner's own clearance is never overwritten by a stock licence.
+    Returns ``(asset, created)``.
+    """
+    source_path = Path(path).resolve()
+    inspected = inspect_media(source_path)
+    kind = inspected.get("kind")
+    if kind not in {"image", "video"}:
+        raise MediaError("Only pictures and footage can be registered from a stock source")
+    identity = inspected.pop("id")
+    destination = Path(catalog).parent / "objects"
+    destination.mkdir(parents=True, exist_ok=True)
+    target = destination / (identity + source_path.suffix.lower())
+    with catalog_lock(catalog):
+        data = load(catalog)
+        if target.exists() and digest(target) != identity:
+            raise MediaError("Existing library object changed; registration refused")
+        if not target.exists():
+            source_path.replace(target)
+        else:
+            source_path.unlink(missing_ok=True)
+        location = {"host_id": host_id(), "path": str(target)}
+        asset = data["assets"].get(identity)
+        created = asset is None
+        if created:
+            asset = data["assets"][identity] = {
+                "id": identity, "locations": [], "description": description,
+                "tags": sorted(set(tags)), "origin": "unknown", "source": source,
+                "rights": rights, "technical": inspected,
+                "provenance": dict(provenance),
+            }
+        else:
+            asset["technical"] = inspected
+            if not isinstance(asset.get("rights"), dict) or not asset["rights"]:
+                asset["rights"] = rights
+            history = (asset.setdefault("provenance", {})
+                       .setdefault("external_sources", []))
+            if provenance not in history:
+                history.append(dict(provenance))
+        if location not in asset["locations"]:
+            asset["locations"].append(location)
+        analyze_if_available(asset, target)
+        atomic_json(catalog, data)
+        return asset, created
+
+
+def update_rights(identity, rights, *, catalog=DEFAULT_CATALOG):
+    """Replace one asset's rights record, e.g. when a person approves it."""
+    with catalog_lock(catalog):
+        data = load(catalog)
+        if identity not in data["assets"]:
+            raise MediaError(f"Unknown asset: {identity}")
+        data["assets"][identity]["rights"] = rights
+        atomic_json(catalog, data)
+        return data["assets"][identity]
+
+
+def record_usage(identity, entry, *, catalog=DEFAULT_CATALOG):
+    """Append where an asset was used. One record per (video, scene): a
+    re-selection updates it rather than growing the history."""
+    with catalog_lock(catalog):
+        data = load(catalog)
+        asset = data["assets"].get(identity)
+        if asset is None:
+            raise MediaError(f"Unknown asset: {identity}")
+        usage = [u for u in asset.get("usage") or []
+                 if (u.get("video_id"), u.get("scene_id"))
+                 != (entry.get("video_id"), entry.get("scene_id"))]
+        usage.append(dict(entry))
+        asset["usage"] = usage
+        atomic_json(catalog, data)
+        return asset
+
+
+def remove_usage(identity, video_id, scene_id, *, catalog=DEFAULT_CATALOG):
+    """Forget one (video, scene) use, e.g. after the scene is regenerated."""
+    with catalog_lock(catalog):
+        data = load(catalog)
+        asset = data["assets"].get(identity)
+        if asset is None or not asset.get("usage"):
+            return
+        asset["usage"] = [u for u in asset["usage"]
+                          if (u.get("video_id"), u.get("scene_id")) != (video_id, scene_id)]
+        atomic_json(catalog, data)
+
+
 def merge(inventory, catalog=DEFAULT_CATALOG):
     """Bring a local-worker inventory to the control plane, without media bytes.
 

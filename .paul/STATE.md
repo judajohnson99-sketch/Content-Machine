@@ -10,33 +10,40 @@ The single resume file.
 
 ## Current Position
 
-Milestone: Perceptual Quality System (phases 1 and 1.5) merged with the
-creator-workflow milestone, ready for review on PR. Phase 1: every render gets
-`output/quality_report.json` (scene imagery vs intent, continuity, rendered
-frames, soundtrack delivery/dynamics/repetition) that informs review; only
-objective defects and a stale report reach the gate. Phase 1.5: a local
-Ollama vision layer (`scripts/vision.py`), GPU lease/ComfyUI coordination
-(`scripts/gpu_coordination.py`), worker-side judging shipped as sha-bound
-advisory evidence, an 82-case constructed calibration dataset and harness,
-and `scripts/vision_setup.py`. NOT validated on hardware: no model is
-calibrated, and unavailable/uncalibrated/partial vision results are never
-drawn as a pass.
+Milestone: Unified Visual Asset Discovery & Generation, built on branch
+`claude/unified-visual-asset-discovery` and ready for review on PR. One
+per-scene workflow (`scripts/visual_assets.py`) ranks the owner library, stock
+photography/footage (Pexels, Pixabay, Unsplash via official APIs,
+`scripts/stock_providers.py`) and a planned ComfyUI generation together
+(`scripts/asset_ranking.py`), under an approval policy
+(`scripts/asset_licensing.py`, only `supervised` enabled). Choosing becomes an
+ordinary owner-media pin on the scene, so render, Review Center, package and
+the Kdenlive archive carry source, licence, creator, retrieval date and
+approval. Stock stays unapproved (`commercial_use` false) until a person
+approves first use; a GPU that is off defers a generation, never fails search.
+Workspace panel: "Find a picture for each shot".
+Owner decisions: required credits are appended to the package description
+automatically and fail closed; graduated autonomy is defined (reuse only where
+the verified licence and approval scope cover the new use) but disabled;
+Unsplash is optional and off until `UNSPLASH_ENABLED` after its production
+access is verified.
 
-Creator workflow (from main): the dashboard is the product - a goal becomes
-a reviewable production without the CLI (goal -> concept -> project ->
-research brief, piecewise renderer, research-derived production directives,
-media library, Kdenlive export). Its validation blockers stand: no working
-search provider for sourced research; the PC worker must be updated to the
-current agent; an idempotent-job reuse defect can leave a new production
-without images.
+NOT validated: no Pexels/Pixabay/Unsplash key exists in this environment, so
+every provider call was exercised against scripted vendor responses only; no
+real ComfyUI render ran (GPU PC off); `melt` is not installed here so the
+Kdenlive project was built and inspected but not MLT-verified. WORKER_VISION
+stays disabled. Earlier blockers stand (search provider for sourced research,
+PC agent update, idempotent-job reuse defect, vision calibration on hardware).
 
 Tooling: project skills (shared, web, `cm-*`) are vendored in `.claude/skills/`; see its REGISTRY.md.
 
-Next: when the GPU PC is on, follow WORKER_RUNBOOK.md "Vision on the GPU
-worker", calibrate with `vision_calibration.py run --apply`, label real
-renders, and verify ComfyUI `/free` and VRAM fit on the GTX 1060 3GB. Then
-the creator-workflow next steps (update the PC agent, a working search
-provider, repair job output ownership).
+Next: add real API keys and run one search per provider; when the GPU PC is on,
+choose a generated candidate for one scene and verify 768x432 on the GTX 1060
+and follow WORKER_RUNBOOK.md "Vision on the GPU worker" (calibrate with
+`vision_calibration.py run --apply`, label real renders, verify ComfyUI `/free`
+and VRAM fit); install `melt` and rerun the Kdenlive export; then the
+creator-workflow next steps (update the PC agent, a working search provider,
+repair job output ownership).
 
 ## Standing decisions
 
@@ -63,11 +70,11 @@ and are not restated here.
 
 ## Session Continuity
 
-Latest request: prepare the combined Perceptual Quality System for
-integration into main. Merged main into the branch (five conflicts resolved:
-worker heartbeat keys, agent init, Workspace step layout, tests, this file),
-reviewed phases 1 and 1.5, verified ComfyUI `/free` and the Ollama API against
-upstream source, made vision batches take the GPU once, made held mode check
-ComfyUI too, stopped an OK verdict with unrun evaluations looking like a
-clean pass, and opened the PR (not merged). No hardware integration and no
-Phase 2 work. `graphify` is not installed here, so graphs were not refreshed.
+Latest request: implement the unified visual asset discovery and generation
+milestone end to end without GPU or provider credentials. Done: stock adapters
+with cache/cooldown/dedupe, unified ranking with explanations, approval policy,
+library-first reuse with near-duplicate collapse, deferred generation and
+per-scene regeneration, pinned scene selection with lineage, licence trail into
+package/Review Center/Kdenlive, API endpoints, workspace panel, tests, docs and
+a vault decision note. Graphs were not refreshed: `graphify` is not installed
+here. PR opened, not merged.

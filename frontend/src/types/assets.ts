@@ -1,3 +1,4 @@
+import type { VisualSource } from "./visualAssets";
 // Mirrors scripts.project.project_assets() exactly - the domain read model
 // is the contract; the API returns it verbatim. Every `path` is
 // project-relative and fetchable through GET /projects/{id}/files/{path}.
@@ -140,6 +141,10 @@ export interface EditingAssets {
 
 export interface ProjectAssets {
   video_id: string;
+  // Where every scene's picture came from and on what terms (stock, library
+  // or generated), read from the production itself.
+  visual_sources?: VisualSource[];
+  visual_attributions?: string[];
   video: AssetFile | null;
   thumbnails: AssetFile[];
   images: ImageAsset[];
