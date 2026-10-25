@@ -188,11 +188,23 @@ class Provider:
     hosts = ()                  # CDN hosts a download may come from
     label = ""
 
+    # Why this provider is switched off even with a key, or None. A provider
+    # whose terms have not been verified for this use stays off by default.
+    enable_env = ""
+    disabled_note = ""
+
     def key(self):
         return (os.environ.get(self.key_env) or "").strip()
 
+    def disabled(self):
+        if not self.enable_env:
+            return None
+        if (os.environ.get(self.enable_env) or "").strip().lower() in ("1", "true", "yes", "on"):
+            return None
+        return self.disabled_note
+
     def configured(self):
-        return bool(self.key())
+        return bool(self.key()) and self.disabled() is None
 
     def request(self, kind, query, *, orientation, min_width, min_height,
                 page, per_page):
@@ -374,6 +386,13 @@ class Unsplash(Provider):
     key_env = "UNSPLASH_ACCESS_KEY"
     kinds = ("image",)
     hosts = ("images.unsplash.com",)
+    # Optional and off until Unsplash's production API access (the demo tier
+    # is rate-limited and not for production) and its usage requirements -
+    # hotlinking, download tracking, attribution wording - have been checked
+    # for this pipeline and a person sets UNSPLASH_ENABLED.
+    enable_env = "UNSPLASH_ENABLED"
+    disabled_note = ("Unsplash is off until its production API access and usage "
+                     "requirements are verified")
     UTM = "utm_source=content_machine&utm_medium=referral"
 
     def request(self, kind, query, *, orientation, min_width, min_height,
@@ -542,7 +561,9 @@ class StockHub:
         now = self.clock()
         entry = self._state().get(provider.name, {})
         blocked = max(0.0, float(entry.get("blocked_until", 0)) - now)
-        if not provider.configured():
+        if provider.disabled() is not None:
+            state, detail = "disabled", provider.disabled()
+        elif not provider.configured():
             state, detail = "not_configured", f"{provider.key_env} is not set"
         elif blocked:
             state = entry.get("blocked_state") or "rate_limited"
@@ -646,6 +667,9 @@ class StockHub:
                 entry.update(state="unsupported",
                              detail=f"{provider.label} has no {kind} search")
                 continue
+            if provider.disabled() is not None:
+                entry.update(state="disabled", detail=provider.disabled())
+                continue
             if not provider.configured():
                 entry.update(state="not_configured",
                              detail=f"{provider.key_env} is not set")
@@ -685,6 +709,8 @@ class StockHub:
         that leaves them, with a size cap. Returns the file's path.
         """
         provider = self.provider(candidate["provider"])
+        if provider.disabled() is not None:
+            raise StockError(provider.disabled(), state="disabled")
         if not provider.configured():
             raise StockError(f"{provider.key_env} is not set", state="not_configured")
         status = self.provider_status(provider)

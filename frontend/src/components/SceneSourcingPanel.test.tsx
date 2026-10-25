@@ -57,7 +57,7 @@ function discovery(overrides: Partial<SceneDiscovery> = {}): SceneDiscovery {
     providers: [
       { provider: "pexels", label: "Pexels", state: "ready", detail: "", count: 1 },
       { provider: "pixabay", label: "Pixabay", state: "not_configured", detail: "PIXABAY_API_KEY is not set", count: 0 },
-      { provider: "unsplash", label: "Unsplash", state: "rate_limited", detail: "retry in 90s", count: 0 },
+      { provider: "unsplash", label: "Unsplash", state: "disabled", detail: "Unsplash is off until verified", count: 0 },
     ],
     gpu: { state: "deferred", detail: "No GPU worker is enrolled" },
     ...overrides,
@@ -90,7 +90,7 @@ describe("SceneSourcingPanel", () => {
 
     // Unavailable sources are stated plainly; setup details stay out of the way.
     expect(screen.getByText("Pixabay: not connected")).toBeInTheDocument();
-    expect(screen.getByText("Unsplash: resting — limit reached")).toBeInTheDocument();
+    expect(screen.getByText("Unsplash: off for now")).toBeInTheDocument();
     expect(screen.getByText("New images: waiting for the GPU")).toBeInTheDocument();
     expect(screen.queryByText(/PIXABAY_API_KEY/)).toBeNull();
     expect(screen.getByRole("button", { name: "Generate when the GPU is on" })).toBeEnabled();

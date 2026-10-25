@@ -22,6 +22,11 @@ the Kdenlive archive carry source, licence, creator, retrieval date and
 approval. Stock stays unapproved (`commercial_use` false) until a person
 approves first use; a GPU that is off defers a generation, never fails search.
 Workspace panel: "Find a picture for each shot".
+Owner decisions: required credits are appended to the package description
+automatically and fail closed; graduated autonomy is defined (reuse only where
+the verified licence and approval scope cover the new use) but disabled;
+Unsplash is optional and off until `UNSPLASH_ENABLED` after its production
+access is verified.
 
 NOT validated: no Pexels/Pixabay/Unsplash key exists in this environment, so
 every provider call was exercised against scripted vendor responses only; no

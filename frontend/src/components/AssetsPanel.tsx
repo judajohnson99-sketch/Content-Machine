@@ -208,7 +208,7 @@ function VisualSourcesSection({ assets }: { assets: ProjectAssets }) {
       </div>
       {credits.length > 0 && (
         <p className={styles.muted}>
-          Credit required in the video description: {credits.join(" · ")}
+          Added to the video description automatically: {credits.join(" · ")}
         </p>
       )}
     </section>

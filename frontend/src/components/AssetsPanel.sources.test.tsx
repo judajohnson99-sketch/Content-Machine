@@ -33,7 +33,7 @@ describe("AssetsPanel picture sources", () => {
     expect(screen.getByText(/owner@example.com · 2026-10-22/)).toBeInTheDocument();
     expect(screen.getByText("not approved")).toBeInTheDocument();
     expect(screen.getByText("Generated (comfyui)")).toBeInTheDocument();
-    expect(screen.getByText(/Credit required in the video description/)).toHaveTextContent("Ada Ng");
+    expect(screen.getByText(/Added to the video description automatically/)).toHaveTextContent("Ada Ng");
   });
 
   it("shows nothing when there are no recorded sources", async () => {

@@ -571,16 +571,24 @@ def verification_problems(metadata, pdir):
             except OSError as exc:
                 problems.append(f"{label} could not be verified: {exc}")
             try:
-                media.rights_record(entry)
+                # rights_record names the asset in its refusal, and a
+                # selection entry calls its identity `asset_id`.
+                media.rights_record({"id": entry.get("asset_id", "?"), **entry})
             except media.MediaError as exc:
                 problems.append(str(exc))
             # Fail closed: external media is usable only because a person
             # said so. A record that claims commercial use without that
             # approval was edited, not approved.
             rights = entry.get("rights") or {}
-            if asset_licensing.is_external(rights) and not asset_licensing.approved(rights):
-                problems.append(f"{label} comes from {rights.get('source') or 'an external source'} "
-                                "and has not been approved for production use")
+            if asset_licensing.is_external(rights):
+                if not asset_licensing.approved(rights):
+                    problems.append(f"{label} comes from {rights.get('source') or 'an external source'} "
+                                    "and has not been approved for production use")
+                else:
+                    covered, why = asset_licensing.approval_covers(rights)
+                    if not covered:
+                        problems.append(f"{label}: its approval does not cover this use ("
+                                        + "; ".join(why) + ")")
     return problems
 
 

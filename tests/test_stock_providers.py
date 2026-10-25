@@ -108,7 +108,8 @@ class StockCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.now = [1_000_000.0]
-        env = {"PEXELS_API_KEY": "pk", "PIXABAY_API_KEY": "xk", "UNSPLASH_ACCESS_KEY": "uk"}
+        env = {"PEXELS_API_KEY": "pk", "PIXABAY_API_KEY": "xk", "UNSPLASH_ACCESS_KEY": "uk",
+               "UNSPLASH_ENABLED": "1"}
         patcher = mock.patch.dict(os.environ, env)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -198,6 +199,42 @@ class AdapterTests(StockCase):
         states = {p["provider"]: p["state"] for p in result["providers"]}
         self.assertEqual(states, {"pexels": "not_configured", "pixabay": "ready"})
         self.assertEqual(len(result["candidates"]), 1)
+
+
+class UnsplashDisabledTests(StockCase):
+    """Unsplash stays off until its production access and usage terms are
+    verified and a person turns it on - a key alone does not enable it."""
+
+    def test_a_key_alone_does_not_enable_unsplash(self):
+        with mock.patch.dict(os.environ, {"UNSPLASH_ENABLED": ""}):
+            hub = self.hub([("api.unsplash.com", ok(UNSPLASH_PHOTOS))], [stock.Unsplash()])
+            result = hub.search("lake", kind="image")
+            status = hub.status()[0]
+        self.assertEqual(result["providers"][0]["state"], "disabled")
+        self.assertIn("production API access", result["providers"][0]["detail"])
+        self.assertEqual(result["candidates"], [])
+        self.assertEqual(self.transport.calls, [], "no request is made while disabled")
+        self.assertEqual((status["state"], status["configured"]), ("disabled", False))
+
+    def test_downloads_are_refused_while_disabled(self):
+        with mock.patch.dict(os.environ, {"UNSPLASH_ENABLED": "0"}):
+            hub = self.hub([], [stock.Unsplash()])
+            with self.assertRaises(stock.StockError) as caught:
+                hub.download({"provider": "unsplash", "external_id": "u1", "media_kind": "image",
+                              "full": {"url": "https://images.unsplash.com/x.jpg"}}, self.tmp.name)
+        self.assertEqual(caught.exception.state, "disabled")
+
+    def test_the_other_providers_are_unaffected(self):
+        with mock.patch.dict(os.environ, {"UNSPLASH_ENABLED": ""}):
+            hub = self.hub([("api.pexels.com/v1", ok(PEXELS_PHOTOS))],
+                           [stock.Pexels(), stock.Unsplash()])
+            result = hub.search("forest", kind="image")
+        states = {p["provider"]: p["state"] for p in result["providers"]}
+        self.assertEqual(states, {"pexels": "ready", "unsplash": "disabled"})
+        self.assertEqual([c["provider"] for c in result["candidates"]], ["pexels"])
+
+    def test_it_can_be_enabled_explicitly(self):
+        self.assertTrue(stock.Unsplash().configured())
 
 
 class FailureTests(StockCase):

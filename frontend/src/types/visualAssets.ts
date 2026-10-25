@@ -73,7 +73,7 @@ export interface VisualCandidate {
 export interface ProviderReport {
   provider: string;
   label: string;
-  state: "ready" | "not_configured" | "rate_limited" | "unavailable" | "auth_failed" | "unsupported" | "skipped";
+  state: "ready" | "not_configured" | "rate_limited" | "unavailable" | "auth_failed" | "unsupported" | "skipped" | "disabled";
   detail: string;
   count: number;
 }

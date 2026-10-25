@@ -2844,6 +2844,13 @@ def gate_blockers(pdir, metadata, qc_status, qc_failures, has_thumbnail,
     """
     blocking = _ingestion_problems(metadata)
     blocking.extend(ownermedia_mod.verification_problems(metadata, pdir))
+    # Credits the licences require must be satisfiable, or the video is not
+    # ready: they are added to the published description automatically, so
+    # the only failure left is one that cannot be satisfied at all.
+    board = storyboard if storyboard is not None else storyboard_mod.load(pdir.name)
+    blocking.extend(visual_assets_mod.attribution_problems(
+        visual_assets_mod.sources_for_production(metadata, board),
+        metadata.get("description") or ""))
     if qc_status != "PASS":
         blocking.append(f"QC failed: {', '.join(qc_failures)}")
     title = metadata.get("selected_title") or ""
@@ -2908,6 +2915,8 @@ def gate_digest(pdir, metadata, video_path):
         "provenance_images": metadata.get("provenance", {}).get("images", {}),
         "selected_title": metadata.get("selected_title"),
         "description": metadata.get("description"),
+        "visual_credits": visual_assets_mod.credits_block(
+            visual_assets_mod.sources_for_production(metadata, storyboard_mod.load(pdir.name))),
         "concept_id": concept_id,
         "concept_procedural_ok": (concept or {}).get("procedural_visuals_acceptable"),
         "audio_cleared": audio_manifest.get("commercial_use_cleared"),
@@ -3589,7 +3598,12 @@ def run_pipeline(video_id):
                     "concept": metadata.get("thumbnail_concept", ""),
                 },
                 "title": title,
-                "description": metadata.get("description", ""),
+                # The editorial description plus the credits the licences
+                # require, appended automatically. gate_blockers has already
+                # refused a production whose credits cannot be satisfied.
+                "description": visual_assets_mod.description_with_credits(
+                    metadata.get("description", ""), visual_sources),
+                "description_credits": visual_assets_mod.credits_block(visual_sources),
                 "tags": metadata.get("tags", []),
                 "concept": metadata.get("concept", ""),
                 "audience": metadata.get("audience", ""),

@@ -94,7 +94,12 @@ same selection. Rules to keep:
   worker queue); a GPU that is off is a deferral, never a failure.
 - Uncalibrated vision/CLIP similarity is advisory in ranking and never
   raises confidence. Nothing here sets `production_grade`.
-- Graduated autonomy is a disabled row in `AUTONOMY_LEVELS`.
+- Graduated autonomy is a disabled row in `AUTONOMY_LEVELS`; reuse of an
+  approved asset (both levels) requires `approval_covers` for the new use.
+- Required credits are appended to the package description automatically and
+  `visual_assets.attribution_problems` blocks the gate when they cannot be met.
+- Unsplash stays off unless `UNSPLASH_ENABLED` is set (production access and
+  usage terms unverified).
 
 Per-project state: `projects/<id>/visual_assets.json` (last search per scene
 and the decision). Per-asset history: `usage` in the catalog.

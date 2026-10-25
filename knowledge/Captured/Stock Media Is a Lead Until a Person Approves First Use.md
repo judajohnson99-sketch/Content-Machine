@@ -59,3 +59,13 @@ switched on, which keeps [[Autonomy Boundaries]] and the production-grade rule i
 - [[Autonomy Boundaries]]
 
 *Captured 2026-10-22T21:49:39.990925+00:00 by content-machine-agent. Confidence: VERIFIED.*
+
+Owner decisions of 2026-10-25 tighten this. Reuse of an approved asset is not a
+blanket pass: the approval records what it covers (licence, terms reference,
+commercial and modified use, redistribution only inside the video), and a later
+use is automatic only while those still hold and any required credit can be
+given - the rule the disabled graduated level is defined by. The credits the
+licences require are appended to the published description automatically, and a
+credit that cannot be given blocks review rather than being skipped. Unsplash
+stays off even with a key until its production access and usage terms are
+verified and a person enables it.

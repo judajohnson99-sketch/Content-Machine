@@ -1042,7 +1042,10 @@ def sources_for_production(metadata, board):
                 "terms_reference": rights.get("terms_reference"),
                 "retrieved_utc": rights.get("retrieved_utc"),
                 "commercial_use": bool(rights.get("commercial_use")),
-                "attribution_required": bool(rights.get("attribution_required")),
+                # Raw, not coerced: an unknown requirement (None) on external
+                # media must read as unknown, never as "not required".
+                "attribution_required": (rights.get("attribution_required") if external
+                                         else bool(rights.get("attribution_required"))),
                 "attribution_text": rights.get("attribution_text"),
                 "restrictions": (rights.get("provider_terms") or {}).get("restrictions", []),
                 "modification_allowed": (rights.get("provider_terms") or {}).get("modification_allowed"),
@@ -1081,6 +1084,56 @@ def attributions(sources):
                 seen.add(text)
                 lines.append(text)
     return lines
+
+
+CREDITS_HEADING = "Visual credits:"
+YOUTUBE_DESCRIPTION_LIMIT = 5000
+
+
+def credits_block(sources):
+    """The credit lines the video description must carry, or ``""``.
+
+    Only credits the terms require. Courtesy credits (Pixabay) stay in
+    ``visual_credits.txt``; they are not a legal condition of use.
+    """
+    lines = attributions(sources)
+    if not lines:
+        return ""
+    return CREDITS_HEADING + "\n" + "\n".join(f"- {line}" for line in lines)
+
+
+def description_with_credits(description, sources):
+    """The description as published: the editorial text, then the required
+    credits. Idempotent - credits already present are not repeated."""
+    block = credits_block(sources)
+    base = (description or "").rstrip()
+    if not block or block in base:
+        return base
+    return (base + "\n\n" if base else "") + block
+
+
+def attribution_problems(sources, description=""):
+    """Reasons the required credits cannot be satisfied. Fail closed.
+
+    A required credit with no text to print, an external source whose
+    requirement is unknown, or credits that push the description past what
+    YouTube accepts, each block review: the video would otherwise ship
+    something its licence did not allow.
+    """
+    problems = []
+    for record in sources:
+        if record["kind"] == "generated":
+            continue
+        where = f"scene {record['scene_id']} ({record.get('provider') or 'unknown source'})"
+        required = record.get("attribution_required")
+        if record["kind"] == "stock" and required is None:
+            problems.append(f"{where}: whether attribution is required is not recorded")
+        elif required and not (record.get("attribution_text") or "").strip():
+            problems.append(f"{where}: attribution is required but no credit line is recorded")
+    if not problems and len(description_with_credits(description, sources)) > YOUTUBE_DESCRIPTION_LIMIT:
+        problems.append("the required visual credits do not fit in a "
+                        f"{YOUTUBE_DESCRIPTION_LIMIT}-character description; shorten the description")
+    return problems
 
 
 def credits_text(video_id, sources):

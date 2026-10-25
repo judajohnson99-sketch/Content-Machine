@@ -1064,9 +1064,15 @@ APIs of Pexels (photos and footage), Pixabay (photos, illustrations, footage)
 and Unsplash (photos); a provider is used only when its key is in `.env`:
 
 ```
-PEXELS_API_KEY=         PIXABAY_API_KEY=         UNSPLASH_ACCESS_KEY=
+PEXELS_API_KEY=         PIXABAY_API_KEY=
 STOCK_PROVIDERS=pexels,pixabay,unsplash      # optional order / subset
 ```
+
+Unsplash is optional and **off**: a key alone does not enable it. Its
+`UNSPLASH_ACCESS_KEY` is used only when `UNSPLASH_ENABLED=1` is also set, which
+should wait until Unsplash's production API access and usage requirements
+(hotlinking, download tracking, attribution wording) have been verified.
+Until then it reports "off for now" and makes no request.
 
 Responses are cached for 24 hours, rate-limit headers are honoured and a limit
 puts the provider on a cooldown (kept on disk, so it survives restarts) rather
@@ -1095,13 +1101,27 @@ creator, source page, retrieval date and restrictions, and is **not** cleared:
 `commercial_use` stays false until a person approves first use (an ambiguous
 record needs a written reason; terms that rule use out cannot be approved).
 Approval is the one step that downloads. After that the asset is an ordinary
-library asset, reused without asking, pinned to the scene, and its record
-travels to `storyboard.json`, `publication_package.json` (`visual_sources`,
+library asset, reused without asking while the approval still covers the use
+(`asset_licensing.approval_covers`: same licence and terms reference, commercial
+and modified use allowed, redistribution only inside the video, any required
+credit available), pinned to the scene, and its record travels to `storyboard.json`, `publication_package.json` (`visual_sources`,
 `source_attributions_required`, `output/visual_credits.txt`), the Review Center
 and the Kdenlive archive (`*-editable-provenance.json`,
-`*-visual-credits.txt`). The approval level is a table in
-`scripts/asset_licensing.py`; only `supervised` is enabled
-(`VISUAL_ASSET_AUTONOMY=graduated` is refused and falls back).
+`*-visual-credits.txt`).
+
+**Credits are automatic and fail closed.** The credit lines the licences
+require are appended to the description in `publication_package.json`
+(`description`, with the block alone in `description_credits`; the editorial
+`metadata.description` is not rewritten). A required credit with no text, an
+external source whose requirement is not recorded, or credits that push the
+description past 5000 characters block review (`gate_blockers`). Courtesy
+credits (Pixabay) stay in `visual_credits.txt` only.
+
+**Autonomy.** The approval level is a table in `scripts/asset_licensing.py`.
+`supervised` is active. `graduated` is defined but disabled
+(`VISUAL_ASSET_AUTONOMY=graduated` is refused and falls back): it would reuse a
+previously approved asset without asking only where `approval_covers` holds for
+the new use, and it never waives approval of media that is new to the library.
 
 ## Not built yet
 

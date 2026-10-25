@@ -56,6 +56,11 @@ def generated_candidate(state="available"):
             "rights": {}, "cost": {"money_usd": 0.0, "resource": "gpu"}, "state": state}
 
 
+def json_copy(value):
+    import json
+    return json.loads(json.dumps(value))
+
+
 class ScoringTests(unittest.TestCase):
     def test_a_relevant_widescreen_candidate_outranks_an_irrelevant_portrait_one(self):
         good = stock_candidate("stock:pexels:image:1")
@@ -302,6 +307,89 @@ class PolicyTests(unittest.TestCase):
         cloud = {"source": "cloud", "rights": {}}
         self.assertEqual(licensing.decide_use(cloud)["action"], "blocked")
         self.assertEqual(licensing.decide_use(cloud, cloud_authorised=True)["action"], "approval_required")
+
+    def approved_rights(self, **kw):
+        return licensing.approve(self.rights(), actor="owner@example.com", now="2026-10-22T00:00:00Z", **kw)
+
+    def test_an_approval_records_what_it_covers(self):
+        covers = self.approved_rights()["approval"]["covers"]
+        self.assertEqual(covers["license"], "Pexels License")
+        self.assertTrue(covers["commercial_use"] and covers["modification_allowed"])
+        self.assertEqual(covers["redistribution"], "derivative_only")
+
+    def test_reuse_is_covered_only_while_the_licence_and_scope_still_hold(self):
+        rights = self.approved_rights()
+        self.assertEqual(licensing.approval_covers(rights), (True, []))
+
+        changed = dict(rights, license="Pexels License (2027 revision)")
+        ok, why = licensing.approval_covers(changed)
+        self.assertFalse(ok)
+        self.assertIn("licence or its terms changed", why[0])
+
+        no_scope = json_copy(rights)
+        no_scope["approval"].pop("covers")
+        self.assertFalse(licensing.approval_covers(no_scope)[0])
+
+        narrower = json_copy(rights)
+        narrower["approval"]["covers"]["modification_allowed"] = False
+        ok, why = licensing.approval_covers(narrower)
+        self.assertFalse(ok)
+        self.assertIn("modifying", " ".join(why))
+
+        ok, why = licensing.approval_covers(rights, {"redistribution": "standalone"})
+        self.assertFalse(ok)
+        self.assertIn("redistribution", " ".join(why))
+
+        ok, why = licensing.approval_covers(rights, {"commercial": True, "modification": True,
+                                                     "redistribution": "derivative_only"})
+        self.assertTrue(ok)
+
+    def test_unsatisfiable_attribution_means_the_approval_does_not_cover_the_use(self):
+        rights = self.approved_rights()
+        rights["attribution_text"] = ""
+        ok, why = licensing.approval_covers(rights)
+        self.assertFalse(ok)
+        self.assertIn("attribution", " ".join(why))
+        unknown = self.approved_rights()
+        unknown["attribution_required"] = None
+        unknown["attribution_text"] = ""
+        self.assertFalse(licensing.approval_covers(unknown)[0], "unknown is not 'not required'")
+
+    def test_no_approval_means_no_cover(self):
+        self.assertFalse(licensing.approval_covers(self.rights())[0])
+        self.assertFalse(licensing.approval_covers({})[0])
+
+    def test_an_approved_asset_whose_cover_lapsed_asks_again_at_every_level(self):
+        lapsed = self.approved_rights()
+        lapsed["license"] = "something else"
+        for level in ("supervised", "graduated"):
+            stock_decision = licensing.decide_use({"source": "stock", "rights": lapsed}, level=level)
+            self.assertEqual(stock_decision["action"], "approval_required", level)
+            self.assertIn("does not cover", " ".join(stock_decision["reasons"]))
+            library = library_candidate()
+            library["rights"] = lapsed
+            self.assertEqual(licensing.decide_use(library, level=level)["action"],
+                             "approval_required", level)
+
+    def test_graduated_reuses_only_where_the_approval_covers_the_new_use(self):
+        rights = self.approved_rights()
+        covered = licensing.decide_use({"source": "stock", "rights": rights}, level="graduated")
+        self.assertEqual(covered["action"], "auto")
+        library = library_candidate()
+        library["rights"] = rights
+        self.assertEqual(licensing.decide_use(library, level="graduated")["action"], "auto")
+        library["use"] = {"redistribution": "standalone"}
+        self.assertEqual(licensing.decide_use(library, level="graduated")["action"], "approval_required")
+
+    def test_graduated_never_waives_first_use_and_is_not_active(self):
+        row = licensing.AUTONOMY_LEVELS["graduated"]
+        self.assertFalse(row["enabled"])
+        self.assertEqual(row["external_first_use"], "owner_approval")
+        self.assertEqual(row["reuse_requires"], "approval_covers")
+        fresh = {"source": "stock", "rights": self.rights()}
+        self.assertEqual(licensing.decide_use(fresh, level="graduated")["action"], "approval_required")
+        self.assertEqual(licensing.autonomy_level({"VISUAL_ASSET_AUTONOMY": "graduated"})["level"],
+                         "supervised")
 
     def test_graduated_autonomy_is_described_but_cannot_be_enabled(self):
         self.assertFalse(licensing.AUTONOMY_LEVELS["graduated"]["enabled"])

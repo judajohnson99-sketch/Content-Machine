@@ -180,9 +180,22 @@ def approve(rights, *, actor, note="", now=None):
     approved = dict(rights)
     approved["commercial_use"] = True
     approved["status"] = APPROVED
-    approved["approval"] = {"actor": actor.strip(), "utc": stamp,
-                            "scope": "first_use", "note": (note or "").strip(),
-                            "terms_reference": rights.get("terms_reference")}
+    approved["approval"] = {
+        "actor": actor.strip(), "utc": stamp,
+        "scope": "first_use", "note": (note or "").strip(),
+        "terms_reference": rights.get("terms_reference"),
+        # What the approver was looking at: the licence as it stood, and the
+        # uses its terms allowed. A later reuse is only covered while the
+        # record still says the same (see ``approval_covers``).
+        "covers": {
+            "license": rights.get("license"),
+            "terms_reference": rights.get("terms_reference"),
+            "commercial_use": terms.get("commercial_use") is True,
+            "modification_allowed": terms.get("modification_allowed") is True,
+            "redistribution": ("derivative_only" if "derivative" in
+                               (terms.get("redistribution") or "") else terms.get("redistribution")),
+        },
+    }
     approved["evidence"] = (f"{rights.get('evidence', '').replace('awaiting owner approval', '').rstrip('; ')}"
                             f"; approved for production use by {actor.strip()} at {stamp}")
     return approved
@@ -194,6 +207,50 @@ def approved(rights):
     return ((rights or {}).get("status") == APPROVED
             and bool((approval.get("actor") or "").strip())
             and rights.get("commercial_use") is True)
+
+
+DEFAULT_USE = {"commercial": True, "modification": True,
+               "redistribution": "derivative_only"}
+
+
+def approval_covers(rights, use=None):
+    """Whether a past approval still covers a (new) use. ``(ok, reasons)``.
+
+    The rule graduated autonomy is defined by, and a check supervised mode
+    applies too: an approval is not a blanket pass. It covers a use only when
+
+    * a named person approved it and the approval recorded its scope;
+    * the licence and terms reference are the ones that were approved;
+    * the provider's terms (verified at retrieval, restated on the record)
+      allow every part of the requested use - commercial, modified, and
+      redistributed only as part of a derivative work; and
+    * any attribution the terms require can actually be given.
+
+    Anything else fails closed and asks a person again.
+    """
+    use = {**DEFAULT_USE, **(use or {})}
+    rights = rights or {}
+    if not approved(rights):
+        return False, ["no one has approved this for production use"]
+    approval = rights.get("approval") or {}
+    covers = approval.get("covers")
+    reasons = []
+    if not isinstance(covers, dict) or approval.get("scope") not in ("first_use", "reuse"):
+        return False, ["the approval did not record what it covers; approve it again"]
+    if (covers.get("license") != rights.get("license")
+            or covers.get("terms_reference") != rights.get("terms_reference")):
+        reasons.append("the licence or its terms changed since it was approved")
+    terms = rights.get("provider_terms") or {}
+    if use["commercial"] and not (covers.get("commercial_use") and terms.get("commercial_use") is True):
+        reasons.append("commercial use is not covered")
+    if use["modification"] and not (covers.get("modification_allowed")
+                                    and terms.get("modification_allowed") is True):
+        reasons.append("modifying the media is not covered")
+    if use["redistribution"] != covers.get("redistribution"):
+        reasons.append(f"redistribution as {use['redistribution']!r} is not covered")
+    if rights.get("attribution_required") is not False and not (rights.get("attribution_text") or "").strip():
+        reasons.append("required attribution cannot be given: no credit line is recorded")
+    return not reasons, reasons
 
 
 def is_external(rights):
@@ -216,16 +273,23 @@ AUTONOMY_LEVELS = {
         "summary": "Search, rank and reuse automatically; a person approves every first use of external media.",
         "auto_search": True,
         "auto_reuse_approved": True,
+        "reuse_requires": "approval_covers",
         "external_first_use": "owner_approval",
         "generation": "owner_initiated",
         "cloud_generation": "never",
     },
     "graduated": {
         "enabled": False,
-        "summary": "Reserved. Would let an owner pre-approve a provider/creator after repeated approvals.",
+        "summary": ("Defined, not active. Previously approved assets are reused with no "
+                    "new prompt only where the verified licence and the approval's scope "
+                    "cover the new use; anything not covered asks a person again."),
         "auto_search": True,
         "auto_reuse_approved": True,
-        "external_first_use": "pre_approved_sources",
+        # Reuse is permitted exactly when `approval_covers` says so - for the
+        # new use, not merely because the asset was approved once. First use
+        # of anything new still needs a person; this level never waives that.
+        "reuse_requires": "approval_covers",
+        "external_first_use": "owner_approval",
         "generation": "owner_initiated",
         "cloud_generation": "never",
     },
@@ -296,15 +360,23 @@ def decide_use(candidate, *, level=DEFAULT_LEVEL, cloud_authorised=False):
             return {"action": "blocked",
                     "reasons": [library.get("rights_problem")
                                 or "Needs a rights record in the library before use."]}
-        if not is_external(rights) or approved(rights):
+        if not is_external(rights):
             return {"action": "auto" if policy["auto_reuse_approved"] else "approval_required",
                     "reasons": ["Already in your library with an approved rights record."]}
+        covered, why = approval_covers(rights, candidate.get("use"))
+        if covered and policy["auto_reuse_approved"]:
+            return {"action": "auto",
+                    "reasons": ["Approved before, and that approval and its licence cover this use."]}
         return {"action": "approval_required",
-                "reasons": ["External media in your library that no one has approved for production."]}
+                "reasons": ["External media in your library that is not covered by an approval: "
+                            + "; ".join(why) + "."]}
 
     # stock
     if approved(rights):
-        return {"action": "auto", "reasons": ["Already approved for production use."]}
+        covered, why = approval_covers(rights, candidate.get("use"))
+        if covered:
+            return {"action": "auto", "reasons": ["Already approved for production use."]}
+        reasons.append("An earlier approval does not cover this use: " + "; ".join(why) + ".")
     reasons.append("First use of media from " + (rights.get("source") or "an external source")
                    + " needs your approval.")
     if rights.get("eligibility") == REVIEW_REQUIRED:

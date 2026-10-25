@@ -657,6 +657,18 @@ class ProductionTests(VisualAssetCase):
         self.assertTrue(any("Bo Lind" in line for line in credits), credits)
         self.assertIn("Ada Ng", (pdir / "output" / "visual_credits.txt").read_text())
 
+        # -- the description carries the required credits automatically -----
+        description = package["description"]
+        self.assertTrue(description.startswith("Fixture media, not a real production"))
+        self.assertIn(visual_assets.CREDITS_HEADING, description)
+        for line in credits:
+            self.assertIn(f"- {line}", description)
+        self.assertIn("https://www.pexels.com/photo/quiet-lake-501/", description,
+                      "the credit keeps the source link, so provenance travels with it")
+        self.assertEqual(package["description_credits"], visual_assets.credits_block(package["visual_sources"]))
+        self.assertEqual(self.metadata()["description"], "Fixture media, not a real production",
+                         "the editorial description itself is not rewritten")
+
         # -- the Review Center read model shows the same, and the files ------
         assets = project.project_assets(self.video_id)
         self.assertEqual({v["scene_id"] for v in assets["visual_sources"]}, {"s01", "s02", "s03"})
@@ -712,6 +724,20 @@ class ProductionTests(VisualAssetCase):
         blocking = project.gate_blockers(pdir, metadata, "PASS", [], True, {})
         self.assertTrue(any("has not been approved" in b for b in blocking))
 
+        # Required credits that cannot be given fail closed.
+        metadata = self.metadata()
+        entry = next(e for e in metadata["owner_media"]["visuals"] if e["scene_id"] == "s02")
+        entry["rights"]["attribution_text"] = ""
+        blocking = project.gate_blockers(pdir, metadata, "PASS", [], True, {})
+        self.assertTrue(any("attribution is required but no credit line" in b for b in blocking), blocking)
+        entry["rights"]["attribution_required"] = None
+        blocking = project.gate_blockers(pdir, metadata, "PASS", [], True, {})
+        self.assertTrue(any("whether attribution is required is not recorded" in b for b in blocking), blocking)
+        metadata = self.metadata()
+        metadata["description"] = "x" * 4990
+        blocking = project.gate_blockers(pdir, metadata, "PASS", [], True, {})
+        self.assertTrue(any("do not fit" in b for b in blocking), blocking)
+
         # And so is bytes that changed after approval.
         metadata = self.metadata()
         staged = pdir / next(e for e in metadata["owner_media"]["visuals"]
@@ -745,11 +771,60 @@ class ProductionTests(VisualAssetCase):
         self.assertIn("generated (comfyui, seed 4242)", text)
 
 
+class CreditsTests(unittest.TestCase):
+    """The description and the fail-closed rule, without a render."""
+
+    def source(self, scene, **kw):
+        base = {"scene_id": scene, "kind": "stock", "provider": "Pexels", "attribution_required": True,
+                "attribution_text": f"Photo by Ada {scene} on Pexels (https://x/{scene})"}
+        return {**base, **kw}
+
+    def test_required_credits_are_appended_once_and_in_scene_order(self):
+        sources = [self.source("s01"), self.source("s02"), self.source("s03", kind="library",
+                   provider="owner library", attribution_required=False, attribution_text=None),
+                   self.source("s04", kind="generated", attribution_required=False, attribution_text=None)]
+        text = visual_assets.description_with_credits("Calm lake at night.", sources)
+        self.assertEqual(text, "Calm lake at night.\n\nVisual credits:\n"
+                               "- Photo by Ada s01 on Pexels (https://x/s01)\n"
+                               "- Photo by Ada s02 on Pexels (https://x/s02)")
+        self.assertEqual(visual_assets.description_with_credits(text, sources), text, "idempotent")
+
+    def test_no_required_credits_leaves_the_description_alone(self):
+        sources = [self.source("s01", attribution_required=False)]
+        self.assertEqual(visual_assets.description_with_credits("Hello", sources), "Hello")
+        self.assertEqual(visual_assets.credits_block(sources), "")
+        self.assertEqual(visual_assets.attribution_problems(sources), [])
+
+    def test_the_same_credit_for_two_scenes_is_printed_once(self):
+        twin = [self.source("s01", attribution_text="Photo by Ada on Pexels"),
+                self.source("s02", attribution_text="Photo by Ada on Pexels")]
+        self.assertEqual(visual_assets.credits_block(twin).count("Photo by Ada on Pexels"), 1)
+
+    def test_a_credit_that_cannot_be_printed_blocks_rather_than_being_skipped(self):
+        problems = visual_assets.attribution_problems([self.source("s01", attribution_text=" ")])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("scene s01", problems[0])
+        self.assertIn("no credit line", problems[0])
+
+    def test_an_unknown_requirement_on_stock_is_not_treated_as_not_required(self):
+        problems = visual_assets.attribution_problems(
+            [self.source("s01", attribution_required=None, attribution_text=None)])
+        self.assertIn("not recorded", problems[0])
+
+    def test_credits_that_overflow_the_description_limit_block(self):
+        sources = [self.source(f"s{i:02d}") for i in range(1, 60)]
+        problems = visual_assets.attribution_problems(sources, "d" * 4000)
+        self.assertTrue(any("do not fit" in p for p in problems))
+        self.assertEqual(visual_assets.attribution_problems(sources[:2], "short"), [])
+
+
 class CliTests(VisualAssetCase):
     def test_status_reports_providers_gpu_and_the_autonomy_level(self):
         status = visual_assets.status()
         by_name = {p["provider"]: p for p in status["providers"]}
         self.assertEqual(by_name["pixabay"]["state"], "not_configured")
+        self.assertEqual(by_name["unsplash"]["state"], "disabled",
+                         "optional and off until its production access is verified")
         self.assertEqual(by_name["pexels"]["configured"], True)
         self.assertEqual(status["gpu"]["state"], "deferred")
         self.assertEqual(status["autonomy"]["level"], "supervised")

@@ -34,6 +34,7 @@ const PROVIDER_STATE: Record<ProviderReport["state"], { text: string; tone: Tone
   auth_failed: { text: "access refused", tone: "danger" },
   unsupported: { text: "no footage", tone: "neutral" },
   skipped: { text: "skipped", tone: "neutral" },
+  disabled: { text: "off for now", tone: "neutral" },
 };
 
 const SOURCE_LABEL = (c: VisualCandidate): string =>
