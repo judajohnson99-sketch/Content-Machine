@@ -1032,7 +1032,8 @@ available locally.
 `--allow-unverified-audio` is available only for a private review bootstrap
 and keeps the publication gate blocked. `run` uses the existing render/QC/
 package path. `kdenlive` lowers the resolved scene edit to an editable native
-Kdenlive project, verifies it through MLT, and renders a review MP4. Selected
+Kdenlive project (needs `melt` and the frei0r plugins: on Debian/Ubuntu
+`apt install melt frei0r-plugins`; verified with MLT 7.22), verifies it through MLT, and renders a review MP4. Selected
 source bundles are request-scoped and hash-verified before staging; originals
 remain on the HP.
 

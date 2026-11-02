@@ -10,40 +10,32 @@ The single resume file.
 
 ## Current Position
 
-Milestone: Unified Visual Asset Discovery & Generation, built on branch
-`claude/unified-visual-asset-discovery` and ready for review on PR. One
-per-scene workflow (`scripts/visual_assets.py`) ranks the owner library, stock
-photography/footage (Pexels, Pixabay, Unsplash via official APIs,
-`scripts/stock_providers.py`) and a planned ComfyUI generation together
-(`scripts/asset_ranking.py`), under an approval policy
-(`scripts/asset_licensing.py`, only `supervised` enabled). Choosing becomes an
-ordinary owner-media pin on the scene, so render, Review Center, package and
-the Kdenlive archive carry source, licence, creator, retrieval date and
-approval. Stock stays unapproved (`commercial_use` false) until a person
-approves first use; a GPU that is off defers a generation, never fails search.
-Workspace panel: "Find a picture for each shot".
-Owner decisions: required credits are appended to the package description
-automatically and fail closed; graduated autonomy is defined (reuse only where
-the verified licence and approval scope cover the new use) but disabled;
-Unsplash is optional and off until `UNSPLASH_ENABLED` after its production
-access is verified.
+Milestone: post-merge integration validation of PR #4 (unified visual asset
+discovery), on main. One per-scene workflow (`scripts/visual_assets.py`) ranks
+the owner library, stock (Pexels, Pixabay; Unsplash optional and off) and a
+planned ComfyUI generation under the `supervised` approval policy; graduated
+autonomy is defined and disabled. Required credits are appended to the package
+description and fail closed.
 
-NOT validated: no Pexels/Pixabay/Unsplash key exists in this environment, so
-every provider call was exercised against scripted vendor responses only; no
-real ComfyUI render ran (GPU PC off); `melt` is not installed here so the
-Kdenlive project was built and inspected but not MLT-verified. WORKER_VISION
-stays disabled. Earlier blockers stand (search provider for sourced research,
-PC agent update, idempotent-job reuse defect, vision calibration on hardware).
+Validated here: a real `melt` 7.22 + frei0r export of a mixed production
+(library still, stock photo, stock footage) verified, rendered through MLT,
+QC PASS, licence trail present in the handoff and archive; the previously
+failing Kdenlive tests pass. Code graph refreshed (`graphify update .`).
+
+NOT validated: no Pexels/Pixabay/Unsplash key exists and the environment
+network policy denies api.pexels.com, pixabay.com and api.unsplash.com (403 on
+CONNECT), so no real provider search ran; the GTX 1060 PC is not connected and
+no worker is enrolled, so 768x432 is unverified on hardware (procedure written
+in WORKER_RUNBOOK.md, not run). The Kdenlive editor itself has not opened the
+project. WORKER_VISION stays unset.
 
 Tooling: project skills (shared, web, `cm-*`) are vendored in `.claude/skills/`; see its REGISTRY.md.
 
-Next: add real API keys and run one search per provider; when the GPU PC is on,
-choose a generated candidate for one scene and verify 768x432 on the GTX 1060
-and follow WORKER_RUNBOOK.md "Vision on the GPU worker" (calibrate with
-`vision_calibration.py run --apply`, label real renders, verify ComfyUI `/free`
-and VRAM fit); install `melt` and rerun the Kdenlive export; then the
-creator-workflow next steps (update the PC agent, a working search provider,
-repair job output ownership).
+Next: allow the three provider hosts in the environment and add the two free
+keys, then one search each; when the PC is on, run the "Validating 768x432"
+section of WORKER_RUNBOOK.md and record peak VRAM and seconds; then vision
+calibration and the creator-workflow next steps (update the PC agent, a working
+search provider, repair job output ownership).
 
 ## Standing decisions
 
@@ -70,11 +62,8 @@ and are not restated here.
 
 ## Session Continuity
 
-Latest request: implement the unified visual asset discovery and generation
-milestone end to end without GPU or provider credentials. Done: stock adapters
-with cache/cooldown/dedupe, unified ranking with explanations, approval policy,
-library-first reuse with near-duplicate collapse, deferred generation and
-per-scene regeneration, pinned scene selection with lineage, licence trail into
-package/Review Center/Kdenlive, API endpoints, workspace panel, tests, docs and
-a vault decision note. Graphs were not refreshed: `graphify` is not installed
-here. PR opened, not merged.
+Latest request: post-merge validation. Installed melt and frei0r plugins in
+this container (not repo changes), ran the real Kdenlive export, wrote the
+Windows GPU validation procedure, refreshed the code graph. Provider and GPU
+validation are blocked on network access, keys and the desktop being on. No
+code changed; only WORKER_RUNBOOK.md and this file.
