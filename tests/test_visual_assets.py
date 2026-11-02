@@ -108,15 +108,16 @@ def footage(path, seconds=3):
     return Path(path)
 
 
-DISTINCT_SOURCES = ("testsrc2", "mandelbrot", "gradients=seed=7", "rgbtestsrc", "smptehdbars")
+# Deterministic lavfi sources only (`gradients` and `life` are random even when
+# seeded, and sometimes come out flat enough for the image QC to reject).
+DISTINCT_SOURCES = ("testsrc2", "mandelbrot", "testsrc", "yuvtestsrc", "smptehdbars")
 
 
 def distinct_image(path, n, size="1920x1080"):
     """Pictures that differ in structure, not just colour: the near-duplicate
     check hashes luma, so hue-shifted copies of one pattern are one picture."""
     source = DISTINCT_SOURCES[n % len(DISTINCT_SOURCES)]
-    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", f"{source}:size={size}"
-                    if "=" in source else f"{source}=size={size}", "-frames:v", "1", str(path)],
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", f"{source}=size={size}", "-frames:v", "1", str(path)],
                    check=True)
     return Path(path)
 
