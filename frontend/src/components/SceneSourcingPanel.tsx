@@ -4,6 +4,7 @@ import { getAssets } from "../api/assets";
 import { libraryFileUrl } from "../api/library";
 import {
   chooseSceneAsset,
+  fillOpenShots,
   getSceneAssets,
   regenerateScene,
   saveSceneAsset,
@@ -140,6 +141,17 @@ export function SceneSourcingPanel({ videoId, disabled }: Props) {
       saveSceneAsset(videoId, sceneId, { candidate_id: candidate.candidate_id }),
     onSuccess: () => setOutcome("Saved to your library. It will ask for your approval the first time it is used."),
   });
+  const fill = useMutation({
+    mutationFn: () => fillOpenShots(videoId),
+    onSuccess: (report) => {
+      const parts = [`${report.filled.length} shot${report.filled.length === 1 ? "" : "s"} filled from your library`];
+      if (report.needs_approval.length) parts.push(`${report.needs_approval.length} need your approval of stock`);
+      if (report.unfilled.length) parts.push(`${report.unfilled.length} have nothing usable yet`);
+      setOutcome(parts.join(" · ") + (report.filled.length ? ". Run the Scenes step again to use them." : "."));
+      refresh();
+      void queryClient.invalidateQueries({ queryKey: ["scene-assets", videoId, sceneId] });
+    },
+  });
   const regenerate = useMutation({
     mutationFn: () => regenerateScene(videoId, sceneId),
     onSuccess: () => {
@@ -156,12 +168,18 @@ export function SceneSourcingPanel({ videoId, disabled }: Props) {
 
   const data = discovery.data;
   const searched = !!data && data.searched !== false && data.candidates.length + (data.providers?.length ?? 0) > 0;
-  const error = (search.error || choose.error || save.error || regenerate.error) as Error | null;
-  const busy = search.isPending || choose.isPending || save.isPending || regenerate.isPending;
+  const error = (search.error || choose.error || save.error || regenerate.error || fill.error) as Error | null;
+  const busy = search.isPending || choose.isPending || save.isPending || regenerate.isPending || fill.isPending;
 
   return (
     <div className={styles.panel}>
       <h3 className={styles.heading}>Find a picture for each shot</h3>
+      <div className={styles.actions}>
+        <Button variant="secondary" disabled={disabled || busy} onClick={() => fill.mutate()}
+          title="Uses media already in your library with cleared rights. Nothing is downloaded, approved or generated.">
+          {fill.isPending ? "Filling…" : "Fill open shots from my library"}
+        </Button>
+      </div>
       <div className={styles.head}>
         <label className={styles.sceneSelect}>
           Shot

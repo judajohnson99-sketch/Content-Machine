@@ -173,6 +173,24 @@ describe("SceneSourcingPanel", () => {
     await waitFor(() => expect(search).toHaveBeenCalledWith("proof", "s01", { query: undefined, more: true }));
   });
 
+  it("fills open shots from the library without approving or generating anything", async () => {
+    vi.spyOn(visualApi, "getSceneAssets").mockResolvedValue(discovery({ candidates: [] }));
+    const fill = vi.spyOn(visualApi, "fillOpenShots").mockResolvedValue({
+      filled: [{ scene_id: "s01", asset_id: "a".repeat(64) }],
+      needs_approval: [{ scene_id: "s02", candidate_id: "stock:pexels:image:1", provider: "pexels", title: "Lake" }],
+      unfilled: [{ scene_id: "s03", reason: "no usable match" }],
+      skipped: [], stale_stages: ["scenes"],
+    });
+    renderWithClient(<SceneSourcingPanel videoId="proof" />);
+    await userEvent.click(await screen.findByRole("button", { name: "Fill open shots from my library" }));
+    await waitFor(() => expect(fill).toHaveBeenCalledWith("proof"));
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent("1 shot filled from your library");
+    expect(status).toHaveTextContent("1 need your approval of stock");
+    expect(status).toHaveTextContent("1 have nothing usable yet");
+    expect(status).toHaveTextContent("Run the Scenes step again");
+  });
+
   it("invites a first search when nothing has been searched", async () => {
     vi.spyOn(visualApi, "getSceneAssets").mockResolvedValue({ scene_id: "s01", searched: false, candidates: [] });
     renderWithClient(<SceneSourcingPanel videoId="proof" />);

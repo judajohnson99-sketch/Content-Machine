@@ -194,6 +194,21 @@ Things to watch, because they could not be tested without the hardware:
 - A busy ComfyUI defers judging (`gpu_busy`); the render itself is never
   delayed or failed by vision.
 
+## Reconnect checklist (GTX 1060 desktop)
+
+Tick in order; stop at the first failure and note it in `.paul/STATE.md`.
+
+1. [ ] Desktop on, ComfyUI up in `--lowvram` mode, `curl http://127.0.0.1:8188/system_stats` shows the GTX 1060 (~3 GB).
+2. [ ] PC checkout updated (current `scripts/`, `config/`); `.env` has `CONTROL_PLANE_URL`, `WORKER_TOKEN`, `COMFYUI_URL`; **no** `WORKER_VISION`, **no** `COMFYUI_LATENT_MAX_PIXELS`.
+3. [ ] VPS: `./content-machine worker serve`; PC: SSH tunnel, then `python scripts\worker_agent.py` shows `no work: NO_JOB_READY`.
+4. [ ] `./content-machine worker workers` lists it ONLINE with `comfyui`; `./content-machine assets status` shows `gpu.state: ready`.
+5. [ ] Run the 768x432 test below; record job id, peak VRAM, seconds per image, output size.
+6. [ ] One scene through the pipeline (`assets select` a generated candidate, then `scenes`); a depicted image lands, `production_grade` still unset.
+7. [ ] Turn the PC off mid-queue: the job stays QUEUED/WAITING_FOR_CAPABLE_WORKER at attempt 0 and runs when the PC returns.
+8. [ ] Only then, separately and on purpose: vision calibration (see "Vision on the GPU worker"). Not part of this checklist.
+
+Until the PC is back, productions do not wait on it: `./content-machine assets fill <video-id> --actor you` pins approved library media on open shots, and stock is approved per shot in the workspace.
+
 ## Validating 768x432 on the GTX 1060 3GB (Windows, run only when the desktop is on)
 
 Goal: show that one 768x432, batch-size-1 image renders on the 3GB card in

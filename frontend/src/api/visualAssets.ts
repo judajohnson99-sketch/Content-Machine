@@ -35,6 +35,20 @@ export function saveSceneAsset(
   return apiPost(`${base(videoId, sceneId)}/assets/save/`, body);
 }
 
+export interface FillReport {
+  filled: { scene_id: string; asset_id: string }[];
+  needs_approval: { scene_id: string; candidate_id: string; provider: string | null; title: string | null }[];
+  unfilled: { scene_id: string; reason: string }[];
+  skipped: { scene_id: string; reason: string }[];
+  stale_stages: string[];
+}
+
+// The no-GPU path: pins approved library media on shots with no picture.
+// Never approves, downloads or generates anything.
+export function fillOpenShots(videoId: string, body: { include_stock?: boolean } = {}): Promise<FillReport> {
+  return apiPost(`/projects/${encodeURIComponent(videoId)}/visual-assets/fill/`, body);
+}
+
 export function regenerateScene(
   videoId: string,
   sceneId: string,

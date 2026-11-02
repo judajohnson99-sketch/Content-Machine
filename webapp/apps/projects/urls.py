@@ -13,6 +13,8 @@ urlpatterns = [
          name="project-owner-media"),
     path("<str:video_id>/visual-assets/", views.ProjectVisualAssetStatusView.as_view(),
          name="project-visual-assets"),
+    path("<str:video_id>/visual-assets/fill/", views.ProjectVisualAssetFillView.as_view(),
+         name="project-visual-assets-fill"),
     path("<str:video_id>/scenes/<str:scene_id>/assets/", views.SceneAssetsView.as_view(),
          name="scene-assets"),
     path("<str:video_id>/scenes/<str:scene_id>/assets/select/",

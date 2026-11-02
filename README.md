@@ -1081,6 +1081,15 @@ than being retried; one provider failing never stops the others. Downloads come
 only from the provider's own hosts. Unsplash downloads are reported to
 Unsplash as its API terms require. There is no scraping.
 
+**Without a GPU.** `./content-machine assets fill <video-id> --actor you` (the
+"Fill open shots from my library" button) pins media that is already in the
+library with an approved rights record on every shot that has no picture. It
+never approves stock, downloads, or generates: stock options are listed for a
+person to approve, shots with no usable match are listed as unfilled, and one
+picture is not spread over every shot unless `--allow-repeats` is given. A
+concept that requires depicted imagery then completes from the library alone
+(scenes -> audio -> render -> QC -> Kdenlive); the gate is unchanged.
+
 **Generation** is planned, not run, by a search: the candidate carries the
 scene's prompt, negative prompt, seed and a 768x432 request (the verified size
 for the 3GB card). Choosing it hands the scene to the ordinary `scenes` stage;

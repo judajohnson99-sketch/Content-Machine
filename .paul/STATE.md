@@ -10,32 +10,28 @@ The single resume file.
 
 ## Current Position
 
-Milestone: post-merge integration validation of PR #4 (unified visual asset
-discovery), on main. One per-scene workflow (`scripts/visual_assets.py`) ranks
-the owner library, stock (Pexels, Pixabay; Unsplash optional and off) and a
-planned ComfyUI generation under the `supervised` approval policy; graduated
-autonomy is defined and disabled. Required credits are appended to the package
-description and fail closed.
+Milestone: GPU-free usability, on branch `claude/gpu-free-validation`. The
+unified visual asset workflow (library, stock, planned generation; `supervised`
+approval; graduated autonomy defined and disabled) now has a no-GPU path:
+`./content-machine assets fill <id> --actor <you>` (and the workspace button)
+pins approved library media on shots without a picture, never approving stock,
+downloading or generating. A concept that requires depicted imagery completes
+from the library alone: scenes, audio, render, QC PASS, real `melt` Kdenlive
+export. `run_scenes` now points at this path when it cannot resolve a shot.
 
-Validated here: a real `melt` 7.22 + frei0r export of a mixed production
-(library still, stock photo, stock footage) verified, rendered through MLT,
-QC PASS, licence trail present in the handoff and archive; the previously
-failing Kdenlive tests pass. Code graph refreshed (`graphify update .`).
-
-NOT validated: no Pexels/Pixabay/Unsplash key exists and the environment
-network policy denies api.pexels.com, pixabay.com and api.unsplash.com (403 on
-CONNECT), so no real provider search ran; the GTX 1060 PC is not connected and
-no worker is enrolled, so 768x432 is unverified on hardware (procedure written
-in WORKER_RUNBOOK.md, not run). The Kdenlive editor itself has not opened the
-project. WORKER_VISION stays unset.
+Validated with mocks/fixtures only: Pexels/Pixabay adapters (scripted vendor
+responses). NOT validated: live Pexels/Pixabay searches (no keys; the
+environment network policy denies the provider hosts); the creative stage (needs
+an LLM key and the anthropic SDK, absent here); 768x432 on the GTX 1060 (desktop
+off; checklist in WORKER_RUNBOOK.md); the Kdenlive editor opening a project.
+WORKER_VISION stays unset.
 
 Tooling: project skills (shared, web, `cm-*`) are vendored in `.claude/skills/`; see its REGISTRY.md.
 
-Next: allow the three provider hosts in the environment and add the two free
-keys, then one search each; when the PC is on, run the "Validating 768x432"
-section of WORKER_RUNBOOK.md and record peak VRAM and seconds; then vision
-calibration and the creator-workflow next steps (update the PC agent, a working
-search provider, repair job output ownership).
+Next: allow the provider hosts and add the two free keys, then one search each;
+when the PC is on, follow the reconnect checklist in WORKER_RUNBOOK.md; then
+vision calibration and the creator-workflow next steps (update the PC agent, a
+working search provider, repair job output ownership).
 
 ## Standing decisions
 
@@ -62,8 +58,9 @@ and are not restated here.
 
 ## Session Continuity
 
-Latest request: post-merge validation. Installed melt and frei0r plugins in
-this container (not repo changes), ran the real Kdenlive export, wrote the
-Windows GPU validation procedure, refreshed the code graph. Provider and GPU
-validation are blocked on network access, keys and the desktop being on. No
-code changed; only WORKER_RUNBOOK.md and this file.
+Latest request: keep developing without the GTX 1060 or ComfyUI. Found that a
+depicted-image concept stopped at `scenes` with no GPU and no pointer to the
+library path; added `assets fill` (CLI, API, workspace button), a hint in the
+scenes failure, tests (fill behaviour, GPU-free production end to end, real
+melt export) and the reconnect checklist. Knowledge graph not refreshed again
+by request.

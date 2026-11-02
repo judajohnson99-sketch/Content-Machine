@@ -26,7 +26,8 @@ from apps.engine.services import workers as workers_service
 from apps.library.serializers import OwnerMediaSelectionSerializer
 
 from .serializers import (
-    SceneRegenerateSerializer, VisualAssetChoiceSerializer, VisualAssetSearchSerializer,
+    SceneRegenerateSerializer, VisualAssetChoiceSerializer, VisualAssetFillSerializer,
+    VisualAssetSearchSerializer,
     ProductionGoalSerializer, ProjectCreateSerializer, ProjectDeleteSerializer,
     ProjectSummarySerializer, ResearchBriefSerializer,
     ProjectArchiveSerializer,
@@ -363,6 +364,24 @@ class ProjectVisualAssetStatusView(APIView):
 
     def get(self, request, video_id):
         return Response(_visual_asset_call(video_id, visual_assets_service.status))
+
+
+class ProjectVisualAssetFillView(APIView):
+    """POST /api/v1/projects/{id}/visual-assets/fill/ - the no-GPU path.
+
+    Pins media that is already in the library with an approved rights record
+    on every shot that has no picture, and reports what still needs a person
+    (stock to approve) or has nothing usable. It never approves, downloads or
+    generates, so it is safe to offer whenever the GPU is off.
+    """
+
+    def post(self, request, video_id):
+        serializer = VisualAssetFillSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        return Response(_visual_asset_call(
+            video_id, visual_assets_service.fill, _actor(request), scenes=data["scenes"],
+            include_stock=data["include_stock"], allow_repeats=data["allow_repeats"]))
 
 
 class SceneAssetsView(APIView):

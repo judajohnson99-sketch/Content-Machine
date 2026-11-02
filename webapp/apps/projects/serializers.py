@@ -123,6 +123,15 @@ class VisualAssetChoiceSerializer(serializers.Serializer):
     note = serializers.CharField(required=False, allow_blank=True, default="", max_length=1000)
 
 
+class VisualAssetFillSerializer(serializers.Serializer):
+    """POST .../visual-assets/fill/ - pin approved library media on open shots.
+    Never approves, downloads or generates anything."""
+    scenes = serializers.ListField(child=serializers.CharField(max_length=64), required=False,
+                                   allow_null=True, default=None)
+    include_stock = serializers.BooleanField(required=False, default=True)
+    allow_repeats = serializers.BooleanField(required=False, default=False)
+
+
 class SceneRegenerateSerializer(serializers.Serializer):
     seed = serializers.IntegerField(required=False, allow_null=True, default=None)
     prompt = serializers.CharField(required=False, allow_blank=True, allow_null=True,
