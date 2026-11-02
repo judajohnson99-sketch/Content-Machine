@@ -1006,6 +1006,76 @@ def regenerate_scene(video_id, scene_id, *, actor, seed=None, prompt=None,
     return out
 
 
+def fill_scenes(video_id, actor, *, scenes=None, include_stock=True,
+                allow_repeats=False, catalog=media.DEFAULT_CATALOG, hub=None):
+    """Give every shot that has no picture the best option that needs no one.
+
+    This is the GPU-free path through a production, and the bounded
+    autonomy the approval policy allows: media already in the library with an
+    approved rights record is pinned automatically; nothing else is.
+
+    * ``filled``         - pinned now (library media whose policy is ``auto``)
+    * ``needs_approval`` - the best option is stock or a saved-but-unapproved
+                           file; it is *not* downloaded or approved here, and
+                           the search is stored so the workspace shows it
+    * ``unfilled``       - nothing usable (no match, or the only match would
+                           repeat a picture already used in this video)
+
+    A shot that already has a pin or a generated picture is left alone.
+    Generation is never started, so a GPU that is off changes nothing.
+    """
+    if not (actor or "").strip():
+        raise VisualAssetError("filling shots records who asked; actor is required")
+    pdir, metadata, board = _load_project(video_id)
+    pinned = {e.get("scene_id") for e in ownermedia.visuals(metadata) if e.get("scene_id")}
+    wanted = set(scenes) if scenes else None
+    sources = ("library", "stock") if include_stock else ("library",)
+    report = {"filled": [], "needs_approval": [], "unfilled": [], "skipped": []}
+    for scene in board["scenes"]:
+        scene_id = scene["scene_id"]
+        if wanted is not None and scene_id not in wanted:
+            continue
+        if scene_id in pinned or (scene.get("image") and not ownermedia.is_owner_scene(scene)):
+            report["skipped"].append({"scene_id": scene_id, "reason": "already has a picture"})
+            continue
+        entry = discover(video_id, scene_id, sources=sources, catalog=catalog, hub=hub)
+        # Reload: earlier fills in this loop changed which assets are "used".
+        used = {e["asset_id"] for e in ownermedia.visuals(_load_project(video_id)[1])}
+        choice = None
+        for candidate in entry["candidates"]:
+            if candidate["source"] not in ("library", "stock") or not candidate["ranking"]["eligible"]:
+                continue
+            if candidate["ranking"]["score"] < ranking.MIN_USEFUL_SCORE:
+                continue
+            asset_id = (candidate.get("library") or {}).get("asset_id")
+            if asset_id and asset_id in used and not allow_repeats:
+                continue
+            choice = candidate
+            break
+        if choice is None:
+            report["unfilled"].append({"scene_id": scene_id,
+                                       "reason": "no usable match" if not entry["candidates"]
+                                       else "only matches would repeat a picture already used"})
+        elif choice["policy"]["action"] == "auto" and choice["source"] == "library":
+            result = select(video_id, scene_id, choice["candidate_id"], actor,
+                            catalog=catalog, hub=hub)
+            if result["status"] == "selected":
+                report["filled"].append({"scene_id": scene_id, "candidate_id": choice["candidate_id"],
+                                         "asset_id": result["asset_id"],
+                                         "score": choice["ranking"]["score"]})
+            else:
+                report["unfilled"].append({"scene_id": scene_id, "reason": "; ".join(
+                    result.get("reasons") or [result["status"]])})
+        else:
+            report["needs_approval"].append({
+                "scene_id": scene_id, "candidate_id": choice["candidate_id"],
+                "provider": choice.get("provider"), "title": choice.get("title"),
+                "score": choice["ranking"]["score"],
+                "reasons": choice["policy"]["reasons"]})
+    report["stale_stages"] = _project()._stale_stages(video_id, _load_project(video_id)[1])
+    return report
+
+
 # --------------------------------------------------------------------------
 # the production's record of where its pictures came from
 # --------------------------------------------------------------------------
@@ -1187,6 +1257,14 @@ def main(argv=None):
     p.add_argument("--actor", required=True)
     p.add_argument("--approve", action="store_true", help="approve first use of external media")
     p.add_argument("--note", default="")
+    p = sub.add_parser("fill", help="pin approved library media on shots that have no picture "
+                                    "(no GPU, no downloads, no approvals)")
+    p.add_argument("video_id")
+    p.add_argument("--actor", required=True)
+    p.add_argument("--scene", action="append", help="limit to these shots (repeatable)")
+    p.add_argument("--no-stock", action="store_true", help="do not search stock sites")
+    p.add_argument("--allow-repeats", action="store_true",
+                   help="allow one picture on several shots when it is the best match")
     p = sub.add_parser("regenerate", help="generate one scene's picture again")
     p.add_argument("video_id")
     p.add_argument("scene_id")
@@ -1212,6 +1290,9 @@ def main(argv=None):
         elif args.command == "select":
             _print(select(args.video_id, args.scene_id, args.candidate_id, args.actor,
                           approve=args.approve, note=args.note))
+        elif args.command == "fill":
+            _print(fill_scenes(args.video_id, args.actor, scenes=args.scene,
+                               include_stock=not args.no_stock, allow_repeats=args.allow_repeats))
         elif args.command == "regenerate":
             _print(regenerate_scene(args.video_id, args.scene_id, actor=args.actor,
                                     seed=args.seed, prompt=args.prompt, run=args.run))

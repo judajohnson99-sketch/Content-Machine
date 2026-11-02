@@ -90,6 +90,14 @@ class TestVisualAssetViews:
             response = client.post(BASE + "select/", {"candidate_id": "x"}, format="json")
         assert response.status_code == 409
 
+    def test_fill_passes_the_session_user_and_defaults_to_no_repeats(self, client):
+        report = {"filled": [], "needs_approval": [], "unfilled": [], "skipped": []}
+        with patch(f"{SERVICE}.fill", return_value=report) as fill:
+            response = client.post("/api/v1/projects/proof/visual-assets/fill/", {}, format="json")
+        assert response.status_code == 200
+        fill.assert_called_once_with("proof", "owner@example.com", scenes=None,
+                                     include_stock=True, allow_repeats=False)
+
     def test_a_missing_candidate_id_is_a_400(self, client):
         assert client.post(BASE + "select/", {}, format="json").status_code == 400
 

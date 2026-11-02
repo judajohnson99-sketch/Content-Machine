@@ -30,6 +30,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import asset_licensing as licensing  # noqa: E402
+import experiment  # noqa: E402
 import kdenlive as kdenlive_mod  # noqa: E402
 import media  # noqa: E402
 import ownermedia  # noqa: E402
@@ -107,6 +108,19 @@ def footage(path, seconds=3):
     return Path(path)
 
 
+DISTINCT_SOURCES = ("testsrc2", "mandelbrot", "gradients=seed=7", "rgbtestsrc", "smptehdbars")
+
+
+def distinct_image(path, n, size="1920x1080"):
+    """Pictures that differ in structure, not just colour: the near-duplicate
+    check hashes luma, so hue-shifted copies of one pattern are one picture."""
+    source = DISTINCT_SOURCES[n % len(DISTINCT_SOURCES)]
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", f"{source}:size={size}"
+                    if "=" in source else f"{source}=size={size}", "-frames:v", "1", str(path)],
+                   check=True)
+    return Path(path)
+
+
 GPU_OFF = {"state": "deferred", "where": None, "detail": "No GPU worker is enrolled"}
 GPU_ON = {"state": "ready", "where": "remote", "detail": "worker-1 is online"}
 
@@ -157,6 +171,21 @@ class VisualAssetCase(unittest.TestCase):
                        source="the owner's camera", rights=dict(rights) if rights else None,
                        catalog=self.catalog)
         return identity
+
+    def own_distinct(self, count, description="misty botanical garden path", tags=("garden", "mist"),
+                     rights=OWNER_RIGHTS):
+        library = self.base / "my footage"
+        library.mkdir(exist_ok=True)
+        ids = []
+        for n in range(count):
+            path = distinct_image(library / f"garden{n}.png", n)
+            ids.append(media.digest(path))
+        media.scan(library, self.catalog)
+        for n, identity in enumerate(ids):
+            media.annotate(identity, description=f"{description} {n}", tags=list(tags), origin="owner",
+                           source="the owner's camera", rights=dict(rights) if rights else None,
+                           catalog=self.catalog)
+        return ids
 
     def scaffold(self, intents=("misty pine forest at dawn", "calm lake at night under stars",
                                 "river stream flowing nature"), duration=6.0, fps=12):
@@ -769,6 +798,189 @@ class ProductionTests(VisualAssetCase):
         self.assertEqual(visual_assets.attributions(sources), [])
         text = visual_assets.credits_text(self.video_id, sources)
         self.assertIn("generated (comfyui, seed 4242)", text)
+
+
+class FillTests(VisualAssetCase):
+    """The GPU-free path: approved library media goes onto open shots by
+    itself; anything needing a person is listed, not done."""
+
+    def fill(self, hub=None, **kw):
+        return visual_assets.fill_scenes(self.video_id, "owner@example.com", catalog=self.catalog,
+                                         hub=hub or self.hub(), **kw)
+
+    def pins(self):
+        return {e["scene_id"]: e["asset_id"] for e in ownermedia.visuals(self.metadata())}
+
+    def test_library_media_is_pinned_and_stock_is_only_offered(self):
+        forest = self.own_still()
+        self.scaffold()
+        hub = self.hub()
+        report = self.fill(hub=hub)
+        self.assertEqual([f["scene_id"] for f in report["filled"]], ["s01"])
+        self.assertEqual(self.pins(), {"s01": forest})
+        pending = {n["scene_id"]: n for n in report["needs_approval"]}
+        self.assertEqual(set(pending), {"s02", "s03"})
+        self.assertTrue(all(n["candidate_id"].startswith("stock:pexels") for n in pending.values()))
+        self.assertTrue(pending["s02"]["reasons"])
+        # Offered, never done: nothing downloaded, nothing approved, no stock in the catalog.
+        self.assertEqual(hub.downloads, [])
+        self.assertEqual(set(media.load(self.catalog)["assets"]), {forest})
+        self.assertIn("scenes", report["stale_stages"])
+        # The search was stored, so the workspace can show it and a person can approve it.
+        chosen = self.select("s02", pending["s02"]["candidate_id"], hub=hub, approve=True,
+                             note="checked the licence page")
+        self.assertEqual(chosen["status"], "selected")
+
+    def test_it_never_starts_a_generation_or_needs_the_gpu(self):
+        self.own_still()
+        self.scaffold()
+        self.fill(hub=self.hub([]))
+        board = storyboard_mod.load(self.video_id)
+        self.assertTrue(all(not (s["generation"].get("regenerations")) for s in board["scenes"]))
+        self.assertIsNone(visual_assets.load_store(self.video_id)["scenes"]["s02"].get("decision"))
+
+    def test_one_picture_is_not_spread_across_every_shot_unless_allowed(self):
+        only = self.own_still()
+        self.scaffold(intents=("misty pine forest at dawn",) * 3)
+        report = self.fill(hub=self.hub([]), include_stock=False)
+        self.assertEqual([f["scene_id"] for f in report["filled"]], ["s01"])
+        self.assertEqual({u["scene_id"] for u in report["unfilled"]}, {"s02", "s03"})
+        self.assertIn("repeat", report["unfilled"][0]["reason"])
+        again = self.fill(hub=self.hub([]), include_stock=False, allow_repeats=True)
+        self.assertEqual([f["scene_id"] for f in again["filled"]], ["s02", "s03"])
+        self.assertEqual(set(self.pins().values()), {only})
+
+    def test_distinct_library_pictures_are_dealt_to_different_shots(self):
+        ids = self.own_distinct(3)
+        self.scaffold(intents=("misty botanical garden path",) * 3)
+        report = self.fill(hub=self.hub([]), include_stock=False)
+        self.assertEqual(len(report["filled"]), 3, report)
+        self.assertEqual(set(self.pins().values()), set(ids), "each shot got a different picture")
+
+    def test_shots_that_already_have_a_picture_are_left_alone(self):
+        forest = self.own_still()
+        self.scaffold()
+        hub = self.hub([])
+        self.discover("s01", hub=hub, sources=("library",))
+        self.select("s01", f"library:{forest}", hub=hub)
+        board = storyboard_mod.load(self.video_id)
+        board["scenes"][1]["image"] = "images/already.png"
+        storyboard_mod.save(self.video_id, board)
+        report = self.fill(hub=hub, include_stock=False)
+        self.assertEqual({s["scene_id"] for s in report["skipped"]}, {"s01", "s02"})
+        self.assertEqual(self.pins(), {"s01": forest})
+
+    def test_media_without_a_rights_record_is_never_pinned(self):
+        self.own_still(rights=None)
+        self.scaffold()
+        report = self.fill(hub=self.hub([]), include_stock=False)
+        self.assertEqual(report["filled"], [])
+        self.assertEqual(self.pins(), {})
+
+    def test_stock_saved_to_the_library_but_unapproved_is_not_pinned(self):
+        self.scaffold()
+        hub = self.hub()
+        self.discover("s02", hub=hub)
+        saved = visual_assets.save_to_library(self.video_id, "s02", "stock:pexels:image:501",
+                                              "owner@example.com", catalog=self.catalog, hub=hub,
+                                              work_dir=self.base / "dl")
+        report = self.fill(hub=hub, scenes=["s02"])
+        self.assertEqual(report["filled"], [])
+        self.assertEqual([n["candidate_id"] for n in report["needs_approval"]],
+                         [f"library:{saved['asset_id']}"])
+        self.assertEqual(self.pins(), {})
+
+    def test_stock_providers_that_are_down_do_not_stop_the_library_fill(self):
+        forest = self.own_still(description="misty pine forest at dawn", tags=("forest",))
+        self.scaffold(intents=("misty pine forest at dawn",))
+        report = self.fill(hub=self.hub([("api.pexels.com", (503, {}, {}))]))
+        self.assertEqual(self.pins(), {"s01": forest})
+        self.assertEqual(len(report["filled"]), 1)
+
+    def test_filling_records_who_asked(self):
+        self.scaffold()
+        with self.assertRaisesRegex(visual_assets.VisualAssetError, "actor"):
+            visual_assets.fill_scenes(self.video_id, " ", catalog=self.catalog, hub=self.hub([]))
+
+
+@unittest.skipUnless(FFMPEG, "ffmpeg required")
+class GpuFreeProductionTests(VisualAssetCase):
+    """A concept that *requires* depicted imagery, with no ComfyUI and no
+    worker: stopped by the scenes stage until the library fills the shots,
+    then rendered, quality-checked and exported like any other production.
+
+    The creative stage needs an LLM, which this environment does not have, so
+    the audio plan is supplied directly; nothing else is stubbed."""
+
+    concept = "ref-misty-botanical-garden"
+
+    def scaffold_concept(self):
+        experiment.scaffold_project(self.concept, self.video_id, duration=8)
+        pdir = project.project_dir(self.video_id)
+        spec = json.loads((pdir / "video_spec.json").read_text())
+        spec.update(width=320, height=180, fps=12, duration_seconds=8)
+        (pdir / "video_spec.json").write_text(json.dumps(spec, indent=2))
+        metadata = self.metadata()
+        metadata["audio_plan"] = {
+            "direction": {"kind": "music", "chosen": {"source": "synthesised pad",
+                                                      "production_grade_capable": False}},
+            "composition": {"layers": [{"id": "bed", "provider": "pad", "gain_db": -6.0,
+                                        "params": {"root_hz": 110}}]}}
+        (pdir / "metadata.json").write_text(json.dumps(metadata, indent=2))
+        self.assertTrue(project.run_storyboard(self.video_id, scene_count=4).ok)
+        return pdir
+
+    def test_a_depicted_concept_completes_from_the_library_with_no_gpu(self):
+        with mock.patch.dict(os.environ, {"COMFYUI_URL": ""}):
+            pdir = self.scaffold_concept()
+            self.assertTrue(project._load_concept(self.concept)["procedural_visuals_acceptable"] is False)
+
+            blocked = project.run_scenes(self.video_id)
+            self.assertFalse(blocked.ok, "without media, depicted imagery has nowhere to come from")
+            self.assertEqual(blocked.data["failed"], 4)
+
+            ids = self.own_distinct(4)
+            report = visual_assets.fill_scenes(self.video_id, "owner@example.com",
+                                               include_stock=False, catalog=self.catalog)
+            self.assertEqual(len(report["filled"]), 4, report)
+
+            scenes = project.run_scenes(self.video_id)
+            self.assertTrue(scenes.ok, scenes.message)
+            self.assertEqual(scenes.data["generated"], 0)
+            self.assertTrue(project.run_audio(self.video_id).ok)
+            project.run_pipeline(self.video_id)
+
+        video = pdir / "output" / f"{self.video_id}.mp4"
+        self.assertTrue(video.is_file())
+        qc_report = json.loads((pdir / "output" / "qc_report.json").read_text())
+        self.assertEqual(qc_report["status"], "PASS", qc_report["failures"])
+        package = json.loads((pdir / "output" / "publication_package.json").read_text())
+        self.assertEqual({v["scene_id"] for v in package["visual_sources"]}, {"s01", "s02", "s03", "s04"})
+        self.assertEqual({v["asset_id"] for v in package["visual_sources"]}, set(ids))
+        self.assertEqual(package["generation"]["image_provider"], "owner-media")
+
+        # The safeguards are exactly as strict: filling is not a grade or a review.
+        status = project.status_report(self.video_id)
+        self.assertTrue(any("production_grade is not set" in b for b in status["blocking"]), status["blocking"])
+        self.assertIsNone(self.metadata()["provenance"]["images"]["production_grade"])
+        self.assertFalse(package["publish"]["approved_by_human"])
+        self.assertFalse(package["publish"]["published"])
+
+    @unittest.skipUnless(shutil.which("melt"), "MLT required")
+    def test_the_gpu_free_production_exports_to_a_real_kdenlive_render(self):
+        with mock.patch.dict(os.environ, {"COMFYUI_URL": ""}):
+            pdir = self.scaffold_concept()
+            self.own_distinct(4)
+            visual_assets.fill_scenes(self.video_id, "owner@example.com", include_stock=False,
+                                      catalog=self.catalog)
+            self.assertTrue(project.run_scenes(self.video_id).ok)
+            self.assertTrue(project.run_audio(self.video_id).ok)
+            project.run_pipeline(self.video_id)
+            editable = project.build_kdenlive_project(self.video_id, render_output=True)
+        self.assertTrue(editable.ok, editable.message)
+        self.assertTrue(editable.data["verification"]["verified"])
+        qc_report = json.loads((pdir / "output" / "kdenlive_qc_report.json").read_text())
+        self.assertEqual(qc_report["status"], "PASS", qc_report["failures"])
 
 
 class CreditsTests(unittest.TestCase):

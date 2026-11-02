@@ -45,6 +45,11 @@ def select(video_id, scene_id, candidate_id, actor, *, approve=False, note=""):
                                 approve=approve, note=note)
 
 
+def fill(video_id, actor, *, scenes=None, include_stock=True, allow_repeats=False):
+    return visual_assets.fill_scenes(video_id, actor, scenes=scenes,
+                                     include_stock=include_stock, allow_repeats=allow_repeats)
+
+
 def save(video_id, scene_id, candidate_id, actor, *, approve=False, note=""):
     return visual_assets.save_to_library(video_id, scene_id, candidate_id, actor,
                                          approve=approve, note=note)

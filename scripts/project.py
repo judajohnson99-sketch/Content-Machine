@@ -2328,6 +2328,9 @@ def run_scenes(video_id, force=False, depicted=False):
         if failed:
             log.error("Unresolved scenes block the render. A queued GPU job is "
                       "not a failure - it simply has not landed yet.")
+            log.error("No GPU needed to continue: ./content-machine assets fill %s "
+                      "--actor <you> pins approved library media on these shots, and "
+                      "'assets search' lists stock options to approve.", video_id)
             return StageResult(False, 1, "unresolved scenes",
                                 {"generated": generated, "reused": reused,
                                  "failed": len(failed), "queued": len(queued)})
